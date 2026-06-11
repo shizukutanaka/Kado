@@ -41,6 +41,16 @@ impl Vec3 {
         self.dot(self).sqrt()
     }
 
+    /// 外積。固定演算順序 (問5)。
+    #[inline]
+    pub fn cross(self, o: Vec3) -> Vec3 {
+        Vec3::new(
+            self.y * o.z - self.z * o.y,
+            self.z * o.x - self.x * o.z,
+            self.x * o.y - self.y * o.x,
+        )
+    }
+
     /// 成分ごとの絶対値。
     #[inline]
     pub fn abs(self) -> Vec3 {
