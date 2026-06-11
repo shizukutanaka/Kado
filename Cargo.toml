@@ -1,0 +1,26 @@
+[package]
+name = "kado"
+version = "0.0.1"
+edition = "2021"
+description = "AI-First local geometry engine (SDF kernel). External-transmission-free, deterministic, single self-contained binary."
+license = "MIT"
+rust-version = "1.94"
+
+# ADR-003 / 問4: コアは std のみ。実行時外部依存ゼロ。
+# 外部 crate を追加する場合は SPEC での個別承認を要する。
+[dependencies]
+
+[lib]
+name = "kado"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kado"
+path = "src/cli/main.rs"
+
+[profile.release]
+# 決定性 (ADR-003 / 問5): fast-math 相当は使わない。
+# LTO と単一 codegen-unit でビルド再現性を高める。
+lto = true
+codegen-units = 1
+panic = "abort"
