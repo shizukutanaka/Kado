@@ -143,6 +143,9 @@ fn escape(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => { let _ = fmt::write(&mut out, format_args!("\\u{:04x}", c as u32)); }
             c => out.push(c),
         }
     }
@@ -453,5 +456,26 @@ mod tests {
         assert!(parse("-1e400").is_err());
         // 通常の数は通る。
         assert!(parse("1.5e3").is_ok());
+    }
+
+    #[test]
+    fn object_key_escape_matches_string_value_escape() {
+        // 問32: escape() (オブジェクトキー) と Display (文字列値) の制御文字処理が一致するか。
+        // キーに \r, \t, 制御文字が含まれる場合の一貫性を確認する。
+        let v = Value::Object({
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("key\twith\ttabs".to_string(), s("val\twith\ttabs"));
+            m.insert("key\rwith\rCR".to_string(), s("val\rwith\rCR"));
+            m
+        });
+        let serialized = v.to_string();
+        // シリアライズ後に再パースしてラウンドトリップ一致を確認。
+        let reparsed = parse(&serialized).unwrap();
+        assert_eq!(v, reparsed, "object keys with control chars must roundtrip");
+        // 出力が生の制御文字を含まないことを確認。
+        assert!(
+            !serialized.chars().any(|c| c == '\t' || c == '\r'),
+            "serialized output must not contain raw control chars"
+        );
     }
 }
