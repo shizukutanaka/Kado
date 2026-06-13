@@ -599,3 +599,25 @@ CLI の `run` と `check` は解像度を制御する手段がなく、常に re
 | 37 | `help` ツール: KadoScene 自己記述 |
 
 > 総括: v8–v16は問26〜37の12課題を実装で解決し、テスト数 68→79 に伸ばした。
+
+---
+
+## 問38 — OVERHANG エラーが角度慣例を混同 (`acos(nz)` vs 水平からの角度)
+**問**: `validate` の OVERHANG 検査で `max_overhang_deg=45` は「水平から45°」を意味するが、
+エラーメッセージの `deg = worst.acos().to_degrees()` は「上向きz軸からの角度」を返す
+(水平面=90°, 真下=180°)。nz=-0.766 (水平から50°) に対して "overhang angle 140.0° exceeds max 45.0°"
+を報告するのは単位の不一致。
+
+**修正**: `worst.acos().to_degrees()` → `(-worst).asin().to_degrees()`。
+水平からの角度 (0°=垂直, 90°=真下) で `max_overhang_deg` と同じ慣例に揃える。
+エラー文言も "from horizontal" を追記し明確化。
+テスト `overhang_angle_reported_from_horizontal_not_from_z_axis` 追加。
+テスト数 79→80。
+
+## 反映サマリ v8–v17
+| 問 | 実装 |
+|----|------|
+| 26–37 | (上記) |
+| 38 | OVERHANG 角度慣例修正 (acos→asin, 水平基準に統一) |
+
+> 総括: v8–v17は問26〜38の13課題を実装で解決し、テスト数 68→80 に達した。

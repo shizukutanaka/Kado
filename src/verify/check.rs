@@ -198,10 +198,13 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
             }
         }
         if worst < -max_cos {
-            let deg = worst.acos().to_degrees();
+            // `worst` は最も大きい下向き法線の nz 成分 (負)。
+            // オーバーハング角度 = 水平からの角度 = asin(-worst) (問38: acos(nz) は違う慣例)。
+            // max_overhang_deg は「水平から」なので単位を揃える。
+            let deg = (-worst).asin().to_degrees();
             issues.push(KadoError::warn(
                 "OVERHANG",
-                format!("overhang angle {deg:.1}° exceeds max {max_overhang_deg:.1}°"),
+                format!("overhang angle {deg:.1}° from horizontal exceeds max {max_overhang_deg:.1}°"),
                 &[
                     "Add support structures or redesign with chamfer/fillet",
                     "Rotate the model to minimize overhangs",
@@ -280,6 +283,39 @@ mod tests {
         let s = r.summary();
         assert!(s.contains("manifold=true"));
         assert!(s.contains("errors=0"));
+    }
+
+    #[test]
+    fn overhang_angle_reported_from_horizontal_not_from_z_axis() {
+        // 問38: OVERHANG エラーは「水平からの角度」で報告されるべき。
+        // max_overhang_deg=45 の規定と同じ慣例 (0°=垂直, 90°=水平面)。
+        // 球にオーバーハング検査を適用すると、底半球の下向き法線が検出される。
+        // 底点での nz = -1 → overhang = asin(1) = 90° from horizontal。
+        let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let r = validate(&mesh, 0.0, 45.0);
+        let ov = r.issues.iter().find(|e| e.code == "OVERHANG");
+        if let Some(e) = ov {
+            // 角度は 45–90° の間にあるはず (水平換算)。
+            // "XXX.X° from horizontal" の形式か確認。
+            assert!(
+                e.cause.contains("from horizontal"),
+                "overhang must report angle from horizontal: {}",
+                e.cause
+            );
+            // 角度が 90 以下であることを確認 (acos の誤用がないこと)。
+            // フォーマット: "overhang angle XX.X° from horizontal ..."
+            let deg: f64 = e
+                .cause
+                .split_whitespace()
+                .nth(2)  // "overhang angle XX.X° ..."
+                .map(|s| s.trim_end_matches('°'))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(999.0);
+            assert!(
+                deg <= 90.0,
+                "overhang angle must be <= 90° from horizontal (FDM convention), got {deg}"
+            );
+        }
     }
 
     #[test]
