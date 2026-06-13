@@ -172,6 +172,22 @@ pub fn parse(input: &str) -> Result<Value, String> {
 /// 再帰下降パーサのスタックオーバーフロー (= DoS) を防ぐ。
 const MAX_DEPTH: usize = 128;
 
+/// UTF-8 リードバイトからシーケンス長 (バイト数) を返す (問49)。
+/// 不正なリードバイトは 1 として扱い、進行を保証して無限ループを防ぐ。
+fn utf8_seq_len(lead: u8) -> usize {
+    if lead < 0x80 {
+        1
+    } else if lead >> 5 == 0b110 {
+        2
+    } else if lead >> 4 == 0b1110 {
+        3
+    } else if lead >> 3 == 0b11110 {
+        4
+    } else {
+        1
+    }
+}
+
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
@@ -295,8 +311,18 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Some(c) => {
-                    s.push(c as char);
-                    self.advance();
+                    // 問49: 生バイトを `c as char` で push すると Latin-1 解釈になり
+                    // マルチバイト UTF-8 (日本語・絵文字等) が破壊される。
+                    // `self.src` は &str 由来で正当な UTF-8 なので、リード文字から
+                    // シーケンス長を判定し、文字単位でコピーする。
+                    let len = utf8_seq_len(c);
+                    let end = (self.pos + len).min(self.src.len());
+                    match std::str::from_utf8(&self.src[self.pos..end]) {
+                        Ok(chunk) => s.push_str(chunk),
+                        // 不正な UTF-8 (本来到達しないが防御的に) は置換文字へ。
+                        Err(_) => s.push('\u{FFFD}'),
+                    }
+                    self.pos = end;
                 }
             }
         }
@@ -456,6 +482,28 @@ mod tests {
         assert!(parse("-1e400").is_err());
         // 通常の数は通る。
         assert!(parse("1.5e3").is_ok());
+    }
+
+    #[test]
+    fn multibyte_utf8_strings_roundtrip() {
+        // 問49: マルチバイト UTF-8 (日本語・絵文字・アクセント記号) が
+        // パース→シリアライズで破壊されないこと。MCP クライアントは UTF-8 JSON を送る。
+        for original in &["日本語のテスト", "emoji 🎲 mix", "café résumé", "混在 ascii 123"] {
+            let parsed = parse(&format!(r#""{original}""#)).unwrap();
+            assert_eq!(
+                parsed.as_str(),
+                Some(*original),
+                "multibyte string must parse intact: {original}"
+            );
+            // ラウンドトリップ (値→文字列→値) も一致。
+            let v = s(*original);
+            assert_eq!(parse(&v.to_string()).unwrap(), v);
+        }
+
+        // オブジェクトのキー・値ともに UTF-8 を保持すること。
+        let obj_v = obj([("名前", s("立方体 🧊"))]);
+        let reparsed = parse(&obj_v.to_string()).unwrap();
+        assert_eq!(obj_v, reparsed, "UTF-8 keys and values must roundtrip");
     }
 
     #[test]
