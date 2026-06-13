@@ -103,7 +103,8 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), 48);
+            let (lo, hi) = sdf.sampling_box();
+            let mesh = polygonize(&sdf, lo, hi, 48);
             let report = validate(&mesh, 0.0, 0.0);
             println!("{}", report.summary());
         }
@@ -128,7 +129,8 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), 48);
+            let (lo, hi) = sdf.sampling_box();
+            let mesh = polygonize(&sdf, lo, hi, 48);
             let report = validate(&mesh, min_wall, max_overhang);
             let status = if report.is_ok() { "PASS" } else { "FAIL" };
             println!("[{status}] {}", report.summary());

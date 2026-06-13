@@ -114,6 +114,14 @@ impl std::ops::Div<f64> for Vec3 {
     }
 }
 
+impl std::ops::Neg for Vec3 {
+    type Output = Vec3;
+    #[inline]
+    fn neg(self) -> Vec3 {
+        Vec3::new(-self.x, -self.y, -self.z)
+    }
+}
+
 /// スカラ線形補間 `a + (b-a)*t`。
 #[inline]
 pub fn mix(a: f64, b: f64, t: f64) -> f64 {

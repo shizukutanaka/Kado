@@ -88,36 +88,23 @@ impl Sdf {
             }
 
             Sdf::Cone { radius, height } => {
-                // 先端 z=0, 底面 z=-height の錐 (FDM 印刷向けに下向き)。
-                // q = (radial_dist, -pz)
-                let q_x = (p.x * p.x + p.y * p.y).sqrt();
-                let q_y = -p.z;
+                // 厳密な有限円錐 (IQ "Cone - exact")。
+                // 先端 z=0, 底面 z=-height, 底面半径 radius (FDM 印刷向けに下向き)。
                 let h = *height;
                 let r = *radius;
-                let len = (r * r + h * h).sqrt();
-                let c = Vec3::new(h / len, r / len, 0.0); // normalized cone edge direction
-                let k = p.z.min(0.0);
-                let dot_proj = (q_x * c.x - q_y * c.y).max(0.0);
-                let edge = Vec3::new(q_x - r * dot_proj / len, q_y - h * dot_proj / len, 0.0);
-                let outside = edge.length() * (q_x * c.y - q_y * c.x).signum().max(0.0);
-                let cap =
-                    (Vec3::new(q_x, q_y - h, 0.0)).length() * (-q_y.max(-h).signum()).max(0.0);
-                // Simplest correct formulation (IQ):
-                let _ = (k, c, outside, cap);
-                let q2 = Vec3::new(q_x, q_y, 0.0);
-                let c2 = Vec3::new(h / len, r / len, 0.0);
-                let d = (q2.dot(c2)).max(0.0);
-                let proj = Vec3::new(c2.x * d, c2.y * d, 0.0);
-                let perp = q2 - proj;
-                let edge_dist = perp.length()
-                    * if q2.x * c2.y - q2.y * c2.x < 0.0 {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                let cap_dist =
-                    (q2 - Vec3::new(0.0, h, 0.0)).length() * if q2.y < h { 1.0 } else { -1.0 };
-                edge_dist.max(-cap_dist)
+                // (radial, axial) 平面での厳密距離。q は底面エッジ頂点 (r, -h)。
+                let w = (p.x.hypot(p.y), p.z);
+                let q = (r, -h);
+                let dot_wq = w.0 * q.0 + w.1 * q.1;
+                let dot_qq = q.0 * q.0 + q.1 * q.1;
+                let t1 = clamp(dot_wq / dot_qq, 0.0, 1.0);
+                let a = (w.0 - q.0 * t1, w.1 - q.1 * t1);
+                let t2 = clamp(w.0 / q.0, 0.0, 1.0);
+                let b = (w.0 - q.0 * t2, w.1 - q.1);
+                let k = q.1.signum();
+                let d = (a.0 * a.0 + a.1 * a.1).min(b.0 * b.0 + b.1 * b.1);
+                let s = (k * (w.0 * q.1 - w.1 * q.0)).max(k * (w.1 - q.1));
+                d.sqrt() * s.signum()
             }
 
             Sdf::Capsule {
@@ -190,6 +177,92 @@ impl Sdf {
         }
     }
 
+    // ── バウンディングボックス (問14: サンプリング領域を形状から導出) ────────────
+
+    /// 保守的な軸整列バウンディングボックス `(min, max)` を解析的に推定する。
+    ///
+    /// メッシュ抽出のサンプリング領域を形状そのものから導くために使う。これにより
+    /// 固定境界 (±2 など) によるスクリプト形状の暗黙クリッピングを防ぐ (問14)。
+    /// `Repeat` は無限範囲なので 1 セル分の子ボックスで近似する (要注意ケース)。
+    pub fn aabb(&self) -> (Vec3, Vec3) {
+        match self {
+            Sdf::Sphere { radius } => (Vec3::splat(-radius), Vec3::splat(*radius)),
+            Sdf::Cuboid { half } => (-*half, *half),
+            Sdf::Cylinder {
+                radius,
+                half_height,
+            } => (
+                Vec3::new(-radius, -radius, -half_height),
+                Vec3::new(*radius, *radius, *half_height),
+            ),
+            Sdf::Torus { major, minor } => {
+                let r = major + minor;
+                (Vec3::new(-r, -r, -minor), Vec3::new(r, r, *minor))
+            }
+            Sdf::Cone { radius, height } => (
+                Vec3::new(-radius, -radius, -height),
+                Vec3::new(*radius, *radius, 0.0),
+            ),
+            Sdf::Capsule {
+                half_height,
+                radius,
+            } => {
+                let z = half_height + radius;
+                (
+                    Vec3::new(-radius, -radius, -z),
+                    Vec3::new(*radius, *radius, z),
+                )
+            }
+            Sdf::RoundedBox { half, radius } => {
+                let e = *half + Vec3::splat(*radius);
+                (-e, e)
+            }
+            // 和: 子ボックスの和集合。smooth は k 分だけ膨らみうるので余裕を足す。
+            Sdf::Union(a, b) => union_box(a.aabb(), b.aabb()),
+            Sdf::SmoothUnion(a, b, k) => {
+                let (lo, hi) = union_box(a.aabb(), b.aabb());
+                (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
+            }
+            // 積: 子ボックスの積集合 (重なり)。
+            Sdf::Intersection(a, b) => {
+                let (alo, ahi) = a.aabb();
+                let (blo, bhi) = b.aabb();
+                (alo.max(blo), ahi.min(bhi))
+            }
+            // 差 a-b ⊆ a。smooth は k 分の膨らみを許容。
+            Sdf::Difference(a, _) => a.aabb(),
+            Sdf::SmoothDifference(a, _, k) => {
+                let (lo, hi) = a.aabb();
+                (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
+            }
+            Sdf::Translate(c, o) => {
+                let (lo, hi) = c.aabb();
+                (lo + *o, hi + *o)
+            }
+            Sdf::Scale(c, f) => {
+                let (lo, hi) = c.aabb();
+                (lo * *f, hi * *f) // factor > 0 前提 (距離場保存スケール)
+            }
+            Sdf::Offset(c, amount) => {
+                let (lo, hi) = c.aabb();
+                let e = Vec3::splat(amount.max(0.0));
+                (lo - e, hi + e)
+            }
+            Sdf::Shell(c, _) => c.aabb(),
+            Sdf::Repeat(c, _) => c.aabb(),
+            Sdf::Mirror(c, axis) => mirror_box(c.aabb(), *axis),
+        }
+    }
+
+    /// 抽出用サンプリング境界。`aabb` に表面が境界で切れないよう余白を足す。
+    pub fn sampling_box(&self) -> (Vec3, Vec3) {
+        let (lo, hi) = self.aabb();
+        let diag = (hi - lo).length();
+        let m = (0.05 * diag).max(1e-3);
+        let e = Vec3::splat(m);
+        (lo - e, hi + e)
+    }
+
     // ── 構築ヘルパ ─────────────────────────────────────────────────────────────
 
     pub fn sphere(radius: f64) -> Sdf {
@@ -259,6 +332,32 @@ impl Sdf {
     }
     pub fn mirror_z(self) -> Sdf {
         Sdf::Mirror(Box::new(self), 2)
+    }
+}
+
+// ── AABB ヘルパ ────────────────────────────────────────────────────────────────
+
+fn union_box(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> (Vec3, Vec3) {
+    (a.0.min(b.0), a.1.max(b.1))
+}
+
+/// 指定軸について面対称化したボックス。対称面 (=0) の両側に広がる。
+fn mirror_box((lo, hi): (Vec3, Vec3), axis: u8) -> (Vec3, Vec3) {
+    let ext = |l: f64, h: f64| l.abs().max(h.abs());
+    match axis {
+        0 => {
+            let e = ext(lo.x, hi.x);
+            (Vec3::new(-e, lo.y, lo.z), Vec3::new(e, hi.y, hi.z))
+        }
+        1 => {
+            let e = ext(lo.y, hi.y);
+            (Vec3::new(lo.x, -e, lo.z), Vec3::new(hi.x, e, hi.z))
+        }
+        2 => {
+            let e = ext(lo.z, hi.z);
+            (Vec3::new(lo.x, lo.y, -e), Vec3::new(hi.x, hi.y, e))
+        }
+        _ => (lo, hi),
     }
 }
 
@@ -436,5 +535,58 @@ mod tests {
         for p in grid() {
             assert_eq!(tree.eval(p).to_bits(), tree.eval(p).to_bits());
         }
+    }
+
+    #[test]
+    fn cone_surface_and_sign() {
+        // 先端 z=0, 底面 z=-2, 底面半径 1。
+        let c = Sdf::cone(1.0, 2.0);
+        // 先端は表面 (点)。
+        assert!(c.eval(Vec3::ZERO).abs() < EPS, "apex on surface");
+        // 内部 (軸上, 中ほど) は負。
+        assert!(c.eval(Vec3::new(0.0, 0.0, -1.0)) < 0.0, "interior negative");
+        // 側面上の点: z=-1 では半径 0.5。(0.5, 0, -1) は母線上 → 表面。
+        assert!(
+            c.eval(Vec3::new(0.5, 0.0, -1.0)).abs() < EPS,
+            "lateral surface zero: got {}",
+            c.eval(Vec3::new(0.5, 0.0, -1.0))
+        );
+        // 底面ディスク内部の点 (0.4, 0, -2) は底面上 → 表面。
+        assert!(
+            c.eval(Vec3::new(0.4, 0.0, -2.0)).abs() < EPS,
+            "base cap zero: got {}",
+            c.eval(Vec3::new(0.4, 0.0, -2.0))
+        );
+        // 遠方は正。
+        assert!(c.eval(Vec3::new(5.0, 0.0, -1.0)) > 0.0, "exterior positive");
+    }
+
+    #[test]
+    fn aabb_encloses_surface_samples() {
+        // 代表ツリーで AABB が表面サンプルを内包することを確認 (問14)。
+        let tree = Sdf::sphere(1.0)
+            .union(Sdf::cuboid(Vec3::splat(0.8)))
+            .difference(Sdf::cylinder(0.3, 2.0))
+            .translate(Vec3::new(0.5, -0.3, 0.2));
+        let (lo, hi) = tree.aabb();
+        // バウンディングボックスの外では SDF は厳密に正 (内包性)。
+        let outside = [
+            Vec3::new(lo.x - 0.5, 0.0, 0.0),
+            Vec3::new(hi.x + 0.5, 0.0, 0.0),
+            Vec3::new(0.0, lo.y - 0.5, 0.0),
+            Vec3::new(0.0, hi.y + 0.5, 0.0),
+            Vec3::new(0.0, 0.0, lo.z - 0.5),
+            Vec3::new(0.0, 0.0, hi.z + 0.5),
+        ];
+        for p in outside {
+            assert!(
+                tree.eval(p) > 0.0,
+                "point {p:?} outside aabb must be exterior"
+            );
+        }
+        // sampling_box は aabb を内包する。
+        let (slo, shi) = tree.sampling_box();
+        assert!(slo.x <= lo.x && slo.y <= lo.y && slo.z <= lo.z);
+        assert!(shi.x >= hi.x && shi.y >= hi.y && shi.z >= hi.z);
     }
 }

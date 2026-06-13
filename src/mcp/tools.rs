@@ -163,25 +163,47 @@ impl ToolResult {
     }
 }
 
-/// 現時点はデモ形状固定。Phase 2 で DSL スクリプトから構築する (問2)。
-pub fn active_scene() -> Sdf {
+/// 既定シーン (デモ形状)。`run_script` 実行前の初期状態。
+pub fn default_scene() -> Sdf {
     Sdf::sphere(1.0)
         .union(Sdf::cuboid(Vec3::splat(0.8)))
         .difference(Sdf::cylinder(0.3, 2.0))
 }
 
-pub fn call_tool(name: &str, args: &Value) -> ToolResult {
+/// MCP セッション状態。**正本はスクリプトが評価した [`Sdf`] 木**であり、
+/// `run_script` がこれを更新し、他の全ツールがこれを読む (問2/問12)。
+/// 固定のハードコード形状が事実上の正本になる退行を防ぐ。
+pub struct Session {
+    /// 現在アクティブな SDF シーン。`run_script` で差し替えられる。
+    pub scene: Sdf,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Session {
+            scene: default_scene(),
+        }
+    }
+}
+
+impl Session {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult {
     match name {
-        "screenshot" => tool_screenshot(args),
-        "export" => tool_export(args),
-        "eval" => tool_eval(args),
-        "run_script" => tool_run_script(args),
-        "validate" => tool_validate(args),
+        "screenshot" => tool_screenshot(session, args),
+        "export" => tool_export(session, args),
+        "eval" => tool_eval(session, args),
+        "run_script" => tool_run_script(session, args),
+        "validate" => tool_validate(session, args),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
 
-fn tool_screenshot(args: &Value) -> ToolResult {
+fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("iso");
     let width = args
         .get("width")
@@ -194,8 +216,9 @@ fn tool_screenshot(args: &Value) -> ToolResult {
         .map(|f| f as usize)
         .unwrap_or(512);
 
-    let scene = active_scene();
-    let mesh = polygonize(&scene, Vec3::splat(-2.0), Vec3::splat(2.0), 48);
+    let scene = &session.scene;
+    let (lo_b, hi_b) = scene.sampling_box();
+    let mesh = polygonize(scene, lo_b, hi_b, 48);
     if mesh.triangles.is_empty() {
         return ToolResult::error("mesh is empty — scene may be outside the bounding box");
     }
@@ -212,7 +235,7 @@ fn tool_screenshot(args: &Value) -> ToolResult {
     ToolResult::image(base64_encode(&img.encode_png()))
 }
 
-fn tool_export(args: &Value) -> ToolResult {
+fn tool_export(session: &Session, args: &Value) -> ToolResult {
     let path = args
         .get("path")
         .and_then(|v| v.as_str())
@@ -223,8 +246,9 @@ fn tool_export(args: &Value) -> ToolResult {
         .map(|f| f as usize)
         .unwrap_or(64);
 
-    let scene = active_scene();
-    let mesh = polygonize(&scene, Vec3::splat(-2.0), Vec3::splat(2.0), res);
+    let scene = &session.scene;
+    let (lo_b, hi_b) = scene.sampling_box();
+    let mesh = polygonize(scene, lo_b, hi_b, res);
     match stl::write_binary(&mesh, std::path::Path::new(path)) {
         Ok(()) => ToolResult::text(format!(
             "exported: {path} ({} triangles, manifold={})",
@@ -235,20 +259,20 @@ fn tool_export(args: &Value) -> ToolResult {
     }
 }
 
-fn tool_eval(args: &Value) -> ToolResult {
+fn tool_eval(session: &Session, args: &Value) -> ToolResult {
     let x = args.get("x").and_then(|v| v.as_f64());
     let y = args.get("y").and_then(|v| v.as_f64());
     let z = args.get("z").and_then(|v| v.as_f64());
     match (x, y, z) {
         (Some(x), Some(y), Some(z)) => {
-            let d = active_scene().eval(Vec3::new(x, y, z));
+            let d = session.scene.eval(Vec3::new(x, y, z));
             ToolResult::text(format!("{d:.6}"))
         }
         _ => ToolResult::error("x, y, z are required numeric fields"),
     }
 }
 
-fn tool_run_script(args: &Value) -> ToolResult {
+fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     let src = match args.get("script").and_then(|v| v.as_str()) {
         Some(s) => s.to_string(),
         None => return ToolResult::error("\"script\" field is required"),
@@ -263,12 +287,15 @@ fn tool_run_script(args: &Value) -> ToolResult {
         Ok(s) => s,
         Err(e) => return ToolResult::error(format!("script error: {e}")),
     };
-    let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), res);
+    // スクリプトが正本 (問2/問12): 評価結果をアクティブシーンに設定する。
+    let (lo_b, hi_b) = sdf.sampling_box();
+    let mesh = polygonize(&sdf, lo_b, hi_b, res);
     let report = validate(&mesh, 0.0, 0.0);
-    ToolResult::text(format!("script ok — {}", report.summary()))
+    session.scene = sdf;
+    ToolResult::text(format!("scene updated — {}", report.summary()))
 }
 
-fn tool_validate(args: &Value) -> ToolResult {
+fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     let res = args
         .get("resolution")
         .and_then(|v| v.as_f64())
@@ -283,8 +310,9 @@ fn tool_validate(args: &Value) -> ToolResult {
         .and_then(|v| v.as_f64())
         .unwrap_or(45.0);
 
-    let scene = active_scene();
-    let mesh = polygonize(&scene, Vec3::splat(-2.0), Vec3::splat(2.0), res);
+    let scene = &session.scene;
+    let (lo_b, hi_b) = scene.sampling_box();
+    let mesh = polygonize(scene, lo_b, hi_b, res);
     let report = validate(&mesh, min_wall, max_overhang);
     let status = if report.is_ok() { "PASS" } else { "FAIL" };
     let mut lines = vec![format!("[{status}] {}", report.summary())];

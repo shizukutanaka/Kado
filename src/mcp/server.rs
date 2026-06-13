@@ -20,11 +20,13 @@ pub fn run_stdio() -> ! {
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
+    // セッション状態 (正本シーン)。run_script で更新され他ツールが参照する。
+    let mut session = tools::Session::new();
 
     loop {
         match read_message(&mut reader) {
             Ok(msg) => {
-                if let Some(resp) = handle(&msg) {
+                if let Some(resp) = handle(&mut session, &msg) {
                     if write_message(&mut writer, &resp).is_err() {
                         break;
                     }
@@ -72,7 +74,7 @@ fn write_message(w: &mut impl Write, v: &Value) -> io::Result<()> {
 
 // ── リクエストハンドラ ────────────────────────────────────────────────────────
 
-fn handle(msg: &Value) -> Option<Value> {
+fn handle(session: &mut tools::Session, msg: &Value) -> Option<Value> {
     let method = msg.get("method")?.as_str()?;
     let id = msg.get("id").cloned().unwrap_or(json::NULL);
     let params = msg.get("params").cloned().unwrap_or(json::NULL);
@@ -84,7 +86,7 @@ fn handle(msg: &Value) -> Option<Value> {
         "initialize" => Some(handle_initialize(&params)),
         "initialized" => return None, // notification
         "tools/list" => Some(handle_tools_list()),
-        "tools/call" => Some(handle_tools_call(&params)),
+        "tools/call" => Some(handle_tools_call(session, &params)),
         "ping" => Some(json::obj([])),
         _ => {
             if is_notification {
@@ -118,7 +120,7 @@ fn handle_tools_list() -> Value {
     json::obj([("tools", tools::tool_list())])
 }
 
-fn handle_tools_call(params: &Value) -> Value {
+fn handle_tools_call(session: &mut tools::Session, params: &Value) -> Value {
     let name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n.to_string(),
         None => return rpc_error(-32602, "missing tool name"),
@@ -126,7 +128,7 @@ fn handle_tools_call(params: &Value) -> Value {
     let empty = json::obj([]);
     let args = params.get("arguments").unwrap_or(&empty);
 
-    let result = tools::call_tool(&name, args);
+    let result = tools::call_tool(session, &name, args);
     json::obj([
         ("content", Value::Array(result.content)),
         ("isError", json::b(result.is_error)),
@@ -175,9 +177,33 @@ mod tests {
         Value::Object(m)
     }
 
+    fn eval_at(session: &mut tools::Session, x: f64, y: f64, z: f64) -> f64 {
+        let params = json::obj([
+            ("name", json::s("eval")),
+            (
+                "arguments",
+                json::obj([("x", json::n(x)), ("y", json::n(y)), ("z", json::n(z))]),
+            ),
+        ]);
+        let resp = handle(session, &req("tools/call", 3, Some(params))).unwrap();
+        let text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        text
+    }
+
     #[test]
     fn initialize_returns_protocol_version() {
-        let resp = handle(&req("initialize", 1, None)).unwrap();
+        let mut s = tools::Session::new();
+        let resp = handle(&mut s, &req("initialize", 1, None)).unwrap();
         let ver = resp
             .get("result")
             .and_then(|r| r.get("protocolVersion"))
@@ -186,8 +212,9 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_three_tools() {
-        let resp = handle(&req("tools/list", 2, None)).unwrap();
+    fn tools_list_has_five_tools() {
+        let mut s = tools::Session::new();
+        let resp = handle(&mut s, &req("tools/list", 2, None)).unwrap();
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
@@ -198,28 +225,8 @@ mod tests {
     #[test]
     fn tools_call_eval_returns_number() {
         // (0.5, 0, 0): inside sphere/cuboid union and outside cylinder hole → SDF < 0
-        let params = json::obj([
-            ("name", json::s("eval")),
-            (
-                "arguments",
-                json::obj([
-                    ("x", json::n(0.5)),
-                    ("y", json::n(0.0)),
-                    ("z", json::n(0.0)),
-                ]),
-            ),
-        ]);
-        let resp = handle(&req("tools/call", 3, Some(params))).unwrap();
-        let content = resp
-            .get("result")
-            .and_then(|r| r.get("content"))
-            .and_then(|c| c.as_array());
-        assert!(content.is_some());
-        let text = content.unwrap()[0]
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap();
-        let val: f64 = text.trim().parse().unwrap();
+        let mut s = tools::Session::new();
+        let val = eval_at(&mut s, 0.5, 0.0, 0.0);
         assert!(
             val < 0.0,
             "SDF at (0.5,0,0) should be inside (negative), got {val}"
@@ -227,8 +234,39 @@ mod tests {
     }
 
     #[test]
+    fn run_script_updates_active_scene() {
+        // 問12 のリグレッション防止: run_script 後に eval/他ツールが
+        // ハードコード形状ではなくスクリプトのシーンを見ることを保証する。
+        let mut s = tools::Session::new();
+        // 既定 (デモ) では原点は穴の中 → 正。
+        assert!(eval_at(&mut s, 0.0, 0.0, 0.0) > 0.0);
+
+        // 半径 3 の球に差し替える。
+        let params = json::obj([
+            ("name", json::s("run_script")),
+            (
+                "arguments",
+                json::obj([("script", json::s(r#"{"op":"sphere","r":3.0}"#))]),
+            ),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 9, Some(params))).unwrap();
+        assert_eq!(
+            resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false))
+        );
+
+        // 原点は半径3球の内部 → SDF ≈ -3。スクリプトが正本になった証拠。
+        let v = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!(
+            (v - (-3.0)).abs() < 1e-9,
+            "expected -3.0 after run_script, got {v}"
+        );
+    }
+
+    #[test]
     fn unknown_method_returns_error() {
-        let resp = handle(&req("unknown/method", 4, None)).unwrap();
+        let mut s = tools::Session::new();
+        let resp = handle(&mut s, &req("unknown/method", 4, None)).unwrap();
         let err = resp
             .get("error")
             .and_then(|e| e.get("code"))
@@ -238,10 +276,11 @@ mod tests {
 
     #[test]
     fn notification_returns_none() {
+        let mut s = tools::Session::new();
         let notif = json::obj([
             ("jsonrpc", json::s("2.0")),
             ("method", json::s("initialized")),
         ]);
-        assert!(handle(&notif).is_none());
+        assert!(handle(&mut s, &notif).is_none());
     }
 }
