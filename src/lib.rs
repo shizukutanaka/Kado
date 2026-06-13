@@ -12,3 +12,5 @@ pub mod extract;
 pub mod io;
 pub mod mcp;
 pub mod render;
+pub mod script;
+pub mod verify;

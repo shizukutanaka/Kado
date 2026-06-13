@@ -5,6 +5,8 @@
 //!   selftest   最小 SDF 評価の動作確認
 //!   export     STL ファイル出力
 //!   screenshot PNG スクリーンショット出力
+//!   run        KadoScene JSON スクリプトを評価してメッシュ統計を表示
+//!   check      KadoScene JSON スクリプトを評価して DFM 検証
 //!   mcp        MCP サーバー (stdio) 起動
 
 use kado::core::{Sdf, Vec3};
@@ -12,6 +14,8 @@ use kado::extract::polygonize;
 use kado::io::stl;
 use kado::mcp::server::run_stdio;
 use kado::render::{render, Camera};
+use kado::script::eval_scene;
+use kado::verify::validate;
 
 fn demo_model() -> Sdf {
     Sdf::sphere(1.0)
@@ -80,15 +84,71 @@ fn main() {
                 }
             }
         }
+        "run" => {
+            let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
+                eprintln!("usage: kado run <scene.json>");
+                std::process::exit(2);
+            });
+            let src = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("cannot read {path}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let sdf = match eval_scene(&src) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("script error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), 48);
+            let report = validate(&mesh, 0.0, 0.0);
+            println!("{}", report.summary());
+        }
+        "check" => {
+            let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
+                eprintln!("usage: kado check <scene.json> [min_wall_mm] [max_overhang_deg]");
+                std::process::exit(2);
+            });
+            let min_wall: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let max_overhang: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(45.0);
+            let src = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("cannot read {path}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let sdf = match eval_scene(&src) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("script error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), 48);
+            let report = validate(&mesh, min_wall, max_overhang);
+            let status = if report.is_ok() { "PASS" } else { "FAIL" };
+            println!("[{status}] {}", report.summary());
+            for issue in &report.issues {
+                println!("  [{:?}] {} — {}", issue.severity, issue.code, issue.cause);
+                for hint in &issue.fix_hints {
+                    println!("    hint: {hint}");
+                }
+            }
+            if !report.is_ok() {
+                std::process::exit(1);
+            }
+        }
         "mcp" => {
             // MCP サーバーモード (stdin/stdout・返らない)。
             run_stdio();
         }
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!(
-                "usage: kado [version|selftest|export <out.stl>|screenshot <out.png> [view]|mcp]"
-            );
+            eprintln!("usage: kado [version|selftest|export|screenshot|run|check|mcp]");
             std::process::exit(2);
         }
     }

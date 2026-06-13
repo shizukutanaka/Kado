@@ -1,10 +1,12 @@
-//! MCP ツール定義 (Phase 0.5)。
+//! MCP ツール定義 (Phase 0.5/2/3)。
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
 use crate::io::stl;
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
+use crate::script::eval_scene;
+use crate::verify::validate;
 
 // ── ツールスキーマ ────────────────────────────────────────────────────────────
 
@@ -59,6 +61,43 @@ pub fn tool_list() -> Value {
                 ("x", "number", "X coordinate", true),
                 ("y", "number", "Y coordinate", true),
                 ("z", "number", "Z coordinate", true),
+            ],
+        ),
+        tool_def(
+            "run_script",
+            "Evaluate a KadoScene JSON script and set it as the active scene. Returns a summary.",
+            &[
+                ("script", "string", "KadoScene JSON scene description", true),
+                (
+                    "resolution",
+                    "integer",
+                    "Mesh resolution cells/axis for summary (default: 32)",
+                    false,
+                ),
+            ],
+        ),
+        tool_def(
+            "validate",
+            "Validate the current scene mesh for manufacturability (DFM). Returns a structured report.",
+            &[
+                (
+                    "resolution",
+                    "integer",
+                    "Mesh resolution cells/axis (default: 48)",
+                    false,
+                ),
+                (
+                    "min_wall_mm",
+                    "number",
+                    "Minimum wall thickness threshold (0 to skip, default: 0.5)",
+                    false,
+                ),
+                (
+                    "max_overhang_deg",
+                    "number",
+                    "Maximum overhang angle in degrees (0 to skip, default: 45)",
+                    false,
+                ),
             ],
         ),
     ])
@@ -136,6 +175,8 @@ pub fn call_tool(name: &str, args: &Value) -> ToolResult {
         "screenshot" => tool_screenshot(args),
         "export" => tool_export(args),
         "eval" => tool_eval(args),
+        "run_script" => tool_run_script(args),
+        "validate" => tool_validate(args),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -205,6 +246,58 @@ fn tool_eval(args: &Value) -> ToolResult {
         }
         _ => ToolResult::error("x, y, z are required numeric fields"),
     }
+}
+
+fn tool_run_script(args: &Value) -> ToolResult {
+    let src = match args.get("script").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return ToolResult::error("\"script\" field is required"),
+    };
+    let res = args
+        .get("resolution")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as usize)
+        .unwrap_or(32);
+
+    let sdf = match eval_scene(&src) {
+        Ok(s) => s,
+        Err(e) => return ToolResult::error(format!("script error: {e}")),
+    };
+    let mesh = polygonize(&sdf, Vec3::splat(-4.0), Vec3::splat(4.0), res);
+    let report = validate(&mesh, 0.0, 0.0);
+    ToolResult::text(format!("script ok — {}", report.summary()))
+}
+
+fn tool_validate(args: &Value) -> ToolResult {
+    let res = args
+        .get("resolution")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as usize)
+        .unwrap_or(48);
+    let min_wall = args
+        .get("min_wall_mm")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.5);
+    let max_overhang = args
+        .get("max_overhang_deg")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(45.0);
+
+    let scene = active_scene();
+    let mesh = polygonize(&scene, Vec3::splat(-2.0), Vec3::splat(2.0), res);
+    let report = validate(&mesh, min_wall, max_overhang);
+    let status = if report.is_ok() { "PASS" } else { "FAIL" };
+    let mut lines = vec![format!("[{status}] {}", report.summary())];
+    for issue in &report.issues {
+        lines.push(format!(
+            "  [{:?}] {} — {}",
+            issue.severity, issue.code, issue.cause
+        ));
+        for hint in &issue.fix_hints {
+            lines.push(format!("    hint: {hint}"));
+        }
+    }
+    ToolResult::text(lines.join("\n"))
 }
 
 // ── base64 (RFC 4648, std のみ) ───────────────────────────────────────────────

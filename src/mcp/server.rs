@@ -192,7 +192,7 @@ mod tests {
             .get("result")
             .and_then(|r| r.get("tools"))
             .and_then(|v| v.as_array());
-        assert_eq!(tools.map(|a| a.len()), Some(3));
+        assert_eq!(tools.map(|a| a.len()), Some(5));
     }
 
     #[test]
