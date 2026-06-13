@@ -440,3 +440,32 @@ AI が「スムーズな交差」を要求したとき `unknown op: "smooth_inte
 
 > 総括: v8–v11はAI自己修正ループの完全化（問26）、input sanitization の系統化（問27/28）、
 > API 対称性の回復（問29）、smooth CSG の三位一体完成（問30）を実現した。テスト数 68→75。
+
+---
+
+## 問31 — CLI の `export`/`screenshot` がデモモデル固定で KadoScene JSON を受け付けない
+**問**: `run` と `check` コマンドは KadoScene JSON ファイルを受け取る。しかし
+`export` と `screenshot` はデモモデル (`demo_model()`) 固定であり、
+ユーザー定義シーンをファイルから直接 STL/PNG に変換する CLI 経路が存在しない。
+「スクリプトが正本」(問2) の原則が CLI レベルで崩れており、AI エージェントが
+CI/CD パイプラインで `kado export scene.json out.stl` を呼べない。
+
+**結論 → 反映**:
+- `export`: `[scene.json] <out.stl>` — arg が `.json` で終わる場合は scene file として
+  読み込み `sampling_box()` から bounds を導出。省略時は demo model (後方互換)。
+- `screenshot`: `[scene.json] <out.png> [view]` — 同様。
+- `load_scene_file` / `parse_scene` ヘルパを抽出して `run`/`check` との共通化。
+- 手動スモークテスト: `kado export sphere.json out.stl` → 83856 triangles, manifold=true。
+
+## 反映サマリ v8–v12
+| 問 | 種別 | コードへの主な反映 | 固定テスト |
+|----|------|--------------------|-----------|
+| 26 | AI自己修正ループ | `Session::script` + `get_scene` ツール | `get_scene_round_trip` |
+| 27 | バリデーション統一 | `shell thickness <= 0` 拒否 | `zero_or_negative_shell_thickness_is_rejected` |
+| 28 | プリミティブ次元 | `req_positive_f64`, 全プリミティブ正値強制 | `zero_or_negative_primitive_dimensions_are_rejected` |
+| 29 | API 対称性 | `screenshot` resolution 引数追加 | (既存 `arg_resolution` テスト継承) |
+| 30 | SDF 完全性 | `SmoothIntersection` 追加 | `smooth_intersection_is_*`, `smooth_intersection_via_script` |
+| 31 | CLI 一貫性 | `export`/`screenshot` が scene.json を受け付けるよう拡張 | 手動スモークテスト |
+
+> 総括: v8–v12はAI自己修正ループの完全化から CLI の一貫性回復まで、
+> 問26〜31の6課題を実装で解決した。テスト数 68→75 (コード品質向上はテスト外も含む)。
