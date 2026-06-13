@@ -41,6 +41,18 @@ impl Mesh {
     /// すべての無向エッジがちょうど2つの三角形に共有されるか
     /// (= 閉じた2-多様体・水密)。
     pub fn is_edge_manifold(&self) -> bool {
+        let (boundary, nonmanifold) = self.edge_defects();
+        boundary == 0 && nonmanifold == 0
+    }
+
+    /// エッジ欠陥の内訳 `(開境界エッジ数, 非多様体接合エッジ数)`。
+    ///
+    /// - 開境界 (1面共有): 表面が閉じていない。サンプリング境界によるクリップや
+    ///   ゼロ厚フィーチャが主因 (問25)。
+    /// - 非多様体接合 (3面以上共有): 自己交差・座標一致による接合。
+    ///
+    /// 両者は是正策が異なる (前者=境界拡大、後者=解像度/形状分離) ため区別する。
+    pub fn edge_defects(&self) -> (usize, usize) {
         let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
         for t in &self.triangles {
             for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -48,7 +60,16 @@ impl Mesh {
                 *counts.entry(key).or_insert(0) += 1;
             }
         }
-        counts.values().all(|&c| c == 2)
+        let mut boundary = 0;
+        let mut nonmanifold = 0;
+        for &c in counts.values() {
+            if c == 1 {
+                boundary += 1;
+            } else if c > 2 {
+                nonmanifold += 1;
+            }
+        }
+        (boundary, nonmanifold)
     }
 
     /// 符号付き体積 (発散定理)。メッシュの向きが外向きに揃っている前提。

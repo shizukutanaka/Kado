@@ -320,4 +320,79 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn watertight_holds_for_adversarial_coincident_cases() {
+        // 問24 (問11の難所): 完全一致面・格子整列面でも水密が崩れないか実証する。
+        let cases: Vec<(&str, Sdf, Vec3, Vec3, usize)> = vec![
+            // 軸整列直方体の面が標本平面に正確に載るケース (val がちょうど 0)。
+            (
+                "grid_aligned_cuboid",
+                Sdf::cuboid(Vec3::splat(1.0)),
+                Vec3::splat(-2.0),
+                Vec3::splat(2.0),
+                4, // step=1.0 → 面が x,y,z=±1 の標本平面に一致
+            ),
+            // 同一球の和 (全面が完全一致)。
+            (
+                "coincident_union",
+                Sdf::sphere(1.0).union(Sdf::sphere(1.0)),
+                Vec3::splat(-1.5),
+                Vec3::splat(1.5),
+                24,
+            ),
+            // 同一立方体の積 (全面が完全一致)。
+            (
+                "coincident_intersection",
+                Sdf::cuboid(Vec3::splat(1.0)).intersection(Sdf::cuboid(Vec3::splat(1.0))),
+                Vec3::splat(-2.0),
+                Vec3::splat(2.0),
+                4,
+            ),
+        ];
+        for (name, sdf, lo, hi, res) in &cases {
+            let m = polygonize(sdf, *lo, *hi, *res);
+            assert!(!m.triangles.is_empty(), "{name}: unexpectedly empty");
+            assert!(
+                m.is_edge_manifold(),
+                "{name}: must stay edge-manifold even at coincident/grid-aligned surfaces"
+            );
+            assert!(
+                m.signed_volume() > 0.0,
+                "{name}: signed volume must be positive, got {}",
+                m.signed_volume()
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_clipping_is_detected_not_silently_watertight() {
+        // 問25 (問14の安全網): 形状がサンプリング境界を超えると表面が箱の面で
+        // 開く。これが「無音で水密扱い」されず必ず検知されることを保証する。
+        let s = Sdf::sphere(1.0);
+
+        // 部分クリップ: 箱が z=0 で球を切る → z=0 面に開いた境界 → 非多様体で検知。
+        let clipped = polygonize(
+            &s,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
+        assert!(!clipped.triangles.is_empty());
+        assert!(
+            !clipped.is_edge_manifold(),
+            "a surface cut by the sampling box must be reported non-manifold (open)"
+        );
+
+        // 完全内包: 箱が球の内部に収まる → 符号変化なし → 空メッシュ (EMPTY_MESH で検知)。
+        let interior = polygonize(&s, Vec3::splat(-0.5), Vec3::splat(0.5), 16);
+        assert!(
+            interior.triangles.is_empty(),
+            "a box fully inside the shape yields an empty mesh (caught as EMPTY_MESH)"
+        );
+
+        // 健全な境界では水密。
+        let ok = polygonize(&s, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        assert!(ok.is_edge_manifold());
+    }
 }

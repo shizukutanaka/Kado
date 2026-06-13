@@ -98,23 +98,43 @@ impl Report {
 pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report {
     let volume = mesh.signed_volume();
     let bbox = mesh.bounds();
-    let is_manifold = mesh.is_edge_manifold();
+    let (boundary_edges, nonmanifold_edges) = mesh.edge_defects();
+    let is_manifold = boundary_edges == 0 && nonmanifold_edges == 0;
     let tri_count = mesh.triangles.len();
     let mut issues = vec![];
 
-    // 1. 非多様体メッシュ (致命的)
-    if !is_manifold {
+    // 1. 開境界 (致命的): 表面が閉じていない。原因別にヒントを出す (問25/問3)。
+    //    「解像度を上げよ」は開境界 (クリップ) には逆効果なので、境界拡大を案内する。
+    if boundary_edges > 0 {
         issues.push(KadoError::error(
-            "NON_MANIFOLD",
-            "mesh is not edge-manifold (non-watertight)",
+            "OPEN_MESH",
+            format!(
+                "surface is not closed: {boundary_edges} open boundary edge(s) \
+                 (shape likely clipped by the sampling bounds, or has a zero-thickness feature)"
+            ),
             &[
-                "Increase mesh resolution (higher res value)",
-                "Check for self-intersecting geometry in the SDF tree",
+                "Enlarge the sampling/bounding region so the shape is fully enclosed",
+                "Avoid zero-thickness walls; add offset()/shell thickness",
             ],
         ));
     }
 
-    // 2. 空メッシュ
+    // 2. 非多様体接合 (致命的): 3面以上が同一エッジを共有 (自己交差・座標一致)。
+    if nonmanifold_edges > 0 {
+        issues.push(KadoError::error(
+            "NON_MANIFOLD",
+            format!(
+                "{nonmanifold_edges} non-manifold edge(s) shared by >2 faces \
+                 (self-intersection or coincident surfaces)"
+            ),
+            &[
+                "Increase mesh resolution (higher res value)",
+                "Separate coincident or self-intersecting geometry in the SDF tree",
+            ],
+        ));
+    }
+
+    // 3. 空メッシュ
     if tri_count == 0 {
         issues.push(KadoError::error(
             "EMPTY_MESH",
@@ -130,7 +150,7 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
         };
     }
 
-    // 3. 負体積 (裏返し)
+    // 4. 負体積 (裏返し)
     if volume < 0.0 {
         issues.push(KadoError::warn(
             "NEGATIVE_VOLUME",
@@ -139,7 +159,7 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
         ));
     }
 
-    // 4. 肉厚チェック (2V/SA による平均肉厚。問23: 「平均」であり最小ではない)
+    // 5. 肉厚チェック (2V/SA による平均肉厚。問23: 「平均」であり最小ではない)
     if min_wall_mm > 0.0 {
         if let Some((lo, hi)) = bbox {
             let thin = mean_wall_thickness(mesh, lo, hi);
@@ -159,7 +179,7 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
         }
     }
 
-    // 5. オーバーハング検査 (z 軸上向きビルド前提)
+    // 6. オーバーハング検査 (z 軸上向きビルド前提)
     if max_overhang_deg > 0.0 {
         let max_cos = (90.0_f64 - max_overhang_deg).to_radians().cos();
         let mut worst: f64 = 0.0;
@@ -260,5 +280,30 @@ mod tests {
         let s = r.summary();
         assert!(s.contains("manifold=true"));
         assert!(s.contains("errors=0"));
+    }
+
+    #[test]
+    fn clipped_mesh_reports_open_mesh_with_bounds_hint() {
+        // 問25/問3: クリップで開いたメッシュは OPEN_MESH として境界拡大を案内し、
+        // 「解像度を上げよ」という誤誘導 (NON_MANIFOLD) にしない。
+        let s = Sdf::sphere(1.0);
+        let mesh = polygonize(
+            &s,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
+        let r = validate(&mesh, 0.0, 0.0);
+        assert!(!r.is_ok(), "clipped mesh must fail validation");
+        let open = r.issues.iter().find(|e| e.code == "OPEN_MESH");
+        assert!(open.is_some(), "clipping must be reported as OPEN_MESH");
+        let hints = &open.unwrap().fix_hints;
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.to_lowercase().contains("enclos")
+                    || h.to_lowercase().contains("bounding")),
+            "OPEN_MESH hint must guide enlarging bounds, got {hints:?}"
+        );
     }
 }
