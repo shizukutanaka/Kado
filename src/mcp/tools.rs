@@ -8,6 +8,28 @@ use crate::render::{render, Camera};
 use crate::script::eval_scene;
 use crate::verify::validate;
 
+// ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
+// polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
+const MAX_RESOLUTION: usize = 256; // 257^3 f64 ≈ 136 MiB ×2バッファ
+const MAX_IMAGE_DIM: usize = 4096; // 4096^2 px ×3byte ≈ 48 MiB
+
+/// `resolution` 引数を安全な範囲 `[1, MAX_RESOLUTION]` に収める。
+/// 非有限・負・0・過大値はすべて安全側へ丸め、`polygonize` の panic/OOM を防ぐ (問18)。
+fn arg_resolution(args: &Value, default: usize) -> usize {
+    match args.get("resolution").and_then(|v| v.as_f64()) {
+        Some(f) if f.is_finite() => (f as usize).clamp(1, MAX_RESOLUTION),
+        _ => default,
+    }
+}
+
+/// 画像寸法引数を安全な範囲 `[1, MAX_IMAGE_DIM]` に収める (問18)。
+fn arg_dim(args: &Value, key: &str, default: usize) -> usize {
+    match args.get(key).and_then(|v| v.as_f64()) {
+        Some(f) if f.is_finite() => (f as usize).clamp(1, MAX_IMAGE_DIM),
+        _ => default,
+    }
+}
+
 // ── ツールスキーマ ────────────────────────────────────────────────────────────
 
 pub fn tool_list() -> Value {
@@ -205,16 +227,8 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
 
 fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("iso");
-    let width = args
-        .get("width")
-        .and_then(|v| v.as_f64())
-        .map(|f| f as usize)
-        .unwrap_or(512);
-    let height = args
-        .get("height")
-        .and_then(|v| v.as_f64())
-        .map(|f| f as usize)
-        .unwrap_or(512);
+    let width = arg_dim(args, "width", 512);
+    let height = arg_dim(args, "height", 512);
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
@@ -240,11 +254,7 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
         .get("path")
         .and_then(|v| v.as_str())
         .unwrap_or("kado-export.stl");
-    let res = args
-        .get("resolution")
-        .and_then(|v| v.as_f64())
-        .map(|f| f as usize)
-        .unwrap_or(64);
+    let res = arg_resolution(args, 64);
 
     // MCP 書き込みポリシー (Plan リスク T / C9): プロジェクトdir限定・パストラバーサル拒否。
     let safe = match sandbox_write_path(path) {
@@ -314,11 +324,7 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
         Some(s) => s.to_string(),
         None => return ToolResult::error("\"script\" field is required"),
     };
-    let res = args
-        .get("resolution")
-        .and_then(|v| v.as_f64())
-        .map(|f| f as usize)
-        .unwrap_or(32);
+    let res = arg_resolution(args, 32);
 
     let sdf = match eval_scene(&src) {
         Ok(s) => s,
@@ -333,11 +339,7 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
 }
 
 fn tool_validate(session: &Session, args: &Value) -> ToolResult {
-    let res = args
-        .get("resolution")
-        .and_then(|v| v.as_f64())
-        .map(|f| f as usize)
-        .unwrap_or(48);
+    let res = arg_resolution(args, 48);
     let min_wall = args
         .get("min_wall_mm")
         .and_then(|v| v.as_f64())
@@ -419,5 +421,40 @@ mod tests {
         let args = json::obj([("path", json::s("../../escape.stl"))]);
         let r = call_tool(&mut session, "export", &args);
         assert!(r.is_error, "export must reject traversal path");
+    }
+
+    #[test]
+    fn resolution_is_clamped_to_safe_range() {
+        // 問18: 過大・0・負・非有限の resolution を安全側へ丸め OOM/panic を防ぐ。
+        assert_eq!(
+            arg_resolution(&json::obj([("resolution", json::n(1e9))]), 48),
+            MAX_RESOLUTION
+        );
+        assert_eq!(
+            arg_resolution(&json::obj([("resolution", json::n(0.0))]), 48),
+            1
+        );
+        assert_eq!(
+            arg_resolution(&json::obj([("resolution", json::n(-5.0))]), 48),
+            1
+        );
+        assert_eq!(arg_resolution(&json::obj([]), 48), 48);
+        assert_eq!(
+            arg_resolution(&json::obj([("resolution", json::n(64.0))]), 48),
+            64
+        );
+    }
+
+    #[test]
+    fn image_dims_are_clamped() {
+        assert_eq!(
+            arg_dim(&json::obj([("width", json::n(1e9))]), "width", 512),
+            MAX_IMAGE_DIM
+        );
+        assert_eq!(
+            arg_dim(&json::obj([("width", json::n(0.0))]), "width", 512),
+            1
+        );
+        assert_eq!(arg_dim(&json::obj([]), "width", 512), 512);
     }
 }

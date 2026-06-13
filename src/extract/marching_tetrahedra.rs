@@ -263,4 +263,61 @@ mod tests {
             assert_eq!(va.z.to_bits(), vb.z.to_bits());
         }
     }
+
+    #[test]
+    fn watertight_guarantee_holds_across_shape_battery() {
+        // 問19: 製品中核の主張 (問11: 水密100%) を2例の抜き取りではなく
+        // 形状バッテリで性質テストする。各形状で edge-manifold (水密) を保証する。
+        let b = Vec3::splat(2.0);
+        let battery: Vec<(&str, Sdf)> = vec![
+            ("sphere", Sdf::sphere(1.0)),
+            ("cuboid", Sdf::cuboid(Vec3::new(1.0, 0.7, 0.5))),
+            ("cylinder", Sdf::cylinder(0.8, 1.0)),
+            ("torus", Sdf::torus(1.0, 0.35)),
+            (
+                "cone",
+                Sdf::cone(1.0, 1.5).translate(Vec3::new(0.0, 0.0, 0.75)),
+            ),
+            ("capsule", Sdf::capsule(0.8, 0.4)),
+            ("rounded_box", Sdf::rounded_box(Vec3::splat(1.0), 0.3)),
+            (
+                "union",
+                Sdf::sphere(1.0).union(Sdf::cuboid(Vec3::splat(0.9))),
+            ),
+            (
+                "intersection",
+                Sdf::sphere(1.2).intersection(Sdf::cuboid(Vec3::splat(1.0))),
+            ),
+            (
+                "difference",
+                Sdf::cuboid(Vec3::splat(1.0)).difference(Sdf::sphere(1.2)),
+            ),
+            (
+                "smooth_union",
+                Sdf::sphere(0.9)
+                    .smooth_union(Sdf::sphere(0.9).translate(Vec3::new(1.0, 0.0, 0.0)), 0.4),
+            ),
+            ("shell", Sdf::sphere(1.0).shell(0.2)),
+            (
+                "mirror",
+                Sdf::sphere(0.5)
+                    .translate(Vec3::new(0.8, 0.0, 0.0))
+                    .mirror_x(),
+            ),
+        ];
+        for (name, sdf) in &battery {
+            let m = polygonize(sdf, -b, b, 28);
+            assert!(!m.triangles.is_empty(), "{name}: mesh unexpectedly empty");
+            assert!(
+                m.is_edge_manifold(),
+                "{name}: mesh must be edge-manifold (watertight)"
+            );
+            // 向き一貫性の代理: 外向き整合なら符号付き体積は正。
+            assert!(
+                m.signed_volume() > 0.0,
+                "{name}: signed volume must be positive (consistent outward orientation), got {}",
+                m.signed_volume()
+            );
+        }
+    }
 }

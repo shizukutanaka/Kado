@@ -323,9 +323,15 @@ impl<'a> Parser<'a> {
             }
         }
         let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
-        s.parse::<f64>()
-            .map(Value::Number)
-            .map_err(|e| e.to_string())
+        let val: f64 = s
+            .parse()
+            .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+        // 非有限値の混入を一点で拒否 (問20): 例 1e400 は f64 で +inf に丸められ、
+        // SDF へ伝播すると無音の不正メッシュを生む。ここで遮断する。
+        if !val.is_finite() {
+            return Err(format!("number out of range (non-finite): {s}"));
+        }
+        Ok(Value::Number(val))
     }
 
     fn parse_array(&mut self) -> Result<Value, String> {
@@ -436,5 +442,16 @@ mod tests {
         let depth = 20;
         let src = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
         assert!(parse(&src).is_ok(), "shallow nesting must still parse");
+    }
+
+    #[test]
+    fn non_finite_number_is_rejected() {
+        // 問20: 1e400 は f64 で +inf に丸められる。パーサで拒否する。
+        let r = parse("1e400");
+        assert!(r.is_err(), "overflowing number must be rejected");
+        assert!(r.unwrap_err().contains("non-finite"));
+        assert!(parse("-1e400").is_err());
+        // 通常の数は通る。
+        assert!(parse("1.5e3").is_ok());
     }
 }

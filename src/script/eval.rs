@@ -159,6 +159,12 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
         "scale" => {
             let child = build(req_child(v, "shape")?, depth + 1, budget)?;
             let s = req_f64(v, "s")?;
+            // s<=0 は距離場を破壊する (s=0→0除算でNaN, s<0→内外反転)。拒否する (問20)。
+            if s <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "scale factor must be > 0, got {s}"
+                )));
+            }
             Ok(child.scale(s))
         }
         "offset" => {
@@ -281,5 +287,23 @@ mod tests {
         let r = eval_scene(&big);
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("too large"));
+    }
+
+    #[test]
+    fn zero_or_negative_scale_is_rejected() {
+        // 問20: s<=0 は距離場を破壊するため拒否 (無音の不正メッシュを防ぐ)。
+        let z = r#"{"op":"scale","s":0.0,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(z).is_err(), "zero scale must be rejected");
+        let neg = r#"{"op":"scale","s":-2.0,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(neg).is_err(), "negative scale must be rejected");
+        let ok = r#"{"op":"scale","s":2.0,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(ok).is_ok(), "positive scale must pass");
+    }
+
+    #[test]
+    fn non_finite_param_is_rejected_via_parser() {
+        // 問20: 1e400 (→ +inf) を含むスクリプトはパーサ段で拒否される。
+        let r = eval_scene(r#"{"op":"sphere","r":1e400}"#);
+        assert!(r.is_err(), "non-finite radius must be rejected");
     }
 }
