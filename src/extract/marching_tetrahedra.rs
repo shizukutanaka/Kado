@@ -240,4 +240,27 @@ mod tests {
         let m = polygonize(&s, Vec3::new(2.0, 2.0, 2.0), Vec3::new(3.0, 3.0, 3.0), 8);
         assert!(m.triangles.is_empty());
     }
+
+    #[test]
+    fn polygonize_is_byte_deterministic() {
+        // 問17: 看板KPI「決定的出力」をエンドツーエンドで固定する。
+        // 独立した2回の抽出 (頂点統合に HashMap を使う) が **ビット単位で同一** の
+        // 頂点列・三角形列を生むことを保証 (将来の HashMap 順序依存の退行を検知)。
+        let model = Sdf::sphere(1.0)
+            .union(Sdf::cuboid(Vec3::splat(0.8)))
+            .difference(Sdf::cylinder(0.3, 2.0));
+        let a = polygonize(&model, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let b = polygonize(&model, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        assert_eq!(a.triangles, b.triangles, "triangle index lists must match");
+        assert_eq!(
+            a.vertices.len(),
+            b.vertices.len(),
+            "vertex counts must match"
+        );
+        for (va, vb) in a.vertices.iter().zip(&b.vertices) {
+            assert_eq!(va.x.to_bits(), vb.x.to_bits());
+            assert_eq!(va.y.to_bits(), vb.y.to_bits());
+            assert_eq!(va.z.to_bits(), vb.z.to_bits());
+        }
+    }
 }

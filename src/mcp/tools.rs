@@ -246,17 +246,54 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
         .map(|f| f as usize)
         .unwrap_or(64);
 
+    // MCP 書き込みポリシー (Plan リスク T / C9): プロジェクトdir限定・パストラバーサル拒否。
+    let safe = match sandbox_write_path(path) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(format!("rejected output path: {e}")),
+    };
+
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
-    match stl::write_binary(&mesh, std::path::Path::new(path)) {
+    match stl::write_binary(&mesh, &safe) {
         Ok(()) => ToolResult::text(format!(
-            "exported: {path} ({} triangles, manifold={})",
+            "exported: {} ({} triangles, manifold={})",
+            safe.display(),
             mesh.triangles.len(),
             mesh.is_edge_manifold()
         )),
         Err(e) => ToolResult::error(format!("export failed: {e}")),
     }
+}
+
+/// MCP 書き込みのサンドボックス検査 (問15)。プロジェクトdir (CWD) 配下の相対パスのみ許可し、
+/// 絶対パス・`..` によるパストラバーサル・ルート/プレフィックス脱出を拒否する。
+/// ファイル存在に依存しないため `canonicalize` は使わず、パス構造のみで判定する。
+fn sandbox_write_path(requested: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path};
+    if requested.trim().is_empty() {
+        return Err("empty output path".into());
+    }
+    let p = Path::new(requested);
+    if p.is_absolute() {
+        return Err(format!(
+            "absolute paths are not permitted (project-dir only): {requested}"
+        ));
+    }
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                return Err(format!(
+                    "path traversal (\"..\") is not permitted: {requested}"
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("rooted paths are not permitted: {requested}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(p.to_path_buf())
 }
 
 fn tool_eval(session: &Session, args: &Value) -> ToolResult {
@@ -352,4 +389,35 @@ fn base64_encode(data: &[u8]) -> String {
         });
     }
     String::from_utf8(out).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_accepts_project_relative_paths() {
+        assert!(sandbox_write_path("out.stl").is_ok());
+        assert!(sandbox_write_path("sub/dir/out.stl").is_ok());
+        assert!(sandbox_write_path("./out.stl").is_ok());
+    }
+
+    #[test]
+    fn sandbox_rejects_traversal_and_absolute() {
+        // 問15: パストラバーサル・絶対パスを拒否する。
+        assert!(sandbox_write_path("../escape.stl").is_err());
+        assert!(sandbox_write_path("a/../../escape.stl").is_err());
+        assert!(sandbox_write_path("/etc/passwd").is_err());
+        assert!(sandbox_write_path("/tmp/x.stl").is_err());
+        assert!(sandbox_write_path("").is_err());
+    }
+
+    #[test]
+    fn export_tool_rejects_unsafe_path() {
+        // 経路全体: run_script で正本を設定し export が脱出パスを拒否する。
+        let mut session = Session::new();
+        let args = json::obj([("path", json::s("../../escape.stl"))]);
+        let r = call_tool(&mut session, "export", &args);
+        assert!(r.is_error, "export must reject traversal path");
+    }
 }

@@ -155,6 +155,7 @@ pub fn parse(input: &str) -> Result<Value, String> {
     let mut p = Parser {
         src: input.as_bytes(),
         pos: 0,
+        depth: 0,
     };
     let v = p.parse_value()?;
     p.skip_ws();
@@ -164,9 +165,14 @@ pub fn parse(input: &str) -> Result<Value, String> {
     Ok(v)
 }
 
+/// ネスト深さの上限 (リソース上限・問16)。これを超える入力は拒否し、
+/// 再帰下降パーサのスタックオーバーフロー (= DoS) を防ぐ。
+const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -195,7 +201,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// 全ての再帰はここを通る。深さ上限を一点で強制する (問16)。
     fn parse_value(&mut self) -> Result<Value, String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!(
+                "nesting too deep (> {MAX_DEPTH}) at pos {}",
+                self.pos
+            ));
+        }
+        let r = self.parse_value_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_value_inner(&mut self) -> Result<Value, String> {
         self.skip_ws();
         match self.peek() {
             Some(b'"') => self.parse_string().map(Value::String),
@@ -399,5 +419,22 @@ mod tests {
         let v = obj([("key", s("val"))]);
         assert_eq!(v.get("key").and_then(|v| v.as_str()), Some("val"));
         assert!(v.get("missing").is_none());
+    }
+
+    #[test]
+    fn deeply_nested_input_is_rejected_not_overflowed() {
+        // 問16: 病的にネストした入力でスタックを溢れさせず、エラーで拒否する。
+        let depth = MAX_DEPTH + 50;
+        let src = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        let r = parse(&src);
+        assert!(r.is_err(), "over-deep input must be rejected");
+        assert!(r.unwrap_err().contains("nesting too deep"));
+    }
+
+    #[test]
+    fn moderately_nested_input_still_parses() {
+        let depth = 20;
+        let src = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        assert!(parse(&src).is_ok(), "shallow nesting must still parse");
     }
 }
