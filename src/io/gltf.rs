@@ -1,0 +1,219 @@
+//! glTF 2.0 binary (GLB) 書き出し。
+//!
+//! 決定的 (問5): リトルエンディアン・頂点/三角形はメッシュ順・固定 JSON 構造。
+//! 外部依存ゼロ (std のみ, ADR-003 / 問4)。
+//!
+//! STL と違い**インデックス付き**ジオメトリと境界 (accessor min/max) を持ち、
+//! ブラウザ・Windows 3D ビューア・Blender 等で直接閲覧できる。圧縮は使わない。
+
+use crate::extract::Mesh;
+use crate::mcp::json;
+
+// GLB マジック・チャンク種別 (u32 LE)。
+const MAGIC_GLTF: u32 = 0x4654_6C67; // "glTF"
+const CHUNK_JSON: u32 = 0x4E4F_534A; // "JSON"
+const CHUNK_BIN: u32 = 0x004E_4942; // "BIN\0"
+
+// glTF 定数。
+const COMPONENT_FLOAT: f64 = 5126.0; // f32
+const COMPONENT_UINT: f64 = 5125.0; // u32
+const MODE_TRIANGLES: f64 = 4.0;
+const TARGET_ARRAY_BUFFER: f64 = 34962.0; // 頂点属性
+const TARGET_ELEMENT_ARRAY: f64 = 34963.0; // インデックス
+
+/// メッシュを GLB バイト列にエンコードする。
+pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
+    // ── BIN バッファ: POSITION(f32×3) … その後 indices(u32) ──
+    let mut bin = Vec::with_capacity(mesh.vertices.len() * 12 + mesh.triangles.len() * 12);
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for v in &mesh.vertices {
+        let f = [v.x as f32, v.y as f32, v.z as f32];
+        for k in 0..3 {
+            if f[k] < min[k] {
+                min[k] = f[k];
+            }
+            if f[k] > max[k] {
+                max[k] = f[k];
+            }
+            bin.extend_from_slice(&f[k].to_le_bytes());
+        }
+    }
+    let pos_len = bin.len();
+    for t in &mesh.triangles {
+        for &i in t {
+            bin.extend_from_slice(&i.to_le_bytes());
+        }
+    }
+    let idx_len = bin.len() - pos_len;
+    // 空メッシュでは min/max が無限大のままなので 0 に正規化する。
+    if mesh.vertices.is_empty() {
+        min = [0.0; 3];
+        max = [0.0; 3];
+    }
+
+    let vcount = mesh.vertices.len() as f64;
+    let icount = (mesh.triangles.len() * 3) as f64;
+
+    // POSITION accessor は min/max が必須 (glTF 仕様)。
+    let minmax = |a: [f32; 3]| {
+        json::arr([
+            json::n(a[0] as f64),
+            json::n(a[1] as f64),
+            json::n(a[2] as f64),
+        ])
+    };
+
+    let doc = json::obj([
+        (
+            "asset",
+            json::obj([("version", json::s("2.0")), ("generator", json::s("kado"))]),
+        ),
+        ("scene", json::n(0.0)),
+        ("scenes", json::arr([json::obj([("nodes", json::arr([json::n(0.0)]))])])),
+        ("nodes", json::arr([json::obj([("mesh", json::n(0.0))])])),
+        (
+            "meshes",
+            json::arr([json::obj([(
+                "primitives",
+                json::arr([json::obj([
+                    ("attributes", json::obj([("POSITION", json::n(0.0))])),
+                    ("indices", json::n(1.0)),
+                    ("mode", json::n(MODE_TRIANGLES)),
+                ])]),
+            )])]),
+        ),
+        (
+            "buffers",
+            json::arr([json::obj([("byteLength", json::n(bin.len() as f64))])]),
+        ),
+        (
+            "bufferViews",
+            json::arr([
+                json::obj([
+                    ("buffer", json::n(0.0)),
+                    ("byteOffset", json::n(0.0)),
+                    ("byteLength", json::n(pos_len as f64)),
+                    ("target", json::n(TARGET_ARRAY_BUFFER)),
+                ]),
+                json::obj([
+                    ("buffer", json::n(0.0)),
+                    ("byteOffset", json::n(pos_len as f64)),
+                    ("byteLength", json::n(idx_len as f64)),
+                    ("target", json::n(TARGET_ELEMENT_ARRAY)),
+                ]),
+            ]),
+        ),
+        (
+            "accessors",
+            json::arr([
+                json::obj([
+                    ("bufferView", json::n(0.0)),
+                    ("componentType", json::n(COMPONENT_FLOAT)),
+                    ("count", json::n(vcount)),
+                    ("type", json::s("VEC3")),
+                    ("min", minmax(min)),
+                    ("max", minmax(max)),
+                ]),
+                json::obj([
+                    ("bufferView", json::n(1.0)),
+                    ("componentType", json::n(COMPONENT_UINT)),
+                    ("count", json::n(icount)),
+                    ("type", json::s("SCALAR")),
+                ]),
+            ]),
+        ),
+    ]);
+
+    // JSON チャンクは 4 バイト境界へスペース (0x20) パディング。
+    let mut json_bytes = doc.to_string().into_bytes();
+    while json_bytes.len() % 4 != 0 {
+        json_bytes.push(b' ');
+    }
+    // BIN チャンクは 4 バイト境界へゼロパディング (f32×3/u32 なので通常は整列済み)。
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+
+    let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+    let mut out = Vec::with_capacity(total);
+    // 12 バイトヘッダ。
+    out.extend_from_slice(&MAGIC_GLTF.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes()); // version 2
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    // JSON チャンク。
+    out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&CHUNK_JSON.to_le_bytes());
+    out.extend_from_slice(&json_bytes);
+    // BIN チャンク。
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(&CHUNK_BIN.to_le_bytes());
+    out.extend_from_slice(&bin);
+    out
+}
+
+/// メッシュを GLB ファイルに書き出す。
+pub fn write_glb(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::write(path, encode_glb(mesh))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Sdf, Vec3};
+    use crate::extract::polygonize;
+    use crate::mcp::json::parse;
+
+    fn sphere_mesh() -> Mesh {
+        polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 16)
+    }
+
+    #[test]
+    fn glb_header_is_valid() {
+        let bytes = encode_glb(&sphere_mesh());
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), MAGIC_GLTF);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2);
+        let total = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        assert_eq!(total, bytes.len(), "header total length must equal byte length");
+    }
+
+    #[test]
+    fn glb_chunks_are_consistent_and_aligned() {
+        let bytes = encode_glb(&sphere_mesh());
+        // JSON チャンク。
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), CHUNK_JSON);
+        assert_eq!(json_len % 4, 0, "JSON chunk must be 4-byte aligned");
+        let json_end = 20 + json_len;
+        // BIN チャンク。
+        let bin_len = u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
+        assert_eq!(
+            u32::from_le_bytes(bytes[json_end + 4..json_end + 8].try_into().unwrap()),
+            CHUNK_BIN
+        );
+        assert_eq!(bin_len % 4, 0, "BIN chunk must be 4-byte aligned");
+        assert_eq!(json_end + 8 + bin_len, bytes.len());
+    }
+
+    #[test]
+    fn glb_json_describes_mesh_accurately() {
+        let mesh = sphere_mesh();
+        let bytes = encode_glb(&mesh);
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let doc = parse(json_str).expect("GLB JSON chunk must be valid JSON");
+        // POSITION accessor の count が頂点数と一致。
+        let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
+        let pos_count = accessors[0].get("count").and_then(|c| c.as_f64()).unwrap();
+        assert_eq!(pos_count as usize, mesh.vertices.len());
+        // indices accessor の count が三角形数×3 と一致。
+        let idx_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap();
+        assert_eq!(idx_count as usize, mesh.triangles.len() * 3);
+    }
+
+    #[test]
+    fn glb_encoding_is_deterministic() {
+        let m = sphere_mesh();
+        assert_eq!(encode_glb(&m), encode_glb(&m));
+    }
+}

@@ -3,7 +3,7 @@
 //! コマンド:
 //!   version    バージョン表示
 //!   selftest   最小 SDF 評価の動作確認
-//!   export     [scene.json] <out.stl>  STL 出力 (JSON 省略時はデモモデル)
+//!   export     [scene.json] <out.stl|out.glb>  メッシュ出力 (.glb→glTF, 他→STL)
 //!   screenshot [scene.json] <out.png> [view]  PNG スクリーンショット出力
 //!   run        <scene.json>  メッシュ統計表示
 //!   check      <scene.json> [min_wall_mm] [max_overhang_deg]  DFM 検証
@@ -11,7 +11,7 @@
 
 use kado::core::{Sdf, Vec3};
 use kado::extract::polygonize;
-use kado::io::stl;
+use kado::io::{gltf, stl};
 use kado::mcp::server::run_stdio;
 use kado::render::{render, Camera};
 use kado::script::eval_scene;
@@ -56,7 +56,14 @@ fn main() {
                 eprintln!("mesh is empty — bounding box may not contain the shape");
                 std::process::exit(1);
             }
-            match stl::write_binary(&mesh, std::path::Path::new(&out)) {
+            // 拡張子 .glb → GLB、それ以外 → STL (問54)。
+            let path = std::path::Path::new(&out);
+            let write_res = if out.to_lowercase().ends_with(".glb") {
+                gltf::write_glb(&mesh, path)
+            } else {
+                stl::write_binary(&mesh, path)
+            };
+            match write_res {
                 Ok(()) => println!(
                     "exported {} ({} triangles, manifold={})",
                     out,

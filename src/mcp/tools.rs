@@ -2,7 +2,7 @@
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
-use crate::io::stl;
+use crate::io::{gltf, stl};
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
 use crate::script::eval_scene;
@@ -66,12 +66,14 @@ pub fn tool_list() -> Value {
         ),
         tool_def(
             "export",
-            "Export the current scene as a binary STL file. Returns the output file path.",
+            "Export the current scene to a mesh file. Format is chosen by the path extension: \
+             \".glb\" writes binary glTF 2.0 (indexed, viewable in browsers/Blender); \
+             any other extension writes binary STL. Returns the output file path.",
             &[
                 (
                     "path",
                     "string",
-                    "Output file path (default: kado-export.stl)",
+                    "Output file path; .glb for glTF, otherwise STL (default: kado-export.stl)",
                     false,
                 ),
                 (
@@ -292,9 +294,23 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
-    match stl::write_binary(&mesh, &safe) {
+    if mesh.triangles.is_empty() {
+        return ToolResult::error(
+            "mesh is empty — scene may be outside the bounding box; nothing exported",
+        );
+    }
+    // 拡張子 .glb → GLB (インデックス付き・閲覧容易)、それ以外 → STL (問54)。
+    let is_glb = path.to_lowercase().ends_with(".glb");
+    let write_res = if is_glb {
+        gltf::write_glb(&mesh, &safe)
+    } else {
+        stl::write_binary(&mesh, &safe)
+    };
+    let fmt = if is_glb { "GLB" } else { "STL" };
+    match write_res {
         Ok(()) => ToolResult::text(format!(
-            "exported: {} ({} triangles, manifold={})",
+            "exported {}: {} ({} triangles, manifold={})",
+            fmt,
             safe.display(),
             mesh.triangles.len(),
             mesh.is_edge_manifold()
