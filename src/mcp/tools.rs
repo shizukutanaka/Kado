@@ -56,6 +56,12 @@ pub fn tool_list() -> Value {
                     "Image height in pixels (default: 512)",
                     false,
                 ),
+                (
+                    "resolution",
+                    "integer",
+                    "Mesh resolution cells/axis (default: 48; increase for smoother output)",
+                    false,
+                ),
             ],
         ),
         tool_def(
@@ -241,10 +247,11 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("iso");
     let width = arg_dim(args, "width", 512);
     let height = arg_dim(args, "height", 512);
+    let res = arg_resolution(args, 48);
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
-    let mesh = polygonize(scene, lo_b, hi_b, 48);
+    let mesh = polygonize(scene, lo_b, hi_b, res);
     if mesh.triangles.is_empty() {
         return ToolResult::error("mesh is empty — scene may be outside the bounding box");
     }

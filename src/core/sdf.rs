@@ -40,6 +40,8 @@ pub enum Sdf {
     Difference(Box<Sdf>, Box<Sdf>),
     /// 多項式 smooth union。`k` はブレンド幅 (>0)。
     SmoothUnion(Box<Sdf>, Box<Sdf>, f64),
+    /// 多項式 smooth intersection。`k` はブレンド幅 (>0)。
+    SmoothIntersection(Box<Sdf>, Box<Sdf>, f64),
     /// 多項式 smooth difference。`k` はブレンド幅 (>0)。
     SmoothDifference(Box<Sdf>, Box<Sdf>, f64),
 
@@ -132,6 +134,13 @@ impl Sdf {
                 let db = b.eval(p);
                 let h = clamp(0.5 + 0.5 * (db - da) / k, 0.0, 1.0);
                 mix(db, da, h) - k * h * (1.0 - h)
+            }
+
+            Sdf::SmoothIntersection(a, b, k) => {
+                let da = a.eval(p);
+                let db = b.eval(p);
+                let h = clamp(0.5 - 0.5 * (db - da) / k, 0.0, 1.0);
+                mix(db, da, h) + k * h * (1.0 - h)
             }
 
             Sdf::SmoothDifference(a, b, k) => {
@@ -228,11 +237,17 @@ impl Sdf {
                 let (lo, hi) = union_box(a.aabb(), b.aabb());
                 (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
             }
-            // 積: 子ボックスの積集合 (重なり)。
+            // 積: 子ボックスの積集合 (重なり)。smooth は k 分の膨らみを許容。
             Sdf::Intersection(a, b) => {
                 let (alo, ahi) = a.aabb();
                 let (blo, bhi) = b.aabb();
                 (alo.max(blo), ahi.min(bhi))
+            }
+            Sdf::SmoothIntersection(a, b, k) => {
+                let (alo, ahi) = a.aabb();
+                let (blo, bhi) = b.aabb();
+                let e = Vec3::splat(*k);
+                (alo.max(blo) - e, ahi.min(bhi) + e)
             }
             // 差 a-b ⊆ a。smooth は k 分の膨らみを許容。
             Sdf::Difference(a, _) => a.aabb(),
@@ -317,6 +332,9 @@ impl Sdf {
     }
     pub fn smooth_union(self, other: Sdf, k: f64) -> Sdf {
         Sdf::SmoothUnion(Box::new(self), Box::new(other), k)
+    }
+    pub fn smooth_intersection(self, other: Sdf, k: f64) -> Sdf {
+        Sdf::SmoothIntersection(Box::new(self), Box::new(other), k)
     }
     pub fn smooth_difference(self, other: Sdf, k: f64) -> Sdf {
         Sdf::SmoothDifference(Box::new(self), Box::new(other), k)
@@ -521,6 +539,36 @@ mod tests {
             );
             assert!(
                 (a.clone().difference(b.clone()).eval(p) - a.eval(p).max(-b.eval(p))).abs() < EPS
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_intersection_is_upper_bound_of_hard_intersection() {
+        // smooth_intersection(a, b, k) >= intersection(a, b) everywhere (blend region "extends" into each shape).
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(0.5, 0.0, 0.0));
+        let hard = a.clone().intersection(b.clone());
+        let smooth = a.smooth_intersection(b, 0.3);
+        for p in grid() {
+            assert!(
+                smooth.eval(p) >= hard.eval(p) - 1e-12,
+                "smooth_intersection must be >= hard at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_intersection_is_lower_bound_of_hard_union() {
+        // smooth_intersection converges to hard intersection as k→0.
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(0.5, 0.0, 0.0));
+        let hard = a.clone().intersection(b.clone());
+        let tight = a.smooth_intersection(b, 1e-6);
+        for p in grid() {
+            assert!(
+                (tight.eval(p) - hard.eval(p)).abs() < 1e-4,
+                "smooth_intersection(k→0) must converge to hard at {p:?}"
             );
         }
     }

@@ -402,3 +402,41 @@
 > 総括: v8–v10はAIエージェントがシーン状態を検査・読み返せる `get_scene` ツールを追加し（問26）、
 > `shell` の thickness バリデーション欠落を修正（問27）、すべてのプリミティブパラメータに
 > 正値強制を適用して input sanitization の一貫性を完成させた（問28）。テスト数 68→72。
+
+---
+
+## 問29 — `screenshot` の mesh quality が fixed (res=48)、`export`/`validate` との非対称
+**問**: `export` と `validate` は `resolution` 引数でメッシュ品質を制御できる。
+`screenshot` は image dimensions (`width`, `height`) を変更できるが、
+polygonize の `res` は 48 固定。AIが最終成果物確認のために高品質なスクリーンショットを
+要求したい場面 (res=96 で滑らかな表面) で制御手段がない。これは API の対称性の欠如では？
+
+**結論 → 反映**:
+- `screenshot` ツールの schema に `resolution` 引数 (integer, default 48) を追加。
+- `tool_screenshot` 内で `arg_resolution(args, 48)` を使用し polygonize に渡す。
+- 既存の `arg_resolution` の境界チェック (1–256) が自動適用される。
+
+## 問30 — smooth CSG の三位一体が不完全 (`SmoothIntersection` 欠落)
+**問**: `SmoothUnion` と `SmoothDifference` は実装済みだが、`SmoothIntersection` がない。
+IQ の smooth CSG primitives は union/intersection/difference の3演算をセットとして定義する。
+intersection の smooth 版だけ欠けているのはツールセットの一貫性の欠如では？
+AI が「スムーズな交差」を要求したとき `unknown op: "smooth_intersection"` で失敗する。
+
+**結論 → 反映**:
+- `Sdf::SmoothIntersection(Box<Sdf>, Box<Sdf>, f64)` enum バリアントを追加。
+- `eval` に IQ の smooth intersection 式を実装: `h = clamp(0.5 - 0.5*(db-da)/k, 0,1); mix(db,da,h) + k*h*(1-h)`。
+- `aabb` に追加 (積集合 + k の余白)。
+- `smooth_intersection()` コンストラクタと `eval.rs` の `"smooth_intersection"` ブランチ追加。
+- テスト: `smooth_intersection_is_upper_bound_of_hard_intersection`、`smooth_intersection_is_lower_bound_of_hard_union` (収束性)、`smooth_intersection_via_script`。
+
+## 反映サマリ v8–v11
+| 問 | 種別 | コードへの主な反映 | 固定テスト |
+|----|------|--------------------|-----------|
+| 26 | 自己修正ループの欠陥 | `Session::script` + `get_scene` ツール | `get_scene_round_trip` |
+| 27 | バリデーション統一 | `shell thickness <= 0` 拒否 | `zero_or_negative_shell_thickness_is_rejected` |
+| 28 | プリミティブ次元バリデーション | `req_positive_f64`, 全プリミティブ正値強制 | `zero_or_negative_primitive_dimensions_are_rejected` |
+| 29 | API 対称性 | `screenshot` に `resolution` 引数追加 | (既存 `resolution_is_clamped_to_safe_range` 継承) |
+| 30 | SDF 機能完全性 | `SmoothIntersection` 追加 (eval/aabb/script/コンストラクタ) | `smooth_intersection_is_*`, `smooth_intersection_via_script` |
+
+> 総括: v8–v11はAI自己修正ループの完全化（問26）、input sanitization の系統化（問27/28）、
+> API 対称性の回復（問29）、smooth CSG の三位一体完成（問30）を実現した。テスト数 68→75。

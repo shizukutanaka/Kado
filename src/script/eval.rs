@@ -12,7 +12,8 @@
 //!
 //! 演算子一覧 (op 文字列):
 //! プリミティブ: sphere, cuboid, cylinder, torus, cone, capsule, rounded_box
-//! ブーリアン:   union, intersection, difference, smooth_union, smooth_difference
+//! ブーリアン:   union, intersection, difference,
+//!               smooth_union, smooth_intersection, smooth_difference
 //! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z
 
 use crate::core::{Sdf, Vec3};
@@ -163,6 +164,12 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             let b = build(req_child(v, "b")?, depth + 1, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
             Ok(a.smooth_union(b, k))
+        }
+        "smooth_intersection" => {
+            let a = build(req_child(v, "a")?, depth + 1, budget)?;
+            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let k = opt_f64(v, "k").unwrap_or(0.3);
+            Ok(a.smooth_intersection(b, k))
         }
         "smooth_difference" => {
             let a = build(req_child(v, "a")?, depth + 1, budget)?;
@@ -394,6 +401,21 @@ mod tests {
         assert!(eval_scene(neg).is_err(), "negative thickness must be rejected");
         let ok = r#"{"op":"shell","thickness":0.1,"shape":{"op":"sphere","r":1.0}}"#;
         assert!(eval_scene(ok).is_ok(), "positive thickness must pass");
+    }
+
+    #[test]
+    fn smooth_intersection_via_script() {
+        // 問30: smooth_intersection が hard intersection の上界となることを確認する。
+        let src = r#"{
+          "op": "smooth_intersection", "k": 0.3,
+          "a": {"op": "sphere", "r": 1.0},
+          "b": {"op": "sphere", "r": 1.0}
+        }"#;
+        let smooth = eval_scene(src).unwrap();
+        // 両球の重なりは自己交差球→ 中心は負。
+        assert!(smooth.eval(Vec3::ZERO) < 0.0, "overlap center must be inside");
+        // 片方だけ(遠方)は正。
+        assert!(smooth.eval(Vec3::new(3.0, 0.0, 0.0)) > 0.0, "far point must be outside");
     }
 
     #[test]
