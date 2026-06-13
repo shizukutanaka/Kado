@@ -30,6 +30,11 @@ pub enum Sdf {
     Capsule { half_height: f64, radius: f64 },
     /// 角丸直方体。`half` 半幅, `radius` フィレット半径。
     RoundedBox { half: Vec3, radius: f64 },
+    /// 楕円体。`radii` は各軸の半径 (半軸長, すべて > 0)。
+    /// 内外の符号は厳密 (内部 (x/a)²+(y/b)²+(z/c)² < 1)、軸上の距離も厳密だが、
+    /// 軸外の距離値は IQ 近似 (Lipschitz ≈ 1)。非一様スケールと違い距離場が壊れず
+    /// 水密抽出を保てる (符号が厳密なため)。
+    Ellipsoid { radii: Vec3 },
 
     // ── ブーリアン (場の代数。問11: 抽出健全性は別保証) ──────────────────────
     /// 和 (min)。
@@ -127,6 +132,23 @@ impl Sdf {
             Sdf::RoundedBox { half, radius } => {
                 let q = p.abs() - *half;
                 q.max_scalar(0.0).length() + q.max_component().min(0.0) - radius
+            }
+
+            Sdf::Ellipsoid { radii } => {
+                // IQ 近似楕円体距離。符号と軸上距離は厳密、軸外は近似。
+                let k0 = Vec3::new(p.x / radii.x, p.y / radii.y, p.z / radii.z).length();
+                let k1 = Vec3::new(
+                    p.x / (radii.x * radii.x),
+                    p.y / (radii.y * radii.y),
+                    p.z / (radii.z * radii.z),
+                )
+                .length();
+                if k1 == 0.0 {
+                    // 中心 (p=0)。最近接表面距離は最小半軸 (内部なので負)。
+                    -radii.x.min(radii.y).min(radii.z)
+                } else {
+                    k0 * (k0 - 1.0) / k1
+                }
             }
 
             Sdf::Union(a, b) => a.eval(p).min(b.eval(p)),
@@ -241,6 +263,7 @@ impl Sdf {
                 let e = *half + Vec3::splat(*radius);
                 (-e, e)
             }
+            Sdf::Ellipsoid { radii } => (-*radii, *radii),
             // 和: 子ボックスの和集合。smooth は k 分だけ膨らみうるので余裕を足す。
             Sdf::Union(a, b) => union_box(a.aabb(), b.aabb()),
             Sdf::SmoothUnion(a, b, k) => {
@@ -337,6 +360,10 @@ impl Sdf {
     }
     pub fn rounded_box(half: Vec3, radius: f64) -> Sdf {
         Sdf::RoundedBox { half, radius }
+    }
+    /// 各軸の半径 `radii` を持つ楕円体。
+    pub fn ellipsoid(radii: Vec3) -> Sdf {
+        Sdf::Ellipsoid { radii }
     }
 
     pub fn union(self, other: Sdf) -> Sdf {
@@ -527,6 +554,34 @@ mod tests {
         let rb = Sdf::rounded_box(Vec3::splat(1.0), 0.2);
         // 面中心 (1.0, 0, 0) は辺長1の直方体のエッジからradius分外 → 表面
         assert!((rb.eval(Vec3::new(1.2, 0.0, 0.0))).abs() < EPS);
+    }
+
+    #[test]
+    fn ellipsoid_sign_and_axis_distances() {
+        // 問53: 符号は厳密、軸上の距離は厳密。
+        let e = Sdf::ellipsoid(Vec3::new(2.0, 1.0, 0.5));
+        // 中心は内部 (負)。最小半軸 0.5 → 距離 -0.5。
+        assert!((e.eval(Vec3::ZERO) - (-0.5)).abs() < EPS, "center: {}", e.eval(Vec3::ZERO));
+        // 軸上の表面点は 0。
+        assert!(e.eval(Vec3::new(2.0, 0.0, 0.0)).abs() < EPS, "x surface");
+        assert!(e.eval(Vec3::new(0.0, 1.0, 0.0)).abs() < EPS, "y surface");
+        assert!(e.eval(Vec3::new(0.0, 0.0, 0.5)).abs() < EPS, "z surface");
+        // 軸上の外側距離は厳密 (x=3 → 距離 1)。
+        assert!((e.eval(Vec3::new(3.0, 0.0, 0.0)) - 1.0).abs() < EPS, "x exterior");
+        // 内側の符号。
+        assert!(e.eval(Vec3::new(1.0, 0.0, 0.0)) < 0.0, "inside x");
+        // 軸外の点でも符号は厳密: (1.5, 0.5, 0) は (1.5/2)²+(0.5/1)² = 0.5625+0.25 < 1 → 内部。
+        assert!(e.eval(Vec3::new(1.5, 0.5, 0.0)) < 0.0, "off-axis inside");
+        // (2, 0.9, 0): (1)²+(0.81) > 1 → 外部。
+        assert!(e.eval(Vec3::new(2.0, 0.9, 0.0)) > 0.0, "off-axis outside");
+    }
+
+    #[test]
+    fn ellipsoid_aabb_matches_radii() {
+        let e = Sdf::ellipsoid(Vec3::new(2.0, 1.0, 0.5));
+        let (lo, hi) = e.aabb();
+        assert_eq!(hi, Vec3::new(2.0, 1.0, 0.5));
+        assert_eq!(lo, Vec3::new(-2.0, -1.0, -0.5));
     }
 
     #[test]

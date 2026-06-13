@@ -93,6 +93,10 @@ fn eval_set() -> Vec<Task> {
                 "b":{"op":"rotate_x","angle":90,"shape":{"op":"cylinder","r":0.2,"h":2.0}}}"#,
         },
         Task {
+            name: "egg (ellipsoid)",
+            script: r#"{"op":"ellipsoid","x":0.7,"y":0.7,"z":1.1}"#,
+        },
+        Task {
             name: "mirrored fin pair",
             script: r#"{"op":"mirror_x",
                 "shape":{"op":"translate","x":0.7,"y":0,"z":0,

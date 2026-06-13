@@ -280,6 +280,7 @@ mod tests {
             ),
             ("capsule", Sdf::capsule(0.8, 0.4)),
             ("rounded_box", Sdf::rounded_box(Vec3::splat(1.0), 0.3)),
+            ("ellipsoid", Sdf::ellipsoid(Vec3::new(1.5, 1.0, 0.6))),
             (
                 "union",
                 Sdf::sphere(1.0).union(Sdf::cuboid(Vec3::splat(0.9))),

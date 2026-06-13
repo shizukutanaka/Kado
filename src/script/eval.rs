@@ -11,7 +11,7 @@
 //! ```
 //!
 //! 演算子一覧 (op 文字列):
-//! プリミティブ: sphere, cuboid, cylinder, torus, cone, capsule, rounded_box
+//! プリミティブ: sphere, cuboid, cylinder, torus, cone, capsule, rounded_box, ellipsoid
 //! ブーリアン:   union, intersection, difference,
 //!               smooth_union, smooth_intersection, smooth_difference
 //! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z,
@@ -142,6 +142,29 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             }
             let r = req_positive_f64(v, "r")?;
             Ok(Sdf::rounded_box(Vec3::new(x, y, z), r))
+        }
+        "ellipsoid" => {
+            // 各軸の半径。"s" で一様 (=球) 指定も可。すべて > 0。
+            let x = opt_f64(v, "x").or_else(|| opt_f64(v, "s"));
+            let x = match x {
+                Some(x) if x > 0.0 => x,
+                Some(x) => {
+                    return Err(ScriptError::new(format!(
+                        "ellipsoid radius \"x\" must be > 0, got {x}"
+                    )))
+                }
+                None => return Err(ScriptError::new("missing or non-numeric field \"x\"")),
+            };
+            let y = opt_f64(v, "y").or_else(|| opt_f64(v, "s")).unwrap_or(x);
+            let z = opt_f64(v, "z").or_else(|| opt_f64(v, "s")).unwrap_or(x);
+            for (n, val) in [("y", y), ("z", z)] {
+                if val <= 0.0 {
+                    return Err(ScriptError::new(format!(
+                        "ellipsoid radius \"{n}\" must be > 0, got {val}"
+                    )));
+                }
+            }
+            Ok(Sdf::ellipsoid(Vec3::new(x, y, z)))
         }
 
         // ── ブーリアン ────────────────────────────────────────────────────────
@@ -405,6 +428,23 @@ mod tests {
         assert!(eval_scene(r#"{"op":"rounded_box","x":0.0,"r":0.1}"#).is_err(), "x=0 rounded_box");
         assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.0}"#).is_err(), "r=0 rounded_box");
         assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.1}"#).is_ok());
+
+        assert!(eval_scene(r#"{"op":"ellipsoid","x":0.0,"y":1.0,"z":1.0}"#).is_err(), "x=0 ellipsoid");
+        assert!(eval_scene(r#"{"op":"ellipsoid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(), "y<0 ellipsoid");
+    }
+
+    #[test]
+    fn ellipsoid_via_script() {
+        // 問53: 各軸半径指定。
+        let s = eval_scene(r#"{"op":"ellipsoid","x":2.0,"y":1.0,"z":0.5}"#).unwrap();
+        let direct = Sdf::ellipsoid(Vec3::new(2.0, 1.0, 0.5));
+        let p = Vec3::new(0.7, 0.3, 0.2);
+        assert!((s.eval(p) - direct.eval(p)).abs() < 1e-12);
+        // "s" で一様指定 → 球相当。
+        let uni = eval_scene(r#"{"op":"ellipsoid","s":1.5}"#).unwrap();
+        assert!(uni.eval(Vec3::new(1.5, 0.0, 0.0)).abs() < 1e-12, "uniform ellipsoid surface");
+        // x 欠落はエラー。
+        assert!(eval_scene(r#"{"op":"ellipsoid","y":1.0,"z":1.0}"#).is_err());
     }
 
     #[test]

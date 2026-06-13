@@ -416,6 +416,9 @@ capsule       {"op":"capsule","h":0.5,"r":0.3}
 rounded_box   {"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}
               x,y,z (req): half-extents > 0; r (req): corner radius > 0
 
+ellipsoid     {"op":"ellipsoid","x":2.0,"y":1.0,"z":0.5}
+              x,y,z (req): per-axis radii > 0 (or "s" for uniform = sphere)
+
 ## Boolean Operations
 
 union         {"op":"union","a":<sdf>,"b":<sdf>}
