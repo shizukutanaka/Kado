@@ -649,3 +649,74 @@ CLI の `run` と `check` は解像度を制御する手段がなく、常に re
 | 40 | sampling_box の反転ボックス正規化 |
 
 > 総括: v8–v18は問26〜40の15課題を実装で解決し、テスト数 68→81 に達した。
+
+---
+
+## 問41 — `render_is_deterministic` がハードコード索引 `presets[6]` で iso を取得
+**問**: 問33 で `tools.rs`/`cli` のカメラ取得を「名前検索」に直したが、
+テスト `render_is_deterministic` だけ `Camera::presets(...)[6]` のまま残っていた。
+プリセット順序を変えるとテストが別視点を検証する沈黙退行のリスク。
+
+**修正**: `presets.iter().find(|(n,_)| *n == "iso")` に統一。
+
+## 問42 — (欠番: 問45 に統合)
+
+## 問45 — `top`/`bottom` カメラが視線∥up で縮退しブランク画像
+**問**: `Camera::presets` は全視点で `up=(0,0,1)`。しかし `top`(eye=+z)/`bottom`(eye=-z)
+は視線方向が z 軸と平行で、`look_at` 内の `cross(forward, up)` がゼロベクトルになり
+right/up 基底が縮退する。結果、上面・底面ビューが背景一色のブランク画像になっていた。
+
+**修正**: `top`/`bottom` のみ `up=(0,1,0)` を使い非縮退な基底を保証する。
+テスト `top_and_bottom_views_render_non_blank` が両視点で前景画素が出ることを確認。
+
+## 問46 — `run_script` が EMPTY_MESH でも "scene updated" と返す
+**問**: `run_script` は検証レポートのサマリは付けるが先頭は常に "scene updated"。
+EMPTY_MESH 等のエラーコードが目立たず、AI 自己修正ループが成功と誤認しうる。
+
+**修正**: `Severity::Error` のコードがあれば "scene updated (check issues: EMPTY_MESH)"
+のようにプレフィックスへ明示。`is_error=false` は維持 (スクリプト自体は有効)。
+
+## 問47 — CLI `check` がファイル読み込み・評価を重複実装
+**問**: `run` は `load_scene_file`/`parse_scene` ヘルパを使うが、`check` だけ
+`std::fs::read_to_string` と `eval_scene` のエラー処理をインライン重複していた。
+
+**修正**: `check` も同ヘルパに統一。エラーメッセージとフロー制御を一箇所へ集約。
+
+## 問48 — CLI `export` が空メッシュでも無音で STL を書き出す
+**問**: `screenshot` は `triangles.is_empty()` で早期終了するが、`export` は空メッシュでも
+ヘッダのみの STL を「成功」として書き出していた。利用者は空ファイルに気づけない。
+
+**修正**: `export` も空メッシュを検出し、境界拡大ヒント付きで非ゼロ終了。
+
+## 問49 — JSON パーサがマルチバイト UTF-8 を破壊 (実害バグ)
+**問**: `parse_string` が非エスケープ文字を `s.push(c as char)` で追加していた。
+`c: u8` に対する `c as char` は Latin-1 解釈で、マルチバイト UTF-8 (日本語・絵文字・
+アクセント記号) の各バイトが個別の誤コードポイントへ化ける。MCP は UTF-8 JSON を
+送るため、非 ASCII を含むスクリプト/パラメータが無音で文字化けしていた。
+
+**修正**: リードバイトから UTF-8 シーケンス長を判定し (`utf8_seq_len`)、
+`self.src` (&str 由来で正当な UTF-8) を文字単位でコピー。
+テスト `multibyte_utf8_strings_roundtrip` が日本語・絵文字・アクセント記号・
+UTF-8 オブジェクトキー/値のラウンドトリップを検証。
+
+## 問50 — JSON リテラル `true`/`false`/`null` を盲目的に索引前進
+**問**: 先頭1文字 (`t`/`f`/`n`) を見て `pos` を 4/5/4 だけ進めるだけで、後続バイトを
+照合していなかった。`nXYZ` を `null` として無音受理し、末尾付近では `pos` が
+`src.len()` を越えうる退行があった。
+
+**修正**: `parse_literal` でキーワード全バイトを照合し、不一致・末尾越えは明示エラー。
+テスト `malformed_literals_are_rejected` で誤綴り・途中切れ・配列内不正リテラルを検証。
+
+## 反映サマリ v19–v22
+| 問 | 実装 |
+|----|------|
+| 41 | テストのカメラ取得を名前検索へ統一 |
+| 45 | top/bottom カメラの縮退を up=(0,1,0) で回避 |
+| 46 | run_script がエラーコードをプレフィックス表示 |
+| 47 | CLI check をヘルパに統一 |
+| 48 | CLI export の空メッシュ検出 |
+| 49 | JSON パーサのマルチバイト UTF-8 破壊修正 (実害) |
+| 50 | JSON リテラルの厳密照合 |
+
+> 総括: v19–v22は問41〜50の9課題を実装で解決し、テスト数 81→85 に達した。
+> 特に問49 (UTF-8 破壊) は非 ASCII 入力で無音の文字化けを起こす実害バグだった。
