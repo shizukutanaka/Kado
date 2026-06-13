@@ -6,7 +6,7 @@ use crate::io::stl;
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
 use crate::script::eval_scene;
-use crate::verify::validate;
+use crate::verify::{validate, Severity};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
 // polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
@@ -364,7 +364,24 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     let report = validate(&mesh, 0.0, 0.0);
     session.scene = sdf;
     session.script = Some(src);
-    ToolResult::text(format!("scene updated — {}", report.summary()))
+    // 問46: エラーがある場合はコードを明示してAI自己修正ループを補助する。
+    // is_error=false のまま (スクリプト自体は有効) だが問題を可視化する。
+    let prefix = if report.is_ok() {
+        "scene updated".to_string()
+    } else {
+        let codes: Vec<&str> = report
+            .issues
+            .iter()
+            .filter(|e| e.severity == Severity::Error)
+            .map(|e| e.code)
+            .collect();
+        if codes.is_empty() {
+            "scene updated".to_string()
+        } else {
+            format!("scene updated (check issues: {})", codes.join(", "))
+        }
+    };
+    ToolResult::text(format!("{prefix} — {}", report.summary()))
 }
 
 fn tool_help() -> ToolResult {
@@ -567,5 +584,39 @@ mod tests {
             1
         );
         assert_eq!(arg_dim(&json::obj([]), "width", 512), 512);
+        // 負の値も安全に下限 1 へ丸められること。
+        assert_eq!(
+            arg_dim(&json::obj([("width", json::n(-10.0))]), "width", 512),
+            1
+        );
+    }
+
+    #[test]
+    fn run_script_surfaces_empty_mesh_issue_code() {
+        // 問46: スクリプト自体は有効だが mesh が空になる場合、
+        // is_error=false のまま応答テキストに EMPTY_MESH コードを含むこと。
+        // AI 自己修正ループが "scene updated" を成功とみなさないようにする。
+        let mut s = Session::new();
+        // offset(-100) で isosurface が sampling box の外に出て EMPTY_MESH になる。
+        let args = json::obj([(
+            "script",
+            json::s(r#"{"op":"offset","amount":-100.0,"shape":{"op":"sphere","r":1.0}}"#),
+        )]);
+        let r = call_tool(&mut s, "run_script", &args);
+        // スクリプト自体は有効なので is_error=false。
+        assert!(!r.is_error, "valid script must not set is_error");
+        let text = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text.contains("EMPTY_MESH"),
+            "run_script must surface EMPTY_MESH in response, got: {text}"
+        );
+        // "scene updated" は依然として含まれる (セッションは更新済み)。
+        assert!(
+            text.contains("scene updated"),
+            "session must still be marked as updated: {text}"
+        );
     }
 }

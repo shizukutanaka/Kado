@@ -35,18 +35,23 @@ impl Camera {
     /// 標準 6 視点 + 等角のプリセットを返す (Plan §4 Phase 4)。
     ///
     /// モデルの BBox を渡すと自動的に eye・target を配置する。
+    ///
+    /// 注意 (問45): "top"/"bottom" の視線方向は Z 軸と平行なため、共通の
+    /// up=(0,0,1) を使うと look_at の cross(f, up) がゼロベクトルになり縮退する。
+    /// これらの視点だけ up=(0,1,0) を用いて非縮退な行列を保証する。
     pub fn presets(lo: Vec3, hi: Vec3) -> Vec<(&'static str, Camera)> {
         let center = (lo + hi) * 0.5;
         let diag = (hi - lo).length();
         let dist = diag * 1.8;
         let fov = std::f64::consts::FRAC_PI_4;
-        let up = Vec3::new(0.0, 0.0, 1.0);
+        let up_z = Vec3::new(0.0, 0.0, 1.0); // 横向き視点の上方向
+        let up_y = Vec3::new(0.0, 1.0, 0.0); // top/bottom: eye ∥ z → up_y で縮退回避 (問45)
         let light = Vec3::new(0.577, 0.577, 0.577); // 等方
         let diffuse = [220u8, 210, 200];
         let ambient = 0.25;
         let bg = [40u8, 44, 52];
 
-        let cam = |eye: Vec3| Camera {
+        let cam = |eye: Vec3, up: Vec3| Camera {
             eye: center + eye * (dist / eye.length()),
             target: center,
             up,
@@ -57,13 +62,13 @@ impl Camera {
             ambient,
         };
         vec![
-            ("front", cam(Vec3::new(0.0, -1.0, 0.0))),
-            ("back", cam(Vec3::new(0.0, 1.0, 0.0))),
-            ("right", cam(Vec3::new(1.0, 0.0, 0.0))),
-            ("left", cam(Vec3::new(-1.0, 0.0, 0.0))),
-            ("top", cam(Vec3::new(0.0, 0.0, 1.0))),
-            ("bottom", cam(Vec3::new(0.0, 0.0, -1.0))),
-            ("iso", cam(Vec3::new(0.707, -0.707, 0.707))),
+            ("front", cam(Vec3::new(0.0, -1.0, 0.0), up_z)),
+            ("back", cam(Vec3::new(0.0, 1.0, 0.0), up_z)),
+            ("right", cam(Vec3::new(1.0, 0.0, 0.0), up_z)),
+            ("left", cam(Vec3::new(-1.0, 0.0, 0.0), up_z)),
+            ("top", cam(Vec3::new(0.0, 0.0, 1.0), up_y)),
+            ("bottom", cam(Vec3::new(0.0, 0.0, -1.0), up_y)),
+            ("iso", cam(Vec3::new(0.707, -0.707, 0.707), up_z)),
         ]
     }
 }
@@ -260,12 +265,32 @@ mod tests {
 
     #[test]
     fn render_is_deterministic() {
+        // 問41: インデックスではなく名前でカメラを取得し順序変更に耐える。
         let mesh = sphere_mesh();
         let (lo, hi) = mesh.bounds().unwrap();
-        let (_, cam) = &Camera::presets(lo, hi)[6]; // iso
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
         assert_eq!(
             render(&mesh, cam, 32, 32).pixels,
             render(&mesh, cam, 32, 32).pixels
         );
+    }
+
+    #[test]
+    fn top_and_bottom_views_render_non_blank() {
+        // 問45: "top"/"bottom" は eye ∥ up_z だと look_at が縮退しブランク画像になる。
+        // up_y に切り替えることで非縮退な行列を得て、球が写ることを確認する。
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        for name in &["top", "bottom"] {
+            let (_, cam) = presets.iter().find(|(n, _)| n == name).unwrap();
+            let img = render(&mesh, cam, 32, 32);
+            let has_foreground = img.pixels.chunks(3).any(|c| c != &cam.bg);
+            assert!(
+                has_foreground,
+                "{name} view must render non-blank (degenerate look_at if up ∥ forward)"
+            );
+        }
     }
 }
