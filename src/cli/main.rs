@@ -92,7 +92,8 @@ fn main() {
             let cam = presets
                 .iter()
                 .find(|(n, _)| *n == view.as_str())
-                .unwrap_or(&presets[6])
+                .or_else(|| presets.iter().find(|(n, _)| *n == "iso"))
+                .unwrap_or(&presets[0])
                 .1
                 .clone();
             let img = render(&mesh, &cam, 512, 512);

@@ -260,7 +260,8 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let cam = presets
         .iter()
         .find(|(n, _)| *n == view)
-        .unwrap_or(&presets[6])
+        .or_else(|| presets.iter().find(|(n, _)| *n == "iso"))
+        .unwrap_or(&presets[0])
         .1
         .clone();
 

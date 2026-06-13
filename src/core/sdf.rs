@@ -596,6 +596,37 @@ mod tests {
     }
 
     #[test]
+    fn smooth_difference_is_upper_bound_of_hard_difference() {
+        // smooth_difference(a, b, k) >= difference(a, b) everywhere (blend region extends).
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(0.6);
+        let hard = a.clone().difference(b.clone());
+        let soft = a.smooth_difference(b, 0.3);
+        for p in grid() {
+            assert!(
+                soft.eval(p) >= hard.eval(p) - EPS,
+                "smooth_diff must be >= hard at {p:?}: soft={} hard={}",
+                soft.eval(p),
+                hard.eval(p)
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_difference_converges_to_hard_as_k_shrinks() {
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(0.6);
+        let hard = a.clone().difference(b.clone());
+        let soft = a.smooth_difference(b, 1e-6);
+        for p in grid() {
+            assert!(
+                (soft.eval(p) - hard.eval(p)).abs() < 1e-4,
+                "smooth_diff(k→0) must converge to hard at {p:?}"
+            );
+        }
+    }
+
+    #[test]
     fn translate_shifts_field() {
         let s = Sdf::sphere(1.0);
         let t = Sdf::sphere(1.0).translate(Vec3::new(2.0, 0.0, 0.0));

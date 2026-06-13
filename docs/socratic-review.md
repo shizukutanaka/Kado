@@ -495,3 +495,37 @@ CI/CD パイプラインで `kado export scene.json out.stl` を呼べない。
 | 32 | JSON エスケープ一貫性 | `escape()` 関数の制御文字処理を `Display` に揃える |
 
 > 総括: v8–v13は7課題 (問26〜32) を実装で解決し、テスト数 68→76 に伸ばした。
+
+---
+
+## 問33 — カメラプリセットのデフォルトフォールバックがインデックス指定で脆弱
+**問**: `screenshot` ツールと CLI の `screenshot` コマンドは、無効なビュー名が渡されたときに
+`presets[6]` をデフォルトとする。"iso" が6番目 (0インデックス) にある前提であり、
+プリセット順序が変わると誤ったビューにフォールバックする。名前による検索より脆弱ではないか。
+
+**修正**: `presets[6]` → 名前検索: `.or_else(|| presets.iter().find(|(n,_)| *n == "iso")).unwrap_or(&presets[0])`。
+"iso" がリストになければ先頭 (front) にフォールバックする。
+
+## 問34 — `smooth_difference` に収束性テストがない (`smooth_union` との非対称)
+**問**: `smooth_union` には「上界」と「k→0で hard union に収束」の2つのテストがある。
+`smooth_difference` には同等のテストがなく、数式の正しさを検証する手段がない。
+`smooth_intersection` のテストを追加した際に `smooth_difference` を見落としたのでは。
+
+**修正**: `smooth_difference_is_upper_bound_of_hard_difference` と
+`smooth_difference_converges_to_hard_as_k_shrinks` の2テストを追加。
+テスト数 76→78。
+
+## 反映サマリ v8–v14
+| 問 | 実装 |
+|----|------|
+| 26 | `get_scene` ツール + `Session::script` |
+| 27 | `shell thickness <= 0` 拒否 |
+| 28 | 全プリミティブ正値強制 |
+| 29 | `screenshot` resolution 引数 |
+| 30 | `SmoothIntersection` 追加 |
+| 31 | CLI: export/screenshot で scene.json 受け付け |
+| 32 | JSON escape() 制御文字一貫性 |
+| 33 | カメラフォールバックを名前検索に変更 |
+| 34 | smooth_difference 収束性テスト追加 |
+
+> 総括: v8–v14は問26〜34の9課題を実装で解決し、テスト数 68→78 に伸ばした。
