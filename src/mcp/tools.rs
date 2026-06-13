@@ -436,6 +436,9 @@ shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0
 mirror_x      {"op":"mirror_x","shape":<sdf>}
 mirror_y      {"op":"mirror_y","shape":<sdf>}
 mirror_z      {"op":"mirror_z","shape":<sdf>}
+rotate_x      {"op":"rotate_x","angle":90,"shape":<sdf>}  angle in DEGREES
+rotate_y      {"op":"rotate_y","angle":45,"shape":<sdf>}
+rotate_z      {"op":"rotate_z","angle":30,"shape":<sdf>}
 repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
               period per axis (x/y/z), count per axis (nx/ny/nz, default 1)
 

@@ -61,6 +61,10 @@ pub enum Sdf {
     Repeat(Box<Sdf>, Vec3, [u32; 3]),
     /// 面対称 (ミラー)。`axis`: 0=x, 1=y, 2=z。
     Mirror(Box<Sdf>, u8),
+    /// 軸周り回転。`axis`: 0=x, 1=y, 2=z。`angle` はラジアン。
+    /// 剛体変換ゆえ距離場は厳密に保たれる (スケール変化なし)。
+    /// 決定性 (問5): sin/cos は同一バイナリ・同一arch内で確定的 (sqrt と同じ保証水準)。
+    Rotate(Box<Sdf>, u8, f64),
 }
 
 impl Sdf {
@@ -188,6 +192,12 @@ impl Sdf {
                 };
                 child.eval(q)
             }
+
+            Sdf::Rotate(child, axis, angle) => {
+                // 形状を +angle 回した場合、点を -angle で逆回転してから子を評価する
+                // (剛体・距離保存)。
+                child.eval(rotate_point(p, *axis, -*angle))
+            }
         }
     }
 
@@ -279,6 +289,8 @@ impl Sdf {
                 (lo - ext, hi + ext)
             }
             Sdf::Mirror(c, axis) => mirror_box(c.aabb(), *axis),
+            // 子 aabb の 8 隅を +angle で回し、その軸整列 bbox を取る (保守的)。
+            Sdf::Rotate(c, axis, angle) => rotate_box(c.aabb(), *axis, *angle),
         }
     }
 
@@ -374,6 +386,53 @@ impl Sdf {
     pub fn mirror_z(self) -> Sdf {
         Sdf::Mirror(Box::new(self), 2)
     }
+    /// x 軸周りに `angle` ラジアン回転。
+    pub fn rotate_x(self, angle: f64) -> Sdf {
+        Sdf::Rotate(Box::new(self), 0, angle)
+    }
+    /// y 軸周りに `angle` ラジアン回転。
+    pub fn rotate_y(self, angle: f64) -> Sdf {
+        Sdf::Rotate(Box::new(self), 1, angle)
+    }
+    /// z 軸周りに `angle` ラジアン回転。
+    pub fn rotate_z(self, angle: f64) -> Sdf {
+        Sdf::Rotate(Box::new(self), 2, angle)
+    }
+}
+
+/// 点 `p` を指定軸周りに `angle` ラジアン回転する (右手系)。
+/// 固定演算順序で記述し決定性を保つ (問5、FMA 不使用)。
+fn rotate_point(p: Vec3, axis: u8, angle: f64) -> Vec3 {
+    let s = angle.sin();
+    let c = angle.cos();
+    match axis {
+        0 => Vec3::new(p.x, c * p.y - s * p.z, s * p.y + c * p.z),
+        1 => Vec3::new(c * p.x + s * p.z, p.y, -s * p.x + c * p.z),
+        2 => Vec3::new(c * p.x - s * p.y, s * p.x + c * p.y, p.z),
+        _ => p,
+    }
+}
+
+/// 軸整列ボックスの 8 隅を `angle` 回転し、その軸整列バウンディングボックスを返す。
+fn rotate_box((lo, hi): (Vec3, Vec3), axis: u8, angle: f64) -> (Vec3, Vec3) {
+    let corners = [
+        Vec3::new(lo.x, lo.y, lo.z),
+        Vec3::new(hi.x, lo.y, lo.z),
+        Vec3::new(lo.x, hi.y, lo.z),
+        Vec3::new(hi.x, hi.y, lo.z),
+        Vec3::new(lo.x, lo.y, hi.z),
+        Vec3::new(hi.x, lo.y, hi.z),
+        Vec3::new(lo.x, hi.y, hi.z),
+        Vec3::new(hi.x, hi.y, hi.z),
+    ];
+    let mut mn = Vec3::splat(f64::INFINITY);
+    let mut mx = Vec3::splat(f64::NEG_INFINITY);
+    for corner in corners {
+        let r = rotate_point(corner, axis, angle);
+        mn = mn.min(r);
+        mx = mx.max(r);
+    }
+    (mn, mx)
 }
 
 // ── AABB ヘルパ ────────────────────────────────────────────────────────────────
@@ -515,6 +574,57 @@ mod tests {
         let (lo, hi) = s.aabb();
         assert!((hi.x - (0.3 + 2.0)).abs() < 1e-9, "hi.x={}", hi.x);
         assert!((lo.x + (0.3 + 2.0)).abs() < 1e-9, "lo.x={}", lo.x);
+    }
+
+    #[test]
+    fn rotation_is_rigid_and_preserves_distance_field() {
+        // 問51: 回転は剛体変換。回転形状を回転点で評価すると元の場と一致する。
+        // S = rotate_z(child, θ) のとき S(R_θ x) == child(x) が任意 x で成り立つ。
+        use std::f64::consts::FRAC_PI_3;
+        let child = Sdf::cuboid(Vec3::new(1.0, 0.5, 0.3));
+        let theta = FRAC_PI_3;
+        let rotated = child.clone().rotate_z(theta);
+        for p in grid() {
+            // p を +θ 回した点で回転形状を評価 → 子の p での評価と一致。
+            let rp = super::rotate_point(p, 2, theta);
+            assert!(
+                (rotated.eval(rp) - child.eval(p)).abs() < EPS,
+                "rotation must preserve the distance field at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotation_of_sphere_is_invariant() {
+        // 球は回転不変。任意角でも同一の場。
+        let s = Sdf::sphere(1.0);
+        let r = Sdf::sphere(1.0).rotate_y(0.9);
+        for p in grid() {
+            assert!((s.eval(p) - r.eval(p)).abs() < EPS);
+        }
+    }
+
+    #[test]
+    fn rotate_z_90deg_swaps_extents_in_aabb() {
+        // 問51: 細長い x 箱を z 周りに 90° 回すと aabb の x/y 範囲が入れ替わる。
+        use std::f64::consts::FRAC_PI_2;
+        let bar = Sdf::cuboid(Vec3::new(2.0, 0.5, 0.5));
+        let rotated = bar.rotate_z(FRAC_PI_2);
+        let (lo, hi) = rotated.aabb();
+        // 回転後: x 半幅 ≈ 0.5, y 半幅 ≈ 2.0。
+        assert!((hi.x - 0.5).abs() < 1e-9, "hi.x={}", hi.x);
+        assert!((hi.y - 2.0).abs() < 1e-9, "hi.y={}", hi.y);
+        assert!((lo.x + 0.5).abs() < 1e-9, "lo.x={}", lo.x);
+        assert!((lo.y + 2.0).abs() < 1e-9, "lo.y={}", lo.y);
+    }
+
+    #[test]
+    fn rotation_is_deterministic() {
+        // 問5: sin/cos を含む回転も同一バイナリ内でビット決定的。
+        let tree = Sdf::cylinder(0.4, 1.0).rotate_x(0.7).rotate_z(1.3);
+        for p in grid() {
+            assert_eq!(tree.eval(p).to_bits(), tree.eval(p).to_bits());
+        }
     }
 
     #[test]

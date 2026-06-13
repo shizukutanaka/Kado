@@ -14,7 +14,8 @@
 //! プリミティブ: sphere, cuboid, cylinder, torus, cone, capsule, rounded_box
 //! ブーリアン:   union, intersection, difference,
 //!               smooth_union, smooth_intersection, smooth_difference
-//! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z
+//! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z,
+//!               rotate_x, rotate_y, rotate_z (angle は度)
 
 use crate::core::{Sdf, Vec3};
 use crate::mcp::json::{parse, Value};
@@ -232,6 +233,20 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
         "mirror_y" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_y()),
         "mirror_z" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_z()),
 
+        // 回転の "angle" は**度** (degree) で受け取り内部でラジアンへ変換する (CAD 慣習)。
+        "rotate_x" => {
+            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            Ok(child.rotate_x(req_f64(v, "angle")?.to_radians()))
+        }
+        "rotate_y" => {
+            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            Ok(child.rotate_y(req_f64(v, "angle")?.to_radians()))
+        }
+        "rotate_z" => {
+            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            Ok(child.rotate_z(req_f64(v, "angle")?.to_radians()))
+        }
+
         other => Err(ScriptError::new(format!("unknown op: \"{other}\""))),
     }
 }
@@ -447,6 +462,38 @@ mod tests {
             (s.eval(p_pos) - s.eval(p_neg)).abs() < 1e-12,
             "mirror must be symmetric"
         );
+    }
+
+    #[test]
+    fn rotate_operations_via_script() {
+        // 問51: rotate_z 90° は z 軸長尺の円柱を x 軸長尺へ向け直す。
+        // angle はスクリプトでは度。h=2 の円柱を z 周りでなく y 周りに回すと軸が倒れる。
+        let src = r#"{"op":"rotate_y","angle":90,"shape":{"op":"cylinder","r":0.3,"h":2.0}}"#;
+        let s = eval_scene(src).unwrap();
+        // 元の円柱は z 軸に沿う (z=±2 付近まで内部)。y 周り 90° 回転後は x 軸に沿う。
+        // 回転後、(1.5, 0, 0) は軸上 (元の (0,0,-1.5) 相当) → 内部。
+        assert!(
+            s.eval(Vec3::new(1.5, 0.0, 0.0)) < 0.0,
+            "after rotate_y 90°, cylinder axis lies along x: {}",
+            s.eval(Vec3::new(1.5, 0.0, 0.0))
+        );
+        // 元の軸方向 z=1.5 はもはや内部でない (軸が倒れたため)。
+        assert!(
+            s.eval(Vec3::new(0.0, 0.0, 1.5)) > 0.0,
+            "z-axis is no longer the cylinder axis after rotation"
+        );
+
+        // angle 欠落はエラー。
+        assert!(
+            eval_scene(r#"{"op":"rotate_x","shape":{"op":"sphere","r":1.0}}"#).is_err(),
+            "missing angle must be rejected"
+        );
+
+        // 0° 回転は恒等。
+        let id = eval_scene(r#"{"op":"rotate_z","angle":0,"shape":{"op":"cuboid","x":1,"y":0.5,"z":0.5}}"#).unwrap();
+        let direct = Sdf::cuboid(Vec3::new(1.0, 0.5, 0.5));
+        let p = Vec3::new(0.7, 0.2, 0.1);
+        assert!((id.eval(p) - direct.eval(p)).abs() < 1e-12, "0° rotation must be identity");
     }
 
     #[test]

@@ -304,6 +304,10 @@ mod tests {
                     .translate(Vec3::new(0.8, 0.0, 0.0))
                     .mirror_x(),
             ),
+            (
+                "rotate",
+                Sdf::cuboid(Vec3::new(1.2, 0.4, 0.4)).rotate_z(0.6).rotate_x(0.3),
+            ),
         ];
         for (name, sdf) in &battery {
             let m = polygonize(sdf, -b, b, 28);
