@@ -122,6 +122,12 @@ pub fn tool_list() -> Value {
                 ),
             ],
         ),
+        tool_def(
+            "get_scene",
+            "Return the KadoScene JSON script that produced the current active scene, \
+             along with sampling bounds. Allows AI agents to inspect state before modifying it (問26).",
+            &[],
+        ),
     ])
 }
 
@@ -198,12 +204,17 @@ pub fn default_scene() -> Sdf {
 pub struct Session {
     /// 現在アクティブな SDF シーン。`run_script` で差し替えられる。
     pub scene: Sdf,
+    /// 最後に評価した KadoScene JSON スクリプト。
+    /// `run_script` で更新; `get_scene` でAIが読み返せる (問26)。
+    /// 未設定 (デフォルトシーン) の場合は None。
+    pub script: Option<String>,
 }
 
 impl Default for Session {
     fn default() -> Self {
         Session {
             scene: default_scene(),
+            script: None,
         }
     }
 }
@@ -221,6 +232,7 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "eval" => tool_eval(session, args),
         "run_script" => tool_run_script(session, args),
         "validate" => tool_validate(session, args),
+        "get_scene" => tool_get_scene(session),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -330,12 +342,28 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
         Ok(s) => s,
         Err(e) => return ToolResult::error(format!("script error: {e}")),
     };
-    // スクリプトが正本 (問2/問12): 評価結果をアクティブシーンに設定する。
+    // スクリプトが正本 (問2/問12): 評価結果とスクリプトをセッションに保存する。
+    // スクリプトを保存しておくことでAIがget_sceneで読み返せる (問26)。
     let (lo_b, hi_b) = sdf.sampling_box();
     let mesh = polygonize(&sdf, lo_b, hi_b, res);
     let report = validate(&mesh, 0.0, 0.0);
     session.scene = sdf;
+    session.script = Some(src);
     ToolResult::text(format!("scene updated — {}", report.summary()))
+}
+
+fn tool_get_scene(session: &Session) -> ToolResult {
+    let (lo, hi) = session.scene.sampling_box();
+    let bounds_info = format!(
+        "bounds=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}]",
+        lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
+    );
+    match &session.script {
+        Some(script) => ToolResult::text(format!("script={script}\n{bounds_info}")),
+        None => ToolResult::text(format!(
+            "script=(default scene — no run_script call yet)\n{bounds_info}"
+        )),
+    }
 }
 
 fn tool_validate(session: &Session, args: &Value) -> ToolResult {

@@ -177,6 +177,13 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
         "shell" => {
             let child = build(req_child(v, "shape")?, depth + 1, budget)?;
             let t = req_f64(v, "thickness")?;
+            // t<=0 は geometrically invalid: t=0 → |d| (内部なし), t<0 → 無意味。
+            // scale<=0 と同様に拒否する (問27)。
+            if t <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "shell thickness must be > 0, got {t}"
+                )));
+            }
             Ok(child.shell(t))
         }
         "repeat" => {
@@ -314,6 +321,34 @@ mod tests {
         // 問20: 1e400 (→ +inf) を含むスクリプトはパーサ段で拒否される。
         let r = eval_scene(r#"{"op":"sphere","r":1e400}"#);
         assert!(r.is_err(), "non-finite radius must be rejected");
+    }
+
+    #[test]
+    fn zero_or_negative_shell_thickness_is_rejected() {
+        // 問27: thickness<=0 は scale<=0 と同様に幾何的に無効。拒否して無音の不正メッシュを防ぐ。
+        let z = r#"{"op":"shell","thickness":0.0,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(z).is_err(), "zero thickness must be rejected");
+        let neg = r#"{"op":"shell","thickness":-0.1,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(neg).is_err(), "negative thickness must be rejected");
+        let ok = r#"{"op":"shell","thickness":0.1,"shape":{"op":"sphere","r":1.0}}"#;
+        assert!(eval_scene(ok).is_ok(), "positive thickness must pass");
+    }
+
+    #[test]
+    fn mirror_operations_via_script() {
+        // mirror_x/y/z が対称性を正しく生成することを確認する。
+        // mirror_x: shape が x>0 に偏っていても x<0 側にも現れる。
+        let src = r#"{"op":"mirror_x","shape":{"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":{"op":"sphere","r":0.3}}}"#;
+        let s = eval_scene(src).unwrap();
+        let p_pos = Vec3::new(1.0, 0.0, 0.0);
+        let p_neg = Vec3::new(-1.0, 0.0, 0.0);
+        assert!(s.eval(p_pos) < 0.0, "mirrored shape should be inside at +x");
+        assert!(s.eval(p_neg) < 0.0, "mirrored shape should be inside at -x");
+        // 対称性: 評価値も一致する。
+        assert!(
+            (s.eval(p_pos) - s.eval(p_neg)).abs() < 1e-12,
+            "mirror must be symmetric"
+        );
     }
 
     #[test]

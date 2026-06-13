@@ -351,3 +351,39 @@
 
 > 総括: v7は看板保証を問11の「難所」で実証し（崖の仮説は実測で棄却＝誠実さ）、クリップ失敗が無音化せず
 > かつ**正しい是正ヒント**を返すよう構造化エラーを原因別に分割した。テスト数 65→68。
+
+---
+
+## 問26 — AI は `run_script` でシーンを設定できるが読み返す手段がない（自己修正ループ不完全）
+**問**: Plan §3 はAIが自律的に「試す→検証→修正」を回す自己修正ループを謳う。だが現行の MCP ツール群
+(`screenshot`, `export`, `eval`, `run_script`, `validate`) に**現在のシーンを読み返すツールがない**。
+`Session` は `Sdf` 木のみ保持し、元スクリプトは評価後に破棄される。AIがコンテキストを失った場合
+（モデルリセット・ロールバック・新セッション）、ロードされている形状を確認する方法がなく孤立する。
+これはAI-firstアーキテクチャの空白ではないか。
+
+**結論 → 反映**:
+- `Session` に `script: Option<String>` フィールドを追加。`run_script` 評価成功時に元の KadoScene JSON を保存。
+- `get_scene` ツールを新設: 保存済みスクリプトとサンプリング境界 (`bounds=[lo]-[hi]`) を返す。
+  未設定時は `"(default scene — no run_script call yet)"` と明示。
+- 計6ツール体制。`tools_list_has_six_tools` テスト、`get_scene_round_trip` テスト追加。
+
+## 問27 — `shell` の `thickness <= 0` は `scale <= 0` と同様に無音の不正メッシュを生む
+**問**: `scale <= 0` は問20で拒否するよう修正された（距離場の破壊）。
+`shell` の `thickness=0` は `d.max(-d) = |d|` を生み出す — これは**内部が存在しない**絶対値関数であり、
+ゼロ体積のメッシュまたは非多様体形状を引き起こす。`thickness < 0` は幾何的に無意味。
+同様の弁護がないのは一貫性の欠如ではないか。
+
+**結論 → 反映**:
+- `eval.rs` の `shell` ブランチに `t <= 0.0` チェックを追加。エラーメッセージ `"shell thickness must be > 0"` を返す。
+- `zero_or_negative_shell_thickness_is_rejected` テスト追加。
+- `mirror_operations_via_script` テスト追加（鏡面操作の eval カバレッジが欠如していた）。
+
+## 反映サマリ v8–v9
+| 問 | 種別 | コードへの主な反映 | 固定テスト |
+|----|------|--------------------|-----------|
+| 26 | 自己修正ループの欠陥 | `Session::script` フィールド追加・`get_scene` ツール新設 | `get_scene_round_trip`, `tools_list_has_six_tools` |
+| 27 | 入力バリデーション統一 | `shell thickness <= 0` 拒否、`mirror_*` eval テスト追加 | `zero_or_negative_shell_thickness_is_rejected`, `mirror_operations_via_script` |
+
+> 総括: v8–v9はAIエージェントがシーン状態を検査・読み返せる `get_scene` ツールを追加し（問26）、
+> `shell` の thickness バリデーション欠落を修正して input sanitization の一貫性を回復した（問27）。
+> テスト数 68→71。

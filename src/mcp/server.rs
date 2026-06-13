@@ -212,14 +212,68 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_five_tools() {
+    fn tools_list_has_six_tools() {
         let mut s = tools::Session::new();
         let resp = handle(&mut s, &req("tools/list", 2, None)).unwrap();
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
             .and_then(|v| v.as_array());
-        assert_eq!(tools.map(|a| a.len()), Some(5));
+        assert_eq!(tools.map(|a| a.len()), Some(6));
+    }
+
+    #[test]
+    fn get_scene_round_trip() {
+        // 問26: run_script 後に get_scene でスクリプトを読み返せることを検証する。
+        // コンテキスト消失後もAIがシーン状態を確認できる自己修正ループの要件。
+        let mut s = tools::Session::new();
+
+        // 初期状態: スクリプト未設定のデフォルトシーン。
+        let params_get = json::obj([("name", json::s("get_scene")), ("arguments", json::obj([]))]);
+        let resp = handle(&mut s, &req("tools/call", 10, Some(params_get.clone()))).unwrap();
+        let text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text.contains("default scene"),
+            "before run_script, get_scene should note default: {text}"
+        );
+
+        // run_script で球を設定。
+        let script = r#"{"op":"sphere","r":2.0}"#;
+        let params_run = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(script))])),
+        ]);
+        let run_resp = handle(&mut s, &req("tools/call", 11, Some(params_run))).unwrap();
+        assert_eq!(
+            run_resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false))
+        );
+
+        // get_scene が同じスクリプトを返すことを確認。
+        let resp2 = handle(&mut s, &req("tools/call", 12, Some(params_get))).unwrap();
+        let text2 = resp2
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text2.contains(script),
+            "get_scene must echo back the exact script: {text2}"
+        );
+        assert!(
+            text2.contains("bounds="),
+            "get_scene must include sampling bounds: {text2}"
+        );
     }
 
     #[test]
