@@ -240,20 +240,28 @@ impl<'a> Parser<'a> {
             Some(b'"') => self.parse_string().map(Value::String),
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
-            Some(b't') => {
-                self.pos += 4;
-                Ok(Value::Bool(true))
-            }
-            Some(b'f') => {
-                self.pos += 5;
-                Ok(Value::Bool(false))
-            }
-            Some(b'n') => {
-                self.pos += 4;
-                Ok(Value::Null)
-            }
+            Some(b't') => self.parse_literal(b"true", Value::Bool(true)),
+            Some(b'f') => self.parse_literal(b"false", Value::Bool(false)),
+            Some(b'n') => self.parse_literal(b"null", Value::Null),
             Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
             other => Err(format!("unexpected {:?} at pos {}", other, self.pos)),
+        }
+    }
+
+    /// `true`/`false`/`null` リテラルを厳密に照合する (問50)。
+    /// バイト列が一致しない・末尾を越える場合はエラーにし、`nXYZ` のような
+    /// 不正入力を `null` として無音受理する退行と pos 溢れを防ぐ。
+    fn parse_literal(&mut self, kw: &'static [u8], val: Value) -> Result<Value, String> {
+        let end = self.pos + kw.len();
+        if end <= self.src.len() && &self.src[self.pos..end] == kw {
+            self.pos = end;
+            Ok(val)
+        } else {
+            Err(format!(
+                "invalid literal at pos {} (expected \"{}\")",
+                self.pos,
+                std::str::from_utf8(kw).unwrap()
+            ))
         }
     }
 
@@ -482,6 +490,26 @@ mod tests {
         assert!(parse("-1e400").is_err());
         // 通常の数は通る。
         assert!(parse("1.5e3").is_ok());
+    }
+
+    #[test]
+    fn malformed_literals_are_rejected() {
+        // 問50: true/false/null は厳密照合。誤綴り・途中切れを無音受理しない。
+        assert!(parse("nul").is_err(), "truncated null must be rejected");
+        assert!(parse("nXYZ").is_err(), "misspelled null must be rejected");
+        assert!(parse("tru").is_err(), "truncated true must be rejected");
+        assert!(parse("fals").is_err(), "truncated false must be rejected");
+        assert!(parse("truely").is_err(), "trailing chars must be rejected");
+        // 正しいリテラルは通る。
+        assert_eq!(parse("true").unwrap(), Value::Bool(true));
+        assert_eq!(parse("false").unwrap(), Value::Bool(false));
+        assert_eq!(parse("null").unwrap(), Value::Null);
+        // 配列内でも厳密に照合される。
+        assert!(parse("[nul,1]").is_err(), "malformed literal in array must fail");
+        assert_eq!(
+            parse("[true,null,false]").unwrap(),
+            arr([Value::Bool(true), Value::Null, Value::Bool(false)])
+        );
     }
 
     #[test]
