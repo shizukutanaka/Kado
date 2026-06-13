@@ -139,14 +139,17 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
         ));
     }
 
-    // 4. 最小肉厚チェック (SDF 勾配の最小値で近似)
+    // 4. 肉厚チェック (2V/SA による平均肉厚。問23: 「平均」であり最小ではない)
     if min_wall_mm > 0.0 {
         if let Some((lo, hi)) = bbox {
-            let thin = min_wall_thickness(mesh, lo, hi);
+            let thin = mean_wall_thickness(mesh, lo, hi);
             if thin < min_wall_mm {
                 issues.push(KadoError::error(
                     "THIN_WALL",
-                    format!("estimated minimum wall thickness {thin:.3} < {min_wall_mm:.3}"),
+                    format!(
+                        "estimated mean wall thickness {thin:.3} < {min_wall_mm:.3} \
+                         (2V/SA average; a pass does not guarantee no local thin features)"
+                    ),
                     &[
                         "Increase wall thickness via offset() or larger primitives",
                         "Reduce min_wall_mm threshold if intentional",
@@ -196,11 +199,13 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
     }
 }
 
-/// メッシュ三角形の辺長から最小肉厚を粗く推定する。
-/// 真の肉厚計算はコストが高いため、表面上の最小 SDF 二次微分近似で代用。
-/// 2V/SA (体積÷表面積×2) で平均肉厚を推定する。
-/// 薄肉シェルでは t≈2V/SA が成り立ち、ソリッド形状では大きな値になるため偽陽性なし。
-fn min_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
+/// 2V/SA (体積÷表面積×2) で **平均** 肉厚を推定する (問23)。
+///
+/// 注意: これは平均であって**最小ではない**。塊状の本体に細い1リブが付く形状では
+/// 2V/SA が本体に支配されて大きく出るため、リブの薄さを見逃しうる。よって
+/// 「閾値未満 = 薄肉」は有効な検出だが、「閾値以上 = 薄肉なし」は保証しない。
+/// 真の最小肉厚 (medial axis 等) は別途要実装 (BACKLOG)。メッシュのみからの安価な近似。
+fn mean_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
     if mesh.triangles.is_empty() {
         return (hi - lo).length();
     }

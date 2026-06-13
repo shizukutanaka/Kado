@@ -53,7 +53,10 @@ pub enum Sdf {
     /// 中空シェル。表面から `thickness/2` 内外を残す。
     Shell(Box<Sdf>, f64),
     /// 軸整列 3D 線形繰り返し。`period` の各成分が 0 の軸は繰り返しなし。
-    Repeat(Box<Sdf>, Vec3),
+    /// 軸整列 3D **有限**繰り返し。`period` の各成分が 0、または `count` が 0 の軸は
+    /// 繰り返さない。`count[axis]` は原点の両側へのコピー数 (合計 `2*count+1` 個)。
+    /// 無限格子は有限メッシュ化・有限BBox化できないため、必ず有限回数で囲う (問21)。
+    Repeat(Box<Sdf>, Vec3, [u32; 3]),
     /// 面対称 (ミラー)。`axis`: 0=x, 1=y, 2=z。
     Mirror(Box<Sdf>, u8),
 }
@@ -149,18 +152,20 @@ impl Sdf {
                 d.max(-(d + *thickness))
             }
 
-            Sdf::Repeat(child, period) => {
-                let snap = |v: f64, per: f64| -> f64 {
-                    if per == 0.0 {
+            Sdf::Repeat(child, period, count) => {
+                // 有限繰り返し (IQ opLimitedRepetition): セル番号を [-n, n] にクランプ。
+                let snap = |v: f64, per: f64, n: u32| -> f64 {
+                    if per == 0.0 || n == 0 {
                         v
                     } else {
-                        v - per * (v / per + 0.5).floor()
+                        let r = (v / per).round().clamp(-(n as f64), n as f64);
+                        v - per * r
                     }
                 };
                 let q = Vec3::new(
-                    snap(p.x, period.x),
-                    snap(p.y, period.y),
-                    snap(p.z, period.z),
+                    snap(p.x, period.x, count[0]),
+                    snap(p.y, period.y, count[1]),
+                    snap(p.z, period.z, count[2]),
                 );
                 child.eval(q)
             }
@@ -249,7 +254,15 @@ impl Sdf {
                 (lo - e, hi + e)
             }
             Sdf::Shell(c, _) => c.aabb(),
-            Sdf::Repeat(c, _) => c.aabb(),
+            Sdf::Repeat(c, period, count) => {
+                let (lo, hi) = c.aabb();
+                let ext = Vec3::new(
+                    count[0] as f64 * period.x.abs(),
+                    count[1] as f64 * period.y.abs(),
+                    count[2] as f64 * period.z.abs(),
+                );
+                (lo - ext, hi + ext)
+            }
             Sdf::Mirror(c, axis) => mirror_box(c.aabb(), *axis),
         }
     }
@@ -322,7 +335,11 @@ impl Sdf {
         Sdf::Shell(Box::new(self), thickness)
     }
     pub fn repeat(self, period: Vec3) -> Sdf {
-        Sdf::Repeat(Box::new(self), period)
+        Sdf::Repeat(Box::new(self), period, [1, 1, 1])
+    }
+    /// 各軸のコピー数を指定する有限繰り返し。`count[a]` は原点の両側へのコピー数。
+    pub fn repeat_n(self, period: Vec3, count: [u32; 3]) -> Sdf {
+        Sdf::Repeat(Box::new(self), period, count)
     }
     pub fn mirror_x(self) -> Sdf {
         Sdf::Mirror(Box::new(self), 0)
@@ -449,9 +466,31 @@ mod tests {
 
     #[test]
     fn repeat_periodic_field() {
+        // 既定 repeat は片側1コピー (合計3個/軸)。範囲内では周期的。
         let s = Sdf::sphere(0.3).repeat(Vec3::new(2.0, 2.0, 2.0));
-        // (0,0,0) と (2,0,0) で同じ値
+        // (0,0,0) と (2,0,0) は同じセル像 → 同じ値
         assert!((s.eval(Vec3::ZERO) - s.eval(Vec3::new(2.0, 0.0, 0.0))).abs() < EPS);
+    }
+
+    #[test]
+    fn repeat_is_bounded_not_infinite() {
+        // 問21: 有限繰り返し。x軸 片側1 (=3コピー) のみ。
+        let s = Sdf::sphere(0.3).repeat_n(Vec3::new(2.0, 2.0, 2.0), [1, 0, 0]);
+        // 中心と隣接コピー中心 (±2) は球の内部 (負)。
+        assert!(s.eval(Vec3::ZERO) < 0.0);
+        assert!(s.eval(Vec3::new(2.0, 0.0, 0.0)) < 0.0);
+        assert!(s.eval(Vec3::new(-2.0, 0.0, 0.0)) < 0.0);
+        // 4セル目 (x=8) にはコピーが無い → 外側 (正)。無限繰り返しなら負になるはず。
+        assert!(
+            s.eval(Vec3::new(8.0, 0.0, 0.0)) > 0.0,
+            "bounded repeat must not tile infinitely"
+        );
+        // y軸は count=0 なので繰り返さない。
+        assert!(s.eval(Vec3::new(0.0, 2.0, 0.0)) > 0.0);
+        // AABB は有限で、x方向に period*count だけ広がる。
+        let (lo, hi) = s.aabb();
+        assert!((hi.x - (0.3 + 2.0)).abs() < 1e-9, "hi.x={}", hi.x);
+        assert!((lo.x + (0.3 + 2.0)).abs() < 1e-9, "lo.x={}", lo.x);
     }
 
     #[test]

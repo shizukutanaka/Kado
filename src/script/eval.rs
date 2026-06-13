@@ -41,6 +41,8 @@ const MAX_SOURCE_BYTES: usize = 1 << 20; // 1 MiB
 const MAX_NODES: usize = 50_000;
 /// SDF木の最大深さ (リソース上限・問16)。パーサ側の深さ上限と二重防御。
 const MAX_DEPTH: usize = 64;
+/// 繰り返しコピー数の片側上限 (リソース上限・問21/問16)。
+const MAX_REPEAT: u32 = 256;
 
 /// 評価予算 (DoS 防止のリソース上限・問16)。
 struct Budget {
@@ -182,7 +184,14 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             let px = opt_f64(v, "x").unwrap_or(0.0);
             let py = opt_f64(v, "y").unwrap_or(0.0);
             let pz = opt_f64(v, "z").unwrap_or(0.0);
-            Ok(child.repeat(Vec3::new(px, py, pz)))
+            // 各軸のコピー数 (片側)。既定1。非有限/負は1へ、過大は上限へ丸める (問21/問16)。
+            let n = |key: &str| -> u32 {
+                opt_f64(v, key)
+                    .filter(|f| f.is_finite() && *f >= 0.0)
+                    .map(|f| (f as u32).min(MAX_REPEAT))
+                    .unwrap_or(1)
+            };
+            Ok(child.repeat_n(Vec3::new(px, py, pz), [n("nx"), n("ny"), n("nz")]))
         }
         "mirror_x" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_x()),
         "mirror_y" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_y()),
@@ -305,5 +314,16 @@ mod tests {
         // 問20: 1e400 (→ +inf) を含むスクリプトはパーサ段で拒否される。
         let r = eval_scene(r#"{"op":"sphere","r":1e400}"#);
         assert!(r.is_err(), "non-finite radius must be rejected");
+    }
+
+    #[test]
+    fn repeat_script_is_bounded() {
+        // 問21: スクリプトの repeat は有限。nx=1 (x方向3コピー)、他軸は既定だが period 0 で無効。
+        let src = r#"{"op":"repeat","x":2.0,"nx":1,"shape":{"op":"sphere","r":0.3}}"#;
+        let s = eval_scene(src).unwrap();
+        assert!(s.eval(Vec3::ZERO) < 0.0);
+        assert!(s.eval(Vec3::new(2.0, 0.0, 0.0)) < 0.0);
+        // 範囲外 (4セル目) は外側 → 無限タイルでない。
+        assert!(s.eval(Vec3::new(8.0, 0.0, 0.0)) > 0.0);
     }
 }
