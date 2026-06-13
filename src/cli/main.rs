@@ -1,12 +1,18 @@
-//! Kado CLI (Phase 2 で `run/render/check/export` を本実装予定)。
+//! Kado CLI。
 //!
-//! 現時点の足場: version / selftest / export(デモ形状をSTL出力)。
+//! コマンド:
+//!   version    バージョン表示
+//!   selftest   最小 SDF 評価の動作確認
+//!   export     STL ファイル出力
+//!   screenshot PNG スクリーンショット出力
+//!   mcp        MCP サーバー (stdio) 起動
 
 use kado::core::{Sdf, Vec3};
 use kado::extract::polygonize;
 use kado::io::stl;
+use kado::mcp::server::run_stdio;
+use kado::render::{render, Camera};
 
-/// デモ形状: 球 ∪ 直方体 − 円柱 (穴あき)。スパイク用の代表モデル。
 fn demo_model() -> Sdf {
     Sdf::sphere(1.0)
         .union(Sdf::cuboid(Vec3::splat(0.8)))
@@ -27,7 +33,7 @@ fn main() {
         }
         "export" => {
             let out = args.get(2).map(String::as_str).unwrap_or("kado-demo.stl");
-            let mesh = polygonize(&demo_model(), Vec3::splat(-1.5), Vec3::splat(1.5), 64);
+            let mesh = polygonize(&demo_model(), Vec3::splat(-2.0), Vec3::splat(2.0), 64);
             match stl::write_binary(&mesh, std::path::Path::new(out)) {
                 Ok(()) => println!(
                     "exported {} ({} triangles, manifold={})",
@@ -41,9 +47,48 @@ fn main() {
                 }
             }
         }
+        "screenshot" => {
+            let out = args
+                .get(2)
+                .map(String::as_str)
+                .unwrap_or("kado-screenshot.png");
+            let view = args.get(3).map(String::as_str).unwrap_or("iso");
+            let mesh = polygonize(&demo_model(), Vec3::splat(-2.0), Vec3::splat(2.0), 48);
+            if mesh.triangles.is_empty() {
+                eprintln!("mesh is empty");
+                std::process::exit(1);
+            }
+            let (lo, hi) = mesh.bounds().unwrap();
+            let presets = Camera::presets(lo, hi);
+            let cam = presets
+                .iter()
+                .find(|(n, _)| *n == view)
+                .unwrap_or(&presets[6])
+                .1
+                .clone();
+            let img = render(&mesh, &cam, 512, 512);
+            match img.write_png(std::path::Path::new(out)) {
+                Ok(()) => println!(
+                    "screenshot {} ({} triangles, view={})",
+                    out,
+                    mesh.triangles.len(),
+                    view
+                ),
+                Err(e) => {
+                    eprintln!("screenshot failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "mcp" => {
+            // MCP サーバーモード (stdin/stdout・返らない)。
+            run_stdio();
+        }
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: kado [version|selftest|export <out.stl>]");
+            eprintln!(
+                "usage: kado [version|selftest|export <out.stl>|screenshot <out.png> [view]|mcp]"
+            );
             std::process::exit(2);
         }
     }
