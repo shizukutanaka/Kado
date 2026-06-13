@@ -566,3 +566,36 @@ CLI の `run` と `check` は解像度を制御する手段がなく、常に re
 | 36 | CLI run/check に resolution 引数追加 |
 
 > 総括: v8–v15は問26〜36の11課題を実装で解決し、テスト数 68→78 に達した。
+
+---
+
+## 問37 — `run_script` が自己記述的でない (AI が何を書けるか知る手段がない)
+**問**: AI エージェントが初めて Kado MCP を使う際、`tools/list` を呼んでも
+`run_script` のスキーマには `script: string` のみで、KadoScene JSON の内部形式は不明。
+`help` ツールも `schema` ツールもない。AI は試行錯誤で `unknown op` エラーを
+繰り返すしかない — AI-first として自己記述性が欠けている。
+
+**修正**: `help` ツール (引数なし) を追加。KadoScene JSON フォーマット参照文書を返す:
+- 全プリミティブ (`sphere`/`cuboid`/`cylinder`/`torus`/`cone`/`capsule`/`rounded_box`) と必須パラメータ
+- 全ブーリアン (`union`/`intersection`/`difference`/`smooth_{union,intersection,difference}`)
+- 全変形 (`translate`/`scale`/`offset`/`shell`/`mirror_{x,y,z}`/`repeat`)
+- 例スクリプト付きワークフロー解説
+計7ツール体制。`help_tool_returns_format_reference` テスト追加。テスト数 78→79。
+
+## 反映サマリ v8–v16
+| 問 | 実装 |
+|----|------|
+| 26 | `get_scene` + `Session::script` |
+| 27 | `shell thickness <= 0` 拒否 |
+| 28 | 全プリミティブ正値強制 |
+| 29 | `screenshot` resolution 引数 |
+| 30 | `SmoothIntersection` |
+| 31 | CLI: export/screenshot で scene.json |
+| 32 | JSON escape() 制御文字 |
+| 33 | カメラフォールバック名前検索 |
+| 34 | smooth_difference 収束性テスト |
+| 35 | smooth 3演算 script テスト統合 |
+| 36 | CLI run/check に resolution 引数 |
+| 37 | `help` ツール: KadoScene 自己記述 |
+
+> 総括: v8–v16は問26〜37の12課題を実装で解決し、テスト数 68→79 に伸ばした。

@@ -134,6 +134,12 @@ pub fn tool_list() -> Value {
              along with sampling bounds. Allows AI agents to inspect state before modifying it (問26).",
             &[],
         ),
+        tool_def(
+            "help",
+            "Return the KadoScene JSON format reference: all available op codes, \
+             their parameters, and example scripts. Call this first when unfamiliar with the format.",
+            &[],
+        ),
     ])
 }
 
@@ -239,6 +245,7 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "run_script" => tool_run_script(session, args),
         "validate" => tool_validate(session, args),
         "get_scene" => tool_get_scene(session),
+        "help" => tool_help(),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -359,6 +366,74 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     session.script = Some(src);
     ToolResult::text(format!("scene updated — {}", report.summary()))
 }
+
+fn tool_help() -> ToolResult {
+    ToolResult::text(KADOSCENE_HELP)
+}
+
+const KADOSCENE_HELP: &str = r#"# KadoScene JSON Format Reference
+
+All scripts are a single JSON object with an "op" field.
+Parameters marked (req) are required; others are optional with their default shown.
+
+## Primitives
+
+sphere        {"op":"sphere","r":1.0}
+              r (req): radius > 0
+
+cuboid        {"op":"cuboid","x":1.0,"y":1.0,"z":1.0}
+              x,y,z (req): half-extents > 0 (or use "s" for uniform)
+
+cylinder      {"op":"cylinder","r":0.5,"h":1.0}
+              r (req): radius > 0; h (req): half-height > 0
+
+torus         {"op":"torus","major":1.0,"minor":0.25}
+              major (req): ring radius > 0; minor (req): tube radius > 0
+
+cone          {"op":"cone","r":0.5,"h":1.5}
+              apex at z=0, base at z=-h; r (req) > 0; h (req) > 0
+
+capsule       {"op":"capsule","h":0.5,"r":0.3}
+              h (req): half-height >= 0; r (req): radius > 0
+
+rounded_box   {"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}
+              x,y,z (req): half-extents > 0; r (req): corner radius > 0
+
+## Boolean Operations
+
+union         {"op":"union","a":<sdf>,"b":<sdf>}
+intersection  {"op":"intersection","a":<sdf>,"b":<sdf>}
+difference    {"op":"difference","a":<sdf>,"b":<sdf>}  (a minus b)
+
+smooth_union         {"op":"smooth_union","a":<sdf>,"b":<sdf>,"k":0.3}
+smooth_intersection  {"op":"smooth_intersection","a":<sdf>,"b":<sdf>,"k":0.3}
+smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}
+              k: blend radius (default 0.3)
+
+## Transforms
+
+translate     {"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":<sdf>}
+scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0
+offset        {"op":"offset","amount":0.1,"shape":<sdf>}    inflates/deflates
+shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0
+mirror_x      {"op":"mirror_x","shape":<sdf>}
+mirror_y      {"op":"mirror_y","shape":<sdf>}
+mirror_z      {"op":"mirror_z","shape":<sdf>}
+repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
+              period per axis (x/y/z), count per axis (nx/ny/nz, default 1)
+
+## Example: sphere with a cylindrical hole
+
+{"op":"difference",
+ "a":{"op":"sphere","r":1.5},
+ "b":{"op":"cylinder","r":0.4,"h":2.0}}
+
+## Workflow
+
+1. Call run_script with your KadoScene JSON.
+2. Call screenshot to preview; validate for DFM; export to save STL.
+3. Call get_scene to read back the current script if needed.
+"#;
 
 fn tool_get_scene(session: &Session) -> ToolResult {
     let (lo, hi) = session.scene.sampling_box();

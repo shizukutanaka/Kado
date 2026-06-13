@@ -212,14 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_six_tools() {
+    fn tools_list_has_seven_tools() {
         let mut s = tools::Session::new();
         let resp = handle(&mut s, &req("tools/list", 2, None)).unwrap();
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
             .and_then(|v| v.as_array());
-        assert_eq!(tools.map(|a| a.len()), Some(6));
+        assert_eq!(tools.map(|a| a.len()), Some(7));
     }
 
     #[test]
@@ -326,6 +326,28 @@ mod tests {
             .and_then(|e| e.get("code"))
             .and_then(|c| c.as_f64());
         assert_eq!(err.map(|f| f as i64), Some(-32601));
+    }
+
+    #[test]
+    fn help_tool_returns_format_reference() {
+        // 問37: help ツールが KadoScene 演算子一覧を含む参考文書を返すことを確認する。
+        let mut s = tools::Session::new();
+        let params = json::obj([
+            ("name", json::s("help")),
+            ("arguments", json::obj([])),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 20, Some(params))).unwrap();
+        let text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(text.contains("sphere"), "help must mention sphere");
+        assert!(text.contains("smooth_union"), "help must mention smooth_union");
+        assert!(text.contains("run_script"), "help must reference workflow");
     }
 
     #[test]
