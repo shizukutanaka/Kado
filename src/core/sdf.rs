@@ -283,8 +283,14 @@ impl Sdf {
     }
 
     /// 抽出用サンプリング境界。`aabb` に表面が境界で切れないよう余白を足す。
+    ///
+    /// AABB が反転 (lo > hi、例えば重なりのない SmoothIntersection) の場合は
+    /// 空メッシュを生む最小ボックスを返す (問40)。`polygonize` が負ステップで
+    /// 無駄な評価をするのを防ぐ。
     pub fn sampling_box(&self) -> (Vec3, Vec3) {
         let (lo, hi) = self.aabb();
+        // 反転ボックスの正規化: Intersection 系で非重複の場合に発生する。
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
         let diag = (hi - lo).length();
         let m = (0.05 * diag).max(1e-3);
         let e = Vec3::splat(m);
@@ -559,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn smooth_intersection_is_lower_bound_of_hard_union() {
+    fn smooth_intersection_converges_to_hard_as_k_shrinks() {
         // smooth_intersection converges to hard intersection as k→0.
         let a = Sdf::sphere(1.0);
         let b = Sdf::sphere(1.0).translate(Vec3::new(0.5, 0.0, 0.0));
@@ -677,6 +683,26 @@ mod tests {
         );
         // 遠方は正。
         assert!(c.eval(Vec3::new(5.0, 0.0, -1.0)) > 0.0, "exterior positive");
+    }
+
+    #[test]
+    fn sampling_box_is_never_inverted() {
+        // 問40: 非重複 SmoothIntersection の AABB は反転する (lo > hi) が、
+        // sampling_box は lo <= hi を保証し polygonize が安全に空メッシュを返す。
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
+        let si = a.smooth_intersection(b, 0.3);
+        let (slo, shi) = si.sampling_box();
+        assert!(
+            slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+            "sampling_box must never be inverted, got lo={slo:?} hi={shi:?}"
+        );
+        // 実際に空メッシュになることも確認。
+        let mesh = crate::extract::polygonize(&si, slo, shi, 8);
+        assert!(
+            mesh.triangles.is_empty(),
+            "non-overlapping smooth_intersection must produce empty mesh"
+        );
     }
 
     #[test]

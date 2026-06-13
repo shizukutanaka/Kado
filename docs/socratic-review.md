@@ -621,3 +621,31 @@ CLI の `run` と `check` は解像度を制御する手段がなく、常に re
 | 38 | OVERHANG 角度慣例修正 (acos→asin, 水平基準に統一) |
 
 > 総括: v8–v17は問26〜38の13課題を実装で解決し、テスト数 68→80 に達した。
+
+---
+
+## 問39 — テスト名 `smooth_intersection_is_lower_bound_of_hard_union` が内容と矛盾
+**問**: テストは `smooth_intersection → hard_intersection` への収束 (k→0) を確認するが、
+名前は "lower bound of hard union" と言っており地図と現地が違う。
+将来の読者が「なぜ smooth_intersection が union の下界なのか」と混乱する。
+
+**修正**: → `smooth_intersection_converges_to_hard_as_k_shrinks` に改名。
+
+## 問40 — 非重複 `SmoothIntersection` で `sampling_box` が反転ボックスを返す
+**問**: `SmoothIntersection(a, b, k)` の AABB は `max(alo, blo) - k` to `min(ahi, bhi) + k`。
+`a` と `b` が離れていると `lo > hi` になる。`sampling_box` はそのまま反転ボックスを返し、
+`polygonize` が負のステップで無駄な (かつ混乱を招く) サンプリングをする。
+
+**修正**: `sampling_box` で `(lo.min(hi), lo.max(hi))` により AABB を正規化する。
+反転ボックスは最小のデフォルト margin を持つ点ボックスになり、空メッシュを生む。
+テスト `sampling_box_is_never_inverted` 追加 (非重複 smooth_intersection の空メッシュ確認)。
+テスト数 80→81。
+
+## 反映サマリ v8–v18
+| 問 | 実装 |
+|----|------|
+| 26–38 | (上記) |
+| 39 | テスト名の誤り修正 |
+| 40 | sampling_box の反転ボックス正規化 |
+
+> 総括: v8–v18は問26〜40の15課題を実装で解決し、テスト数 68→81 に達した。
