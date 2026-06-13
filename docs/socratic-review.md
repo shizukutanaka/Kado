@@ -529,3 +529,40 @@ CI/CD パイプラインで `kado export scene.json out.stl` を呼べない。
 | 34 | smooth_difference 収束性テスト追加 |
 
 > 総括: v8–v14は問26〜34の9課題を実装で解決し、テスト数 68→78 に伸ばした。
+
+---
+
+## 問35 — `smooth_union`/`smooth_difference` に script-eval テストがない
+**問**: `smooth_intersection` には `smooth_intersection_via_script` テストを追加した (問30)。
+しかし `smooth_union` と `smooth_difference` は eval.rs レベルのテストが欠落している。
+これら3演算は対称的に検証されるべきでは？
+
+**修正**: `smooth_intersection_via_script` を `smooth_operations_via_script` に拡張し、
+union/intersection/difference の3演算すべてを script 経由で検証する。
+
+## 問36 — CLI `run`/`check` の resolution が48固定でMCP `validate` と非対称
+**問**: MCP の `validate` ツールは `resolution` 引数でメッシュ品質を制御できる。
+CLI の `run` と `check` は解像度を制御する手段がなく、常に res=48。
+高品質 DFM 検証 (`kado check scene.json 0.3 45 96`) が CLI から呼べない。
+
+**修正**:
+- `run <scene.json> [resolution]` — 追加引数 (デフォルト48, clamp 1–256)。
+- `check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]` — 同上。
+- `run` コマンドを `load_scene_file`/`parse_scene` ヘルパを使うよう整理。
+
+## 反映サマリ v8–v15
+| 問 | 実装 |
+|----|------|
+| 26 | `get_scene` + `Session::script` |
+| 27 | `shell thickness <= 0` 拒否 |
+| 28 | 全プリミティブ正値強制 |
+| 29 | `screenshot` resolution 引数 |
+| 30 | `SmoothIntersection` |
+| 31 | CLI: export/screenshot で scene.json |
+| 32 | JSON escape() 制御文字 |
+| 33 | カメラフォールバック名前検索 |
+| 34 | smooth_difference 収束性テスト |
+| 35 | smooth 3演算 script テスト統合 |
+| 36 | CLI run/check に resolution 引数追加 |
+
+> 総括: v8–v15は問26〜36の11課題を実装で解決し、テスト数 68→78 に達した。

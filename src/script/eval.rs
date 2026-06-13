@@ -404,18 +404,32 @@ mod tests {
     }
 
     #[test]
-    fn smooth_intersection_via_script() {
-        // 問30: smooth_intersection が hard intersection の上界となることを確認する。
-        let src = r#"{
-          "op": "smooth_intersection", "k": 0.3,
-          "a": {"op": "sphere", "r": 1.0},
-          "b": {"op": "sphere", "r": 1.0}
-        }"#;
-        let smooth = eval_scene(src).unwrap();
-        // 両球の重なりは自己交差球→ 中心は負。
-        assert!(smooth.eval(Vec3::ZERO) < 0.0, "overlap center must be inside");
-        // 片方だけ(遠方)は正。
-        assert!(smooth.eval(Vec3::new(3.0, 0.0, 0.0)) > 0.0, "far point must be outside");
+    fn smooth_operations_via_script() {
+        // 問35: smooth_{union,intersection,difference} の eval レベルを網羅的に検証する。
+        let sphere_a = r#"{"op":"sphere","r":1.0}"#;
+        let sphere_b = r#"{"op":"translate","x":0.5,"y":0,"z":0,"shape":{"op":"sphere","r":1.0}}"#;
+
+        // smooth_union: 重なり中心は両球の内部 → 負。
+        let src_u = format!(r#"{{"op":"smooth_union","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
+        let su = eval_scene(&src_u).unwrap();
+        assert!(su.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0, "smooth_union center inside");
+        // 遠方は外側 → 正。
+        assert!(su.eval(Vec3::new(5.0, 0.0, 0.0)) > 0.0, "smooth_union far outside");
+
+        // smooth_intersection: 両球の重なり領域の中心は内側 → 負。
+        let src_i = format!(r#"{{"op":"smooth_intersection","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
+        let si = eval_scene(&src_i).unwrap();
+        assert!(si.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0, "smooth_intersection overlap inside");
+        // 一方の球だけにある点は外側 → 正。
+        assert!(si.eval(Vec3::new(-1.5, 0.0, 0.0)) > 0.0, "smooth_intersection non-overlap outside");
+
+        // smooth_difference a-b: a 内 b 外の領域 → 負。
+        let src_d = format!(r#"{{"op":"smooth_difference","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
+        let sd = eval_scene(&src_d).unwrap();
+        // a の左端 (-0.9, 0, 0) は a 内 b 外 → 負。
+        assert!(sd.eval(Vec3::new(-0.9, 0.0, 0.0)) < 0.0, "smooth_diff inside a minus b");
+        // b の中心付近 (0.5, 0, 0) は b 内 → 削除済み → 正。
+        assert!(sd.eval(Vec3::new(0.5, 0.0, 0.0)) > 0.0, "smooth_diff inside b is removed");
     }
 
     #[test]

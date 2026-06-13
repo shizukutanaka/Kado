@@ -111,36 +111,31 @@ fn main() {
             }
         }
         "run" => {
+            // run <scene.json> [resolution]
             let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
-                eprintln!("usage: kado run <scene.json>");
+                eprintln!("usage: kado run <scene.json> [resolution]");
                 std::process::exit(2);
             });
-            let src = match std::fs::read_to_string(path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("cannot read {path}: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let sdf = match eval_scene(&src) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("script error: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let res: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(48);
+            let res = res.clamp(1, 256);
+            let sdf = parse_scene(&load_scene_file(path));
             let (lo, hi) = sdf.sampling_box();
-            let mesh = polygonize(&sdf, lo, hi, 48);
+            let mesh = polygonize(&sdf, lo, hi, res);
             let report = validate(&mesh, 0.0, 0.0);
             println!("{}", report.summary());
         }
         "check" => {
+            // check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]
             let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
-                eprintln!("usage: kado check <scene.json> [min_wall_mm] [max_overhang_deg]");
+                eprintln!(
+                    "usage: kado check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]"
+                );
                 std::process::exit(2);
             });
             let min_wall: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
             let max_overhang: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(45.0);
+            let res: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(48);
+            let res = res.clamp(1, 256);
             let src = match std::fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -156,7 +151,7 @@ fn main() {
                 }
             };
             let (lo, hi) = sdf.sampling_box();
-            let mesh = polygonize(&sdf, lo, hi, 48);
+            let mesh = polygonize(&sdf, lo, hi, res);
             let report = validate(&mesh, min_wall, max_overhang);
             let status = if report.is_ok() { "PASS" } else { "FAIL" };
             println!("[{status}] {}", report.summary());
