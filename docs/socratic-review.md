@@ -378,12 +378,27 @@
 - `zero_or_negative_shell_thickness_is_rejected` テスト追加。
 - `mirror_operations_via_script` テスト追加（鏡面操作の eval カバレッジが欠如していた）。
 
-## 反映サマリ v8–v9
+## 問28 — プリミティブの負/ゼロパラメータが無検査で受理される（`scale`/`shell` との非対称）
+**問**: 問20で `scale<=0`、問27で `shell thickness<=0` を拒否するよう修正した。
+しかし `sphere(r=0)` は `eval = |p|` (内部なし)、`cylinder(r=0, h=1)` は線分、
+`torus(major=0, minor=0.1)` は点、`cuboid(x=0, ...)` は平面を生み — いずれも
+**eval エラーなく受理されて `EMPTY_MESH` でサイレント失敗**する。
+操作レベルの検証を揃えながらプリミティブ側の検証がないのは一貫性の欠如ではないか。
+
+**結論 → 反映**:
+- `req_positive_f64(v, key)` ヘルパを追加 (`req_f64` + `> 0` チェック)。
+- 全プリミティブに適用: `sphere(r)`, `cylinder(r, h)`, `cone(r, h)`, `torus(major, minor)`, `capsule(r)`、
+  `cuboid(x, y, z)`, `rounded_box(x, y, z, r)` の各次元を正値強制。
+- 例外: `capsule(h)` は `h=0` が球として有効なため `>= 0` のみ。
+- `zero_or_negative_primitive_dimensions_are_rejected` テスト追加 (28 ケース)。
+
+## 反映サマリ v8–v10
 | 問 | 種別 | コードへの主な反映 | 固定テスト |
 |----|------|--------------------|-----------|
 | 26 | 自己修正ループの欠陥 | `Session::script` フィールド追加・`get_scene` ツール新設 | `get_scene_round_trip`, `tools_list_has_six_tools` |
 | 27 | 入力バリデーション統一 | `shell thickness <= 0` 拒否、`mirror_*` eval テスト追加 | `zero_or_negative_shell_thickness_is_rejected`, `mirror_operations_via_script` |
+| 28 | プリミティブ次元バリデーション | `req_positive_f64` ヘルパ、全プリミティブの正値強制 | `zero_or_negative_primitive_dimensions_are_rejected` |
 
-> 総括: v8–v9はAIエージェントがシーン状態を検査・読み返せる `get_scene` ツールを追加し（問26）、
-> `shell` の thickness バリデーション欠落を修正して input sanitization の一貫性を回復した（問27）。
-> テスト数 68→71。
+> 総括: v8–v10はAIエージェントがシーン状態を検査・読み返せる `get_scene` ツールを追加し（問26）、
+> `shell` の thickness バリデーション欠落を修正（問27）、すべてのプリミティブパラメータに
+> 正値強制を適用して input sanitization の一貫性を完成させた（問28）。テスト数 68→72。

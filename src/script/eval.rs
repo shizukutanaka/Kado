@@ -84,40 +84,61 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
     match op {
         // ── プリミティブ ──────────────────────────────────────────────────────
         "sphere" => {
-            let r = req_f64(v, "r")?;
+            let r = req_positive_f64(v, "r")?;
             Ok(Sdf::sphere(r))
         }
         "cuboid" => {
             let x = opt_f64(v, "x").or_else(|| opt_f64(v, "s")).unwrap_or(1.0);
             let y = opt_f64(v, "y").or_else(|| opt_f64(v, "s")).unwrap_or(x);
             let z = opt_f64(v, "z").or_else(|| opt_f64(v, "s")).unwrap_or(x);
+            // 半辺長 <= 0 は interior なしのデジェネレート形状 → EMPTY_MESH でサイレント失敗 (問28)。
+            for (n, val) in [("x", x), ("y", y), ("z", z)] {
+                if val <= 0.0 {
+                    return Err(ScriptError::new(format!(
+                        "cuboid half-extent \"{n}\" must be > 0, got {val}"
+                    )));
+                }
+            }
             Ok(Sdf::cuboid(Vec3::new(x, y, z)))
         }
         "cylinder" => {
-            let r = req_f64(v, "r")?;
-            let h = req_f64(v, "h")?;
+            let r = req_positive_f64(v, "r")?;
+            let h = req_positive_f64(v, "h")?;
             Ok(Sdf::cylinder(r, h))
         }
         "torus" => {
-            let major = req_f64(v, "major")?;
-            let minor = req_f64(v, "minor")?;
+            let major = req_positive_f64(v, "major")?;
+            let minor = req_positive_f64(v, "minor")?;
             Ok(Sdf::torus(major, minor))
         }
         "cone" => {
-            let r = req_f64(v, "r")?;
-            let h = req_f64(v, "h")?;
+            let r = req_positive_f64(v, "r")?;
+            let h = req_positive_f64(v, "h")?;
             Ok(Sdf::cone(r, h))
         }
         "capsule" => {
+            // h=0 → 球体 (有効)。r は必ず正。
             let h = req_f64(v, "h")?;
-            let r = req_f64(v, "r")?;
+            if h < 0.0 {
+                return Err(ScriptError::new(format!(
+                    "capsule half-height \"h\" must be >= 0, got {h}"
+                )));
+            }
+            let r = req_positive_f64(v, "r")?;
             Ok(Sdf::capsule(h, r))
         }
         "rounded_box" => {
-            let x = req_f64(v, "x")?;
+            let x = req_positive_f64(v, "x")?;
             let y = opt_f64(v, "y").unwrap_or(x);
             let z = opt_f64(v, "z").unwrap_or(x);
-            let r = req_f64(v, "r")?;
+            for (n, val) in [("y", y), ("z", z)] {
+                if val <= 0.0 {
+                    return Err(ScriptError::new(format!(
+                        "rounded_box half-extent \"{n}\" must be > 0, got {val}"
+                    )));
+                }
+            }
+            let r = req_positive_f64(v, "r")?;
             Ok(Sdf::rounded_box(Vec3::new(x, y, z), r))
         }
 
@@ -214,6 +235,17 @@ fn req_f64(v: &Value, key: &str) -> Result<f64, ScriptError> {
     v.get(key)
         .and_then(|x| x.as_f64())
         .ok_or_else(|| ScriptError::new(format!("missing or non-numeric field \"{key}\"")))
+}
+
+/// `req_f64` + `> 0` チェック。`r=0` のプリミティブは内部がなく EMPTY_MESH でサイレント失敗するため (問28)。
+fn req_positive_f64(v: &Value, key: &str) -> Result<f64, ScriptError> {
+    let f = req_f64(v, key)?;
+    if f <= 0.0 {
+        return Err(ScriptError::new(format!(
+            "\"{key}\" must be > 0, got {f}"
+        )));
+    }
+    Ok(f)
 }
 
 fn opt_f64(v: &Value, key: &str) -> Option<f64> {
@@ -321,6 +353,36 @@ mod tests {
         // 問20: 1e400 (→ +inf) を含むスクリプトはパーサ段で拒否される。
         let r = eval_scene(r#"{"op":"sphere","r":1e400}"#);
         assert!(r.is_err(), "non-finite radius must be rejected");
+    }
+
+    #[test]
+    fn zero_or_negative_primitive_dimensions_are_rejected() {
+        // 問28: r=0/負は eval エラーなく受理されると EMPTY_MESH でサイレント失敗する。
+        // scale/shell と同様に入力段で拒否して明確なエラーを返す。
+        assert!(eval_scene(r#"{"op":"sphere","r":0.0}"#).is_err(), "r=0 sphere");
+        assert!(eval_scene(r#"{"op":"sphere","r":-1.0}"#).is_err(), "r<0 sphere");
+        assert!(eval_scene(r#"{"op":"sphere","r":1.0}"#).is_ok(), "r>0 sphere");
+
+        assert!(eval_scene(r#"{"op":"cylinder","r":0.0,"h":1.0}"#).is_err(), "r=0 cylinder");
+        assert!(eval_scene(r#"{"op":"cylinder","r":1.0,"h":0.0}"#).is_err(), "h=0 cylinder");
+        assert!(eval_scene(r#"{"op":"cylinder","r":1.0,"h":1.0}"#).is_ok());
+
+        assert!(eval_scene(r#"{"op":"cone","r":0.0,"h":1.0}"#).is_err(), "r=0 cone");
+        assert!(eval_scene(r#"{"op":"cone","r":1.0,"h":0.0}"#).is_err(), "h=0 cone");
+
+        assert!(eval_scene(r#"{"op":"torus","major":0.0,"minor":0.1}"#).is_err(), "major=0 torus");
+        assert!(eval_scene(r#"{"op":"torus","major":1.0,"minor":0.0}"#).is_err(), "minor=0 torus");
+
+        assert!(eval_scene(r#"{"op":"capsule","h":-1.0,"r":0.5}"#).is_err(), "h<0 capsule");
+        assert!(eval_scene(r#"{"op":"capsule","h":0.0,"r":0.5}"#).is_ok(), "h=0 capsule is sphere");
+        assert!(eval_scene(r#"{"op":"capsule","h":1.0,"r":0.0}"#).is_err(), "r=0 capsule");
+
+        assert!(eval_scene(r#"{"op":"cuboid","x":0.0,"y":1.0,"z":1.0}"#).is_err(), "x=0 cuboid");
+        assert!(eval_scene(r#"{"op":"cuboid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(), "y<0 cuboid");
+
+        assert!(eval_scene(r#"{"op":"rounded_box","x":0.0,"r":0.1}"#).is_err(), "x=0 rounded_box");
+        assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.0}"#).is_err(), "r=0 rounded_box");
+        assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.1}"#).is_ok());
     }
 
     #[test]
