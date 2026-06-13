@@ -50,6 +50,12 @@ fn main() {
             };
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, 64);
+            // 問48: screenshot と同様に空メッシュを検出して早期終了。
+            // 空 STL を無音で書き出すのではなく、境界拡大のヒントを出す。
+            if mesh.triangles.is_empty() {
+                eprintln!("mesh is empty — bounding box may not contain the shape");
+                std::process::exit(1);
+            }
             match stl::write_binary(&mesh, std::path::Path::new(&out)) {
                 Ok(()) => println!(
                     "exported {} ({} triangles, manifold={})",
@@ -136,20 +142,8 @@ fn main() {
             let max_overhang: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(45.0);
             let res: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(48);
             let res = res.clamp(1, 256);
-            let src = match std::fs::read_to_string(path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("cannot read {path}: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let sdf = match eval_scene(&src) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("script error: {e}");
-                    std::process::exit(1);
-                }
-            };
+            // 問47: run と同じヘルパを使い、ファイル読み込み・評価のエラー処理を一本化する。
+            let sdf = parse_scene(&load_scene_file(path));
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, res);
             let report = validate(&mesh, min_wall, max_overhang);
