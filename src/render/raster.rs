@@ -277,6 +277,21 @@ mod tests {
     }
 
     #[test]
+    fn supersampled_render_is_deterministic_and_non_blank() {
+        // 問56: 2× スーパーサンプル → ダウンサンプルした画像も決定的で前景を持つ。
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
+        let a = render(&mesh, cam, 64, 64).downsample(2);
+        let b = render(&mesh, cam, 64, 64).downsample(2);
+        assert_eq!((a.width, a.height), (32, 32), "downsample halves dimensions");
+        assert_eq!(a.pixels, b.pixels, "SSAA path must be deterministic");
+        let has_fg = a.pixels.chunks(3).any(|c| c != &cam.bg);
+        assert!(has_fg, "SSAA image must contain foreground");
+    }
+
+    #[test]
     fn top_and_bottom_views_render_non_blank() {
         // 問45: "top"/"bottom" は eye ∥ up_z だと look_at が縮退しブランク画像になる。
         // up_y に切り替えることで非縮退な行列を得て、球が写ることを確認する。

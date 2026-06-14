@@ -30,6 +30,38 @@ impl Image {
         self.pixels[off..off + 3].copy_from_slice(&rgb);
     }
 
+    /// `factor`×`factor` ブロック平均でダウンサンプルする (SSAA 用, 問56)。
+    /// 整数平均ゆえ決定的 (問5)。`width`/`height` は `factor` で割り切れる前提
+    /// (呼び出し側が保証する)。`factor <= 1` は等倍コピー。
+    pub fn downsample(&self, factor: usize) -> Image {
+        if factor <= 1 {
+            return Image {
+                width: self.width,
+                height: self.height,
+                pixels: self.pixels.clone(),
+            };
+        }
+        let ow = self.width / factor;
+        let oh = self.height / factor;
+        let mut out = Image::new(ow, oh, [0, 0, 0]);
+        let n = (factor * factor) as u32;
+        for oy in 0..oh {
+            for ox in 0..ow {
+                let mut acc = [0u32; 3];
+                for dy in 0..factor {
+                    for dx in 0..factor {
+                        let off = ((oy * factor + dy) * self.width + (ox * factor + dx)) * 3;
+                        acc[0] += self.pixels[off] as u32;
+                        acc[1] += self.pixels[off + 1] as u32;
+                        acc[2] += self.pixels[off + 2] as u32;
+                    }
+                }
+                out.set(ox, oy, [(acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8]);
+            }
+        }
+        out
+    }
+
     /// 決定的 PNG バイト列 (deflate store; 外部依存ゼロ)。
     pub fn encode_png(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -152,6 +184,29 @@ mod tests {
     fn png_encoding_is_deterministic() {
         let img = Image::new(8, 8, [255, 0, 128]);
         assert_eq!(img.encode_png(), img.encode_png());
+    }
+
+    #[test]
+    fn downsample_averages_blocks() {
+        // 問56: 2×2 を factor=2 でダウンサンプルすると 1 画素に平均化される。
+        let mut img = Image::new(2, 2, [0, 0, 0]);
+        img.set(0, 0, [100, 0, 0]);
+        img.set(1, 0, [0, 100, 0]);
+        img.set(0, 1, [0, 0, 100]);
+        img.set(1, 1, [40, 40, 40]);
+        let ds = img.downsample(2);
+        assert_eq!((ds.width, ds.height), (1, 1));
+        // 各チャネル平均: R=(100+0+0+40)/4=35, G=(0+100+0+40)/4=35, B=(0+0+100+40)/4=35。
+        assert_eq!(&ds.pixels[0..3], &[35, 35, 35]);
+    }
+
+    #[test]
+    fn downsample_factor_one_is_identity() {
+        let mut img = Image::new(3, 2, [10, 20, 30]);
+        img.set(1, 1, [200, 100, 50]);
+        let ds = img.downsample(1);
+        assert_eq!(ds.pixels, img.pixels);
+        assert_eq!((ds.width, ds.height), (3, 2));
     }
 
     #[test]

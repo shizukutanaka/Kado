@@ -62,6 +62,12 @@ pub fn tool_list() -> Value {
                     "Mesh resolution cells/axis (default: 48; increase for smoother output)",
                     false,
                 ),
+                (
+                    "samples",
+                    "integer",
+                    "Anti-aliasing supersample factor 1-4 (default: 2; higher = smoother edges)",
+                    false,
+                ),
             ],
         ),
         tool_def(
@@ -258,6 +264,9 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let width = arg_dim(args, "width", 512);
     let height = arg_dim(args, "height", 512);
     let res = arg_resolution(args, 48);
+    // SSAA 係数 (問56)。スーパーサンプルバッファが MAX_IMAGE_DIM を超えないよう
+    // クランプし OOM ガード (問18) を維持する。
+    let samples = arg_samples(args, width, height);
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
@@ -275,8 +284,21 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
         .1
         .clone();
 
-    let img = render(&mesh, &cam, width, height);
+    // スーパーサンプルして縮小 (アンチエイリアス)。
+    let big = render(&mesh, &cam, width * samples, height * samples);
+    let img = big.downsample(samples);
     ToolResult::image(base64_encode(&img.encode_png()))
+}
+
+/// SSAA 係数を `[1, 4]` に収め、かつ `dim * samples <= MAX_IMAGE_DIM` を保証する (問56/問18)。
+fn arg_samples(args: &Value, width: usize, height: usize) -> usize {
+    let requested = match args.get("samples").and_then(|v| v.as_f64()) {
+        Some(f) if f.is_finite() => (f as usize).clamp(1, 4),
+        _ => 2,
+    };
+    let cap_w = (MAX_IMAGE_DIM / width.max(1)).max(1);
+    let cap_h = (MAX_IMAGE_DIM / height.max(1)).max(1);
+    requested.min(cap_w).min(cap_h)
 }
 
 fn tool_export(session: &Session, args: &Value) -> ToolResult {

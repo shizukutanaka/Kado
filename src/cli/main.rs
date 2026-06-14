@@ -112,7 +112,8 @@ fn main() {
                 .unwrap_or(&presets[0])
                 .1
                 .clone();
-            let img = render(&mesh, &cam, 512, 512);
+            // 2× スーパーサンプルしてアンチエイリアス (問56)。
+            let img = render(&mesh, &cam, 1024, 1024).downsample(2);
             match img.write_png(std::path::Path::new(&out)) {
                 Ok(()) => println!(
                     "screenshot {} ({} triangles, view={})",
