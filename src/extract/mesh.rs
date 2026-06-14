@@ -84,6 +84,41 @@ impl Mesh {
         v
     }
 
+    /// 連結成分を符号付き体積で分類し `(中実ボディ数, 内部空洞数)` を返す (問60)。
+    ///
+    /// 「水密」は「単一造形物」を意味しない: 離れた2形状の和は2つの閉殻 (= 2ボディ)
+    /// になりうる。一方、中空シェルは外殻(+)と内殻(−)の2成分だが**1ボディ+1空洞**で
+    /// 正常。よって面の連結成分を符号付き体積で分類し、正=ボディ・負=空洞と数える。
+    ///
+    /// 頂点を三角形エッジで結ぶ Union-Find で成分を求める。決定的 (問5)。
+    pub fn body_components(&self) -> (usize, usize) {
+        let n = self.vertices.len();
+        if n == 0 || self.triangles.is_empty() {
+            return (0, 0);
+        }
+        let mut parent: Vec<u32> = (0..n as u32).collect();
+        for t in &self.triangles {
+            let r = uf_find(&mut parent, t[0]);
+            uf_union(&mut parent, r, t[1]);
+            uf_union(&mut parent, r, t[2]);
+        }
+        // 成分ごとに符号付き体積を集計。
+        let mut vols: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        for t in &self.triangles {
+            let root = uf_find(&mut parent, t[0]);
+            let a = self.vertices[t[0] as usize];
+            let b = self.vertices[t[1] as usize];
+            let c = self.vertices[t[2] as usize];
+            *vols.entry(root).or_insert(0.0) += a.dot(b.cross(c)) / 6.0;
+        }
+        // 退化成分 (面積ゼロ近傍) を無視する相対しきい値。
+        let max_abs = vols.values().fold(0.0f64, |m, &v| m.max(v.abs()));
+        let eps = (max_abs * 1e-6).max(f64::MIN_POSITIVE);
+        let bodies = vols.values().filter(|&&v| v > eps).count();
+        let cavities = vols.values().filter(|&&v| v < -eps).count();
+        (bodies, cavities)
+    }
+
     /// 軸整列バウンディングボックス (min, max)。空なら None。
     pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
         let mut it = self.vertices.iter();
@@ -94,5 +129,60 @@ impl Mesh {
             hi = hi.max(v);
         }
         Some((lo, hi))
+    }
+}
+
+// ── Union-Find (経路圧縮) ────────────────────────────────────────────────────
+fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {
+    while parent[x as usize] != x {
+        parent[x as usize] = parent[parent[x as usize] as usize];
+        x = parent[x as usize];
+    }
+    x
+}
+
+fn uf_union(parent: &mut [u32], a: u32, b: u32) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        // 小さい root を親にして決定性を保つ (問5: HashMap 等の順序に依存しない)。
+        let (hi, lo) = if ra < rb { (rb, ra) } else { (ra, rb) };
+        parent[hi as usize] = lo;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Sdf;
+    use crate::extract::polygonize;
+
+    #[test]
+    fn single_solid_is_one_body_no_cavity() {
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        assert_eq!(m.body_components(), (1, 0));
+    }
+
+    #[test]
+    fn two_disjoint_solids_are_two_bodies() {
+        // 問60: 離れた2球の和は水密だが 2 ボディ。
+        let a = Sdf::sphere(0.6).translate(Vec3::new(-1.2, 0.0, 0.0));
+        let b = Sdf::sphere(0.6).translate(Vec3::new(1.2, 0.0, 0.0));
+        let model = a.union(b);
+        let (lo, hi) = model.sampling_box();
+        let m = polygonize(&model, lo, hi, 40);
+        assert!(m.is_edge_manifold(), "each shell is watertight");
+        assert_eq!(m.body_components(), (2, 0), "two separate solids");
+    }
+
+    #[test]
+    fn hollow_shell_is_one_body_one_cavity() {
+        // 中空シェルは外殻(+)と内殻(−) → 1 ボディ + 1 空洞。誤って 2 ボディとしない。
+        let model = Sdf::sphere(1.0).shell(0.25);
+        let (lo, hi) = model.sampling_box();
+        let m = polygonize(&model, lo, hi, 48);
+        let (bodies, cavities) = m.body_components();
+        assert_eq!(bodies, 1, "hollow shell is a single solid body");
+        assert_eq!(cavities, 1, "with one internal cavity");
     }
 }

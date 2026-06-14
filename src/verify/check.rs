@@ -171,6 +171,28 @@ pub fn validate_with_field(
         ));
     }
 
+    // 4.5 複数ボディ検出 (問60): 水密でも独立した中実成分が複数あれば「単一造形物」でない。
+    //     成分を符号付き体積で分類し、正=ボディ・負=空洞。空洞 (中空シェル) は正常なので
+    //     ボディ数>1 のときのみ警告する (分割は意図的なこともあるため Error でなく Warning)。
+    if is_manifold {
+        let (bodies, cavities) = mesh.body_components();
+        if bodies > 1 {
+            issues.push(KadoError::warn(
+                "MULTIPLE_BODIES",
+                format!(
+                    "watertight mesh contains {bodies} separate solid bodies \
+                     ({cavities} internal cavit{}); this may be unintended \
+                     (e.g. a gap that should have connected)",
+                    if cavities == 1 { "y" } else { "ies" }
+                ),
+                &[
+                    "If a single part was intended, bridge the gap (overlap shapes or add a connector)",
+                    "If multiple parts are intended, this warning can be ignored",
+                ],
+            ));
+        }
+    }
+
     // 5. 肉厚チェック。2V/SA 平均 (問23) と、SDF があれば内向きレイ探針 (問58) の
     //    小さい方を採る。探針は局所的な薄肉を捉え、平均が太い本体に支配されて
     //    リブの薄さを見逃す弱点を補う。なお「閾値以上 = 薄肉なし」は依然非保証。
@@ -339,6 +361,28 @@ mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn multiple_bodies_warns_but_hollow_shell_does_not() {
+        // 問60: 離れた2球は MULTIPLE_BODIES 警告。中空シェル (1ボディ+1空洞) は出さない。
+        let two = Sdf::sphere(0.6)
+            .translate(Vec3::new(-1.2, 0.0, 0.0))
+            .union(Sdf::sphere(0.6).translate(Vec3::new(1.2, 0.0, 0.0)));
+        let (lo, hi) = two.sampling_box();
+        let r = validate(&polygonize(&two, lo, hi, 40), 0.0, 0.0);
+        assert!(
+            r.issues.iter().any(|e| e.code == "MULTIPLE_BODIES"),
+            "two disjoint solids must warn MULTIPLE_BODIES"
+        );
+
+        let shell = Sdf::sphere(1.0).shell(0.25);
+        let (lo, hi) = shell.sampling_box();
+        let r = validate(&polygonize(&shell, lo, hi, 48), 0.0, 0.0);
+        assert!(
+            !r.issues.iter().any(|e| e.code == "MULTIPLE_BODIES"),
+            "hollow shell is one body + one cavity, must NOT warn"
+        );
+    }
 
     #[test]
     fn probe_measures_shell_thickness() {
