@@ -3,7 +3,7 @@
 //! コマンド:
 //!   version    バージョン表示
 //!   selftest   最小 SDF 評価の動作確認
-//!   export     [scene.json] <out.stl|out.glb>  メッシュ出力 (.glb→glTF, 他→STL)
+//!   export     [scene.json] <out.stl|.glb|.3mf>  メッシュ出力 (.glb→glTF, .3mf→3MF, 他→STL)
 //!   screenshot [scene.json] <out.png> [view]  PNG スクリーンショット出力
 //!   run        <scene.json>  メッシュ統計表示
 //!   check      <scene.json> [min_wall_mm] [max_overhang_deg]  DFM 検証
@@ -11,7 +11,7 @@
 
 use kado::core::{Sdf, Vec3};
 use kado::extract::polygonize;
-use kado::io::{gltf, stl};
+use kado::io::{gltf, stl, threemf};
 use kado::mcp::server::run_stdio;
 use kado::render::{render, Camera};
 use kado::script::eval_scene;
@@ -56,10 +56,13 @@ fn main() {
                 eprintln!("mesh is empty — bounding box may not contain the shape");
                 std::process::exit(1);
             }
-            // 拡張子 .glb → GLB、それ以外 → STL (問54)。
+            // 拡張子で形式を選択: .glb → GLB, .3mf → 3MF, それ以外 → STL (問54/55)。
             let path = std::path::Path::new(&out);
-            let write_res = if out.to_lowercase().ends_with(".glb") {
+            let lower = out.to_lowercase();
+            let write_res = if lower.ends_with(".glb") {
                 gltf::write_glb(&mesh, path)
+            } else if lower.ends_with(".3mf") {
+                threemf::write_3mf(&mesh, path)
             } else {
                 stl::write_binary(&mesh, path)
             };

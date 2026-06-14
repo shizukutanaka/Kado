@@ -2,7 +2,7 @@
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
-use crate::io::{gltf, stl};
+use crate::io::{gltf, stl, threemf};
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
 use crate::script::eval_scene;
@@ -68,12 +68,13 @@ pub fn tool_list() -> Value {
             "export",
             "Export the current scene to a mesh file. Format is chosen by the path extension: \
              \".glb\" writes binary glTF 2.0 (indexed, viewable in browsers/Blender); \
+             \".3mf\" writes 3MF (modern 3D-printing standard with mm units); \
              any other extension writes binary STL. Returns the output file path.",
             &[
                 (
                     "path",
                     "string",
-                    "Output file path; .glb for glTF, otherwise STL (default: kado-export.stl)",
+                    "Output file path; .glb=glTF, .3mf=3MF, otherwise STL (default: kado-export.stl)",
                     false,
                 ),
                 (
@@ -299,14 +300,15 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             "mesh is empty — scene may be outside the bounding box; nothing exported",
         );
     }
-    // 拡張子 .glb → GLB (インデックス付き・閲覧容易)、それ以外 → STL (問54)。
-    let is_glb = path.to_lowercase().ends_with(".glb");
-    let write_res = if is_glb {
-        gltf::write_glb(&mesh, &safe)
+    // 拡張子で形式を選択: .glb → GLB, .3mf → 3MF, それ以外 → STL (問54/55)。
+    let lower = path.to_lowercase();
+    let (fmt, write_res) = if lower.ends_with(".glb") {
+        ("GLB", gltf::write_glb(&mesh, &safe))
+    } else if lower.ends_with(".3mf") {
+        ("3MF", threemf::write_3mf(&mesh, &safe))
     } else {
-        stl::write_binary(&mesh, &safe)
+        ("STL", stl::write_binary(&mesh, &safe))
     };
-    let fmt = if is_glb { "GLB" } else { "STL" };
     match write_res {
         Ok(()) => ToolResult::text(format!(
             "exported {}: {} ({} triangles, manifold={})",
