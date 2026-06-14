@@ -165,6 +165,59 @@ pub fn render(mesh: &Mesh, cam: &Camera, width: usize, height: usize) -> Image {
     img
 }
 
+// ── 座標軸グノモン (問66) ───────────────────────────────────────────────────────
+
+/// `origin` を起点に X=赤・Y=緑・Z=青の軸線を `length` だけ描き、向きの基準を与える。
+/// オーバーレイ (深度無視) で最後に重ねる。AI/人間が向き・鏡像・座標系を判読できる。
+pub fn draw_axes(img: &mut Image, cam: &Camera, origin: Vec3, length: f64) {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let (view, proj) = build_matrices(cam, w, h);
+    let project = |p: Vec3| -> Option<(f64, f64)> {
+        let c = mat4_mul_vec4(&proj, mat4_mul_vec4(&view, [p.x, p.y, p.z, 1.0]));
+        if c[3] <= 1e-9 {
+            return None;
+        }
+        let x = c[0] / c[3];
+        let y = c[1] / c[3];
+        Some(((x + 1.0) * 0.5 * w as f64, (1.0 - y) * 0.5 * h as f64))
+    };
+    let o = match project(origin) {
+        Some(o) => o,
+        None => return,
+    };
+    let axes = [
+        (Vec3::new(length, 0.0, 0.0), [235u8, 70, 70]), // X 赤
+        (Vec3::new(0.0, length, 0.0), [70, 200, 70]),   // Y 緑
+        (Vec3::new(0.0, 0.0, length), [90, 130, 245]),  // Z 青
+    ];
+    for (dir, color) in axes {
+        if let Some(end) = project(origin + dir) {
+            draw_line(img, o, end, color);
+        }
+    }
+}
+
+/// 2点間に色付き線を描く (DDA, 2px 太, 画面外はクリップ)。
+fn draw_line(img: &mut Image, a: (f64, f64), b: (f64, f64), color: [u8; 3]) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let x = (a.0 + dx * t).round() as isize;
+        let y = (a.1 + dy * t).round() as isize;
+        // 2px 太さで視認性を上げる。
+        for (ox, oy) in [(0isize, 0isize), (1, 0), (0, 1)] {
+            let (px, py) = (x + ox, y + oy);
+            if px >= 0 && py >= 0 && (px as usize) < img.width && (py as usize) < img.height {
+                img.set(px as usize, py as usize, color);
+            }
+        }
+    }
+}
+
 // ── 行列ヘルパ ─────────────────────────────────────────────────────────────────
 
 fn build_matrices(cam: &Camera, w: usize, h: usize) -> ([f64; 16], [f64; 16]) {
@@ -289,6 +342,36 @@ mod tests {
         assert_eq!(a.pixels, b.pixels, "SSAA path must be deterministic");
         let has_fg = a.pixels.chunks(3).any(|c| c != &cam.bg);
         assert!(has_fg, "SSAA image must contain foreground");
+    }
+
+    #[test]
+    fn axes_gnomon_draws_rgb_orientation_lines() {
+        // 問66: グノモン描画後、画像に赤・緑・青の軸色画素が現れる。
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
+        let mut img = render(&mesh, cam, 96, 96);
+        let center = (lo + hi) * 0.5;
+        draw_axes(&mut img, cam, center, (hi - lo).length() * 0.4);
+        let has = |c: [u8; 3]| img.pixels.chunks(3).any(|px| px == c);
+        assert!(has([235, 70, 70]), "X axis (red) must be drawn");
+        assert!(has([70, 200, 70]), "Y axis (green) must be drawn");
+        assert!(has([90, 130, 245]), "Z axis (blue) must be drawn");
+    }
+
+    #[test]
+    fn axes_overlay_is_deterministic() {
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
+        let mut a = render(&mesh, cam, 64, 64);
+        let mut b = render(&mesh, cam, 64, 64);
+        let center = (lo + hi) * 0.5;
+        draw_axes(&mut a, cam, center, 1.0);
+        draw_axes(&mut b, cam, center, 1.0);
+        assert_eq!(a.pixels, b.pixels);
     }
 
     #[test]

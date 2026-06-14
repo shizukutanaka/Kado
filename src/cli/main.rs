@@ -13,7 +13,7 @@ use kado::core::{Sdf, Vec3};
 use kado::extract::polygonize;
 use kado::io::{gltf, html, stl, threemf};
 use kado::mcp::server::run_stdio;
-use kado::render::{render, Camera};
+use kado::render::{draw_axes, render, Camera};
 use kado::script::eval_any;
 use kado::verify::{validate, validate_with_field};
 
@@ -115,7 +115,10 @@ fn main() {
                 .1
                 .clone();
             // 2× スーパーサンプルしてアンチエイリアス (問56)。
-            let img = render(&mesh, &cam, 1024, 1024).downsample(2);
+            let mut img = render(&mesh, &cam, 1024, 1024).downsample(2);
+            // 向きの基準として座標軸グノモンを重ねる (問66)。
+            let center = (lo + hi) * 0.5;
+            draw_axes(&mut img, &cam, center, (hi - lo).length() * 0.35);
             match img.write_png(std::path::Path::new(&out)) {
                 Ok(()) => println!(
                     "screenshot {} ({} triangles, view={})",

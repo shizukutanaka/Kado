@@ -8,4 +8,4 @@ pub mod image;
 pub mod raster;
 
 pub use image::Image;
-pub use raster::{render, Camera};
+pub use raster::{draw_axes, render, Camera};

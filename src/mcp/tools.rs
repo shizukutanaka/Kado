@@ -4,7 +4,7 @@ use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
 use crate::io::{gltf, html, stl, threemf};
 use crate::mcp::json::{self, Value};
-use crate::render::{render, Camera};
+use crate::render::{draw_axes, render, Camera};
 use crate::script::eval_any;
 use crate::verify::{validate, validate_with_field, Severity};
 
@@ -66,6 +66,12 @@ pub fn tool_list() -> Value {
                     "samples",
                     "integer",
                     "Anti-aliasing supersample factor 1-4 (default: 2; higher = smoother edges)",
+                    false,
+                ),
+                (
+                    "axes",
+                    "boolean",
+                    "Overlay an X(red)/Y(green)/Z(blue) orientation gnomon (default: true)",
                     false,
                 ),
             ],
@@ -297,7 +303,14 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
 
     // スーパーサンプルして縮小 (アンチエイリアス)。
     let big = render(&mesh, &cam, width * samples, height * samples);
-    let img = big.downsample(samples);
+    let mut img = big.downsample(samples);
+    // 向きの基準として座標軸グノモンを重ねる (問66; axes=false で無効化)。
+    let show_axes = args.get("axes").and_then(|v| v.as_bool()).unwrap_or(true);
+    if show_axes {
+        let center = (lo + hi) * 0.5;
+        let length = (hi - lo).length() * 0.35;
+        draw_axes(&mut img, &cam, center, length);
+    }
     ToolResult::image(base64_encode(&img.encode_png()))
 }
 
