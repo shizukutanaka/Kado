@@ -2,7 +2,7 @@
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
-use crate::io::{gltf, stl, threemf};
+use crate::io::{gltf, html, stl, threemf};
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
 use crate::script::eval_scene;
@@ -75,12 +75,13 @@ pub fn tool_list() -> Value {
             "Export the current scene to a mesh file. Format is chosen by the path extension: \
              \".glb\" writes binary glTF 2.0 (indexed, viewable in browsers/Blender); \
              \".3mf\" writes 3MF (modern 3D-printing standard with mm units); \
+             \".html\" writes a self-contained offline WebGL viewer (drag to orbit); \
              any other extension writes binary STL. Returns the output file path.",
             &[
                 (
                     "path",
                     "string",
-                    "Output file path; .glb=glTF, .3mf=3MF, otherwise STL (default: kado-export.stl)",
+                    "Output file path; .glb=glTF, .3mf=3MF, .html=viewer, otherwise STL (default: kado-export.stl)",
                     false,
                 ),
                 (
@@ -322,12 +323,14 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             "mesh is empty — scene may be outside the bounding box; nothing exported",
         );
     }
-    // 拡張子で形式を選択: .glb → GLB, .3mf → 3MF, それ以外 → STL (問54/55)。
+    // 拡張子で形式を選択: .glb→GLB, .3mf→3MF, .html→HTMLビューア, 他→STL (問54/55/57)。
     let lower = path.to_lowercase();
     let (fmt, write_res) = if lower.ends_with(".glb") {
         ("GLB", gltf::write_glb(&mesh, &safe))
     } else if lower.ends_with(".3mf") {
         ("3MF", threemf::write_3mf(&mesh, &safe))
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        ("HTML", html::write_html(&mesh, &safe))
     } else {
         ("STL", stl::write_binary(&mesh, &safe))
     };
