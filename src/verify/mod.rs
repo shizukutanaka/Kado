@@ -5,4 +5,4 @@
 
 pub mod check;
 
-pub use check::{validate, KadoError, Report, Severity};
+pub use check::{validate, validate_with_field, KadoError, Report, Severity};

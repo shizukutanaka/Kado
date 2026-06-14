@@ -6,7 +6,7 @@ use crate::io::{gltf, html, stl, threemf};
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
 use crate::script::eval_scene;
-use crate::verify::{validate, Severity};
+use crate::verify::{validate, validate_with_field, Severity};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
 // polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
@@ -529,7 +529,8 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
-    let report = validate(&mesh, min_wall, max_overhang);
+    // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
+    let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang);
     let status = if report.is_ok() { "PASS" } else { "FAIL" };
     let mut lines = vec![format!("[{status}] {}", report.summary())];
     for issue in &report.issues {

@@ -3,7 +3,7 @@
 //! 各検査は [`KadoError`] のリストを返す。エラー ≒ 製造上の問題。
 //! `fix_hints` は AI エージェントが自己修正ループを回すためのヒント (Plan §3)。
 
-use crate::core::Vec3;
+use crate::core::{Sdf, Vec3};
 use crate::extract::Mesh;
 
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
@@ -91,11 +91,23 @@ impl Report {
 
 // ── メインエントリポイント ────────────────────────────────────────────────────
 
-/// メッシュを検証して [`Report`] を返す。
+/// メッシュを検証して [`Report`] を返す (メッシュのみ。肉厚は 2V/SA 平均)。
 ///
 /// `min_wall_mm` は最小肉厚チェックの閾値 (0以下でスキップ)。
 /// `max_overhang_deg` は最大オーバーハング角度 (度; 0以下でスキップ)。
 pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report {
+    validate_with_field(mesh, None, min_wall_mm, max_overhang_deg)
+}
+
+/// SDF 場を併用して検証する。`sdf` を渡すと肉厚チェックに**内向きレイ探針**
+/// (問58) を併用し、2V/SA 平均が見落とす**局所的な薄肉** (太い本体に付く細いリブ等)
+/// を検出できる。`sdf=None` のときは [`validate`] と同じ (平均のみ)。
+pub fn validate_with_field(
+    mesh: &Mesh,
+    sdf: Option<&Sdf>,
+    min_wall_mm: f64,
+    max_overhang_deg: f64,
+) -> Report {
     let volume = mesh.signed_volume();
     let bbox = mesh.bounds();
     let (boundary_edges, nonmanifold_edges) = mesh.edge_defects();
@@ -159,16 +171,25 @@ pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report 
         ));
     }
 
-    // 5. 肉厚チェック (2V/SA による平均肉厚。問23: 「平均」であり最小ではない)
+    // 5. 肉厚チェック。2V/SA 平均 (問23) と、SDF があれば内向きレイ探針 (問58) の
+    //    小さい方を採る。探針は局所的な薄肉を捉え、平均が太い本体に支配されて
+    //    リブの薄さを見逃す弱点を補う。なお「閾値以上 = 薄肉なし」は依然非保証。
     if min_wall_mm > 0.0 {
         if let Some((lo, hi)) = bbox {
-            let thin = mean_wall_thickness(mesh, lo, hi);
+            let mean = mean_wall_thickness(mesh, lo, hi);
+            let probe = sdf.and_then(|s| min_wall_probe(s, mesh, lo, hi));
+            let thin = probe.map_or(mean, |p| p.min(mean));
+            let method = if probe.is_some() {
+                "min of 2V/SA mean and inward-ray probe"
+            } else {
+                "2V/SA average"
+            };
             if thin < min_wall_mm {
                 issues.push(KadoError::error(
                     "THIN_WALL",
                     format!(
-                        "estimated mean wall thickness {thin:.3} < {min_wall_mm:.3} \
-                         (2V/SA average; a pass does not guarantee no local thin features)"
+                        "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
+                         ({method}; a pass does not guarantee no local thin features)"
                     ),
                     &[
                         "Increase wall thickness via offset() or larger primitives",
@@ -248,11 +269,133 @@ fn mean_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
     2.0 * mesh.signed_volume().abs() / surface_area
 }
 
+/// 内向きレイ探針による**局所**肉厚の最小推定 (問58)。
+///
+/// 各表面頂点から内向き法線 (-∇SDF) 方向へ固定ステップで距離場を辿り、反対側の壁
+/// (SDF が負→非負へ戻る点) までの距離を肉厚とみなし、全探針の最小を返す。2V/SA 平均が
+/// 見落とす局所薄肉 (太い本体の細いリブ等) を捉える。探針数は上限で抑える。
+///
+/// 限界: ステップより薄い壁 (< diag/256) は跨いで見落としうる。よって検出は有効だが
+/// 非検出は薄肉皆無を保証しない (平均と同じく安全側の補助)。
+pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Option<f64> {
+    let diag = (hi - lo).length();
+    let v = mesh.vertices.len();
+    if diag <= 0.0 || v == 0 {
+        return None;
+    }
+    let step = diag / 256.0;
+    let max_dist = diag * 1.2;
+    // 過剰計算を避けるため探針数を上限で間引く。
+    let cap = 30_000usize;
+    let stride = v.div_ceil(cap);
+
+    let mut min_t = f64::INFINITY;
+    let mut i = 0;
+    while i < v {
+        let p = mesh.vertices[i];
+        i += stride;
+        let g = sdf_gradient(sdf, p);
+        let gl = g.length();
+        if gl < 1e-12 {
+            continue;
+        }
+        let inward = g * (-1.0 / gl);
+        // 内側 (負) を確認してから最初の 0 跨ぎを探す。
+        let mut t = 0.0;
+        let mut prev_d = sdf.eval(p);
+        let mut went_inside = prev_d < 0.0;
+        while t < max_dist {
+            t += step;
+            let d = sdf.eval(p + inward * t);
+            if went_inside && d >= 0.0 {
+                // prev_d (<0) と d (>=0) を線形補間して交点距離を求める。
+                let cross = (t - step) + (-prev_d) / (d - prev_d) * step;
+                if cross > 0.0 && cross < min_t {
+                    min_t = cross;
+                }
+                break;
+            }
+            if d < 0.0 {
+                went_inside = true;
+            }
+            prev_d = d;
+        }
+    }
+    min_t.is_finite().then_some(min_t)
+}
+
+/// 中心差分による SDF 勾配 (外向き)。内向き法線は `-gradient`。
+fn sdf_gradient(sdf: &Sdf, p: Vec3) -> Vec3 {
+    let h = 1e-4;
+    Vec3::new(
+        sdf.eval(p + Vec3::new(h, 0.0, 0.0)) - sdf.eval(p - Vec3::new(h, 0.0, 0.0)),
+        sdf.eval(p + Vec3::new(0.0, h, 0.0)) - sdf.eval(p - Vec3::new(0.0, h, 0.0)),
+        sdf.eval(p + Vec3::new(0.0, 0.0, h)) - sdf.eval(p - Vec3::new(0.0, 0.0, h)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn probe_measures_shell_thickness() {
+        // 問58: 厚さ 0.2 のシェルの最小肉厚 ≈ 0.2 を内向きレイ探針が測れる。
+        let sdf = Sdf::sphere(1.0).shell(0.2);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 48);
+        let t = min_wall_probe(&sdf, &mesh, lo, hi).expect("probe must return a value");
+        assert!(
+            (t - 0.2).abs() < 0.06,
+            "shell thickness probe should be ~0.2, got {t}"
+        );
+    }
+
+    #[test]
+    fn probe_reports_large_thickness_for_solid_sphere() {
+        // 中実球には薄肉がない。探針はおおむね直径 (≈2.0) を返し、薄肉と誤判定しない。
+        let sdf = Sdf::sphere(1.0);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 40);
+        let t = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
+        assert!(t > 1.0, "solid sphere min wall should be large (~2.0), got {t}");
+    }
+
+    #[test]
+    fn probe_catches_local_thin_fin_that_mean_misses() {
+        // 問58 の核心: 太い本体 (2×2×2) に薄いフィン (厚さ 0.1) が付く形状。
+        // 2V/SA 平均は本体に支配されて薄肉を見逃すが、探針はフィンの 0.1 を捉える。
+        let body = Sdf::cuboid(Vec3::new(1.0, 1.0, 1.0));
+        let fin = Sdf::cuboid(Vec3::new(1.8, 0.05, 0.8));
+        let sdf = body.union(fin);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 48);
+
+        let mean = mean_wall_thickness(&mesh, lo, hi);
+        let probe = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
+        assert!(
+            mean > 0.2,
+            "2V/SA mean should be dominated by the body (>0.2), got {mean}"
+        );
+        assert!(
+            probe < 0.18,
+            "probe must catch the thin fin (~0.1), got {probe}"
+        );
+
+        // 場併用 validate は THIN_WALL を報告し、メッシュのみは見逃す (閾値 0.2)。
+        let with_field = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0);
+        let mesh_only = validate(&mesh, 0.2, 0.0);
+        assert!(
+            with_field.issues.iter().any(|e| e.code == "THIN_WALL"),
+            "field-aware validate must flag the thin fin"
+        );
+        assert!(
+            !mesh_only.issues.iter().any(|e| e.code == "THIN_WALL"),
+            "mesh-only mean check misses the thin fin (demonstrates added value)"
+        );
+    }
 
     #[test]
     fn sphere_passes_validation() {
