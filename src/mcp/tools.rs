@@ -5,7 +5,7 @@ use crate::extract::polygonize;
 use crate::io::{gltf, html, stl, threemf};
 use crate::mcp::json::{self, Value};
 use crate::render::{render, Camera};
-use crate::script::eval_scene;
+use crate::script::eval_any;
 use crate::verify::{validate, validate_with_field, Severity};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
@@ -103,9 +103,16 @@ pub fn tool_list() -> Value {
         ),
         tool_def(
             "run_script",
-            "Evaluate a KadoScene JSON script and set it as the active scene. Returns a summary.",
+            "Evaluate a KadoScene script and set it as the active scene. Returns a summary. \
+             Accepts either JSON (starts with '{') or the compact text DSL, e.g. \
+             difference(sphere(1), cylinder(0.3, 2)).",
             &[
-                ("script", "string", "KadoScene JSON scene description", true),
+                (
+                    "script",
+                    "string",
+                    "KadoScene script: JSON object, or text DSL like union(sphere(1), cuboid(0.8))",
+                    true,
+                ),
                 (
                     "resolution",
                     "integer",
@@ -396,7 +403,8 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     };
     let res = arg_resolution(args, 32);
 
-    let sdf = match eval_scene(&src) {
+    // JSON ({...}) とテキスト DSL を自動判別 (問59)。
+    let sdf = match eval_any(&src) {
         Ok(s) => s,
         Err(e) => return ToolResult::error(format!("script error: {e}")),
     };
@@ -494,10 +502,24 @@ repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
  "a":{"op":"sphere","r":1.5},
  "b":{"op":"cylinder","r":0.4,"h":2.0}}
 
+## Compact text DSL (alternative to JSON)
+
+run_script also accepts a concise function-call syntax (token-efficient). The same
+hole example:
+
+  difference(sphere(1.5), cylinder(0.4, 2.0))
+
+DSL arg order mirrors the constructors:
+  sphere(r) · cuboid(s) or cuboid(x,y,z) · cylinder(r,h) · torus(major,minor)
+  cone(r,h) · capsule(h,r) · rounded_box(s,r) or (x,y,z,r) · ellipsoid(s) or (x,y,z)
+  union/intersection/difference(a,b) · smooth_*(a,b[,k])
+  translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
+  rotate_x/y/z(deg,shape) · mirror_x/y/z(shape) · repeat(px,py,pz[,nx,ny,nz],shape)
+
 ## Workflow
 
-1. Call run_script with your KadoScene JSON.
-2. Call screenshot to preview; validate for DFM; export to save STL.
+1. Call run_script with your KadoScene JSON or text DSL.
+2. Call screenshot to preview; validate for DFM; export to save STL/GLB/3MF/HTML.
 3. Call get_scene to read back the current script if needed.
 "#;
 

@@ -26,7 +26,7 @@ pub struct ScriptError {
 }
 
 impl ScriptError {
-    fn new(s: impl Into<String>) -> ScriptError {
+    pub(crate) fn new(s: impl Into<String>) -> ScriptError {
         ScriptError { message: s.into() }
     }
 }
@@ -62,9 +62,22 @@ pub fn eval_scene(source: &str) -> Result<Sdf, ScriptError> {
         )));
     }
     let v = parse(source).map_err(|e| ScriptError::new(format!("JSON parse error: {e}")))?;
-    let mut budget = Budget { nodes: 0 };
-    build(&v, 0, &mut budget)
+    eval_value(&v)
 }
+
+/// 既に構築済みの KadoScene [`Value`] 木を評価して [`Sdf`] を返す。
+///
+/// JSON とテキスト DSL は同じ `Value` 木へ落ちるため、意味論・検証・リソース上限を
+/// ここで一元的に適用する (フロントエンド非依存)。
+pub fn eval_value(v: &Value) -> Result<Sdf, ScriptError> {
+    let mut budget = Budget { nodes: 0 };
+    build(v, 0, &mut budget)
+}
+
+/// DSL 用の最大ソースバイト数 (JSON と共通の上限・問16)。
+pub(crate) const DSL_MAX_SOURCE_BYTES: usize = MAX_SOURCE_BYTES;
+/// DSL 用の最大ネスト深さ (問16)。
+pub(crate) const DSL_MAX_DEPTH: usize = MAX_DEPTH;
 
 fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptError> {
     if depth > MAX_DEPTH {

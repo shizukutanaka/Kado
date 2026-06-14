@@ -14,7 +14,7 @@ use kado::extract::polygonize;
 use kado::io::{gltf, html, stl, threemf};
 use kado::mcp::server::run_stdio;
 use kado::render::{render, Camera};
-use kado::script::eval_scene;
+use kado::script::eval_any;
 use kado::verify::{validate, validate_with_field};
 
 fn demo_model() -> Sdf {
@@ -196,7 +196,8 @@ fn load_scene_file(path: &str) -> String {
 }
 
 fn parse_scene(src: &str) -> Sdf {
-    match eval_scene(src) {
+    // JSON / テキスト DSL を自動判別 (問59)。
+    match eval_any(src) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("script error: {e}");
