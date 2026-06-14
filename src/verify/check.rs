@@ -54,6 +54,8 @@ pub struct Report {
     pub triangle_count: usize,
     /// edge-manifold (水密) かどうか。
     pub is_manifold: bool,
+    /// 正準メッシュ内容ダイジェスト (FNV-1a 64bit, 問61)。再現性検証用。
+    pub digest: u64,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -83,8 +85,17 @@ impl Report {
         format!(
             "triangles={} manifold={} volume={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
-             errors={errors} warnings={warnings}",
-            self.triangle_count, self.is_manifold, self.volume, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z,
+             digest={:016x} errors={errors} warnings={warnings}",
+            self.triangle_count,
+            self.is_manifold,
+            self.volume,
+            lo.x,
+            lo.y,
+            lo.z,
+            hi.x,
+            hi.y,
+            hi.z,
+            self.digest,
         )
     }
 }
@@ -113,6 +124,7 @@ pub fn validate_with_field(
     let (boundary_edges, nonmanifold_edges) = mesh.edge_defects();
     let is_manifold = boundary_edges == 0 && nonmanifold_edges == 0;
     let tri_count = mesh.triangles.len();
+    let digest = mesh.digest();
     let mut issues = vec![];
 
     // 1. 開境界 (致命的): 表面が閉じていない。原因別にヒントを出す (問25/問3)。
@@ -158,6 +170,7 @@ pub fn validate_with_field(
             bbox,
             triangle_count: tri_count,
             is_manifold,
+            digest,
             issues,
         };
     }
@@ -261,6 +274,7 @@ pub fn validate_with_field(
         bbox,
         triangle_count: tri_count,
         is_manifold,
+        digest,
         issues,
     }
 }
@@ -470,6 +484,11 @@ mod tests {
         let s = r.summary();
         assert!(s.contains("manifold=true"));
         assert!(s.contains("errors=0"));
+        // 問61: 再現性検証のためダイジェストが要約に含まれる。
+        assert!(
+            s.contains(&format!("digest={:016x}", r.digest)),
+            "summary must expose the content digest: {s}"
+        );
     }
 
     #[test]

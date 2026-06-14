@@ -84,6 +84,29 @@ impl Mesh {
         v
     }
 
+    /// 正準メッシュの内容ダイジェスト (FNV-1a 64bit) を返す (問61)。
+    ///
+    /// 決定性 (問5) を**観測可能**にする: 同一バイナリ・同一arch・同一スクリプト・
+    /// 同一解像度なら同じダイジェストになり、第三者が短いハッシュ1つで再現性を検証
+    /// できる (ファイル全体の比較が不要)。頂点ビット列・三角形索引をメッシュ順
+    /// (これ自体が決定的) で食わせる。
+    pub fn digest(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
+        for v in &self.vertices {
+            h = fnv1a(h, &v.x.to_bits().to_le_bytes());
+            h = fnv1a(h, &v.y.to_bits().to_le_bytes());
+            h = fnv1a(h, &v.z.to_bits().to_le_bytes());
+        }
+        // 頂点数と三角形数も混ぜて長さ差を確実に反映する。
+        h = fnv1a(h, &(self.vertices.len() as u64).to_le_bytes());
+        for t in &self.triangles {
+            for &i in t {
+                h = fnv1a(h, &i.to_le_bytes());
+            }
+        }
+        h
+    }
+
     /// 連結成分を符号付き体積で分類し `(中実ボディ数, 内部空洞数)` を返す (問60)。
     ///
     /// 「水密」は「単一造形物」を意味しない: 離れた2形状の和は2つの閉殻 (= 2ボディ)
@@ -132,6 +155,16 @@ impl Mesh {
     }
 }
 
+/// FNV-1a 64bit の1ステップ (バイト列を畳み込む)。
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h
+}
+
 // ── Union-Find (経路圧縮) ────────────────────────────────────────────────────
 fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {
     while parent[x as usize] != x {
@@ -156,6 +189,24 @@ mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn digest_is_deterministic_and_geometry_sensitive() {
+        // 問61: 同一メッシュは同一ダイジェスト、異なる形状は (ほぼ確実に) 異なる。
+        let a = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 20);
+        let b = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 20);
+        assert_eq!(a.digest(), b.digest(), "same mesh must share digest");
+
+        let c = polygonize(&Sdf::sphere(1.01), Vec3::splat(-1.5), Vec3::splat(1.5), 20);
+        assert_ne!(
+            a.digest(),
+            c.digest(),
+            "different geometry must change digest"
+        );
+        // 解像度差も反映される。
+        let d = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        assert_ne!(a.digest(), d.digest(), "different resolution must change digest");
+    }
 
     #[test]
     fn single_solid_is_one_body_no_cavity() {
