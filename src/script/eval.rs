@@ -29,6 +29,12 @@ impl ScriptError {
     pub(crate) fn new(s: impl Into<String>) -> ScriptError {
         ScriptError { message: s.into() }
     }
+
+    /// 親ノードの文脈 (`op.key`) を先頭に付け、失敗位置のパスを積む (問64)。
+    /// 木を巻き戻しながら `difference.a > union.b > sphere: ...` のように経路を構築する。
+    pub(crate) fn at(self, op: &str, key: &str) -> ScriptError {
+        ScriptError::new(format!("{op}.{key} > {}", self.message))
+    }
 }
 
 impl std::fmt::Display for ScriptError {
@@ -182,49 +188,49 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
 
         // ── ブーリアン ────────────────────────────────────────────────────────
         "union" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             Ok(a.union(b))
         }
         "intersection" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             Ok(a.intersection(b))
         }
         "difference" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             Ok(a.difference(b))
         }
         "smooth_union" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
             Ok(a.smooth_union(b, k))
         }
         "smooth_intersection" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
             Ok(a.smooth_intersection(b, k))
         }
         "smooth_difference" => {
-            let a = build(req_child(v, "a")?, depth + 1, budget)?;
-            let b = build(req_child(v, "b")?, depth + 1, budget)?;
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
             Ok(a.smooth_difference(b, k))
         }
 
         // ── 変形 ──────────────────────────────────────────────────────────────
         "translate" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             let tx = opt_f64(v, "x").unwrap_or(0.0);
             let ty = opt_f64(v, "y").unwrap_or(0.0);
             let tz = opt_f64(v, "z").unwrap_or(0.0);
             Ok(child.translate(Vec3::new(tx, ty, tz)))
         }
         "scale" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             let s = req_f64(v, "s")?;
             // s<=0 は距離場を破壊する (s=0→0除算でNaN, s<0→内外反転)。拒否する (問20)。
             if s <= 0.0 {
@@ -235,12 +241,12 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.scale(s))
         }
         "offset" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             let a = req_f64(v, "amount")?;
             Ok(child.offset(a))
         }
         "shell" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             let t = req_f64(v, "thickness")?;
             // t<=0 は geometrically invalid: t=0 → |d| (内部なし), t<0 → 無意味。
             // scale<=0 と同様に拒否する (問27)。
@@ -252,7 +258,7 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.shell(t))
         }
         "repeat" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             let px = opt_f64(v, "x").unwrap_or(0.0);
             let py = opt_f64(v, "y").unwrap_or(0.0);
             let pz = opt_f64(v, "z").unwrap_or(0.0);
@@ -265,21 +271,21 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             };
             Ok(child.repeat_n(Vec3::new(px, py, pz), [n("nx"), n("ny"), n("nz")]))
         }
-        "mirror_x" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_x()),
-        "mirror_y" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_y()),
-        "mirror_z" => Ok(build(req_child(v, "shape")?, depth + 1, budget)?.mirror_z()),
+        "mirror_x" => Ok(build_child(v, "shape", op, depth, budget)?.mirror_x()),
+        "mirror_y" => Ok(build_child(v, "shape", op, depth, budget)?.mirror_y()),
+        "mirror_z" => Ok(build_child(v, "shape", op, depth, budget)?.mirror_z()),
 
         // 回転の "angle" は**度** (degree) で受け取り内部でラジアンへ変換する (CAD 慣習)。
         "rotate_x" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             Ok(child.rotate_x(req_f64(v, "angle")?.to_radians()))
         }
         "rotate_y" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             Ok(child.rotate_y(req_f64(v, "angle")?.to_radians()))
         }
         "rotate_z" => {
-            let child = build(req_child(v, "shape")?, depth + 1, budget)?;
+            let child = build_child(v, "shape", op, depth, budget)?;
             Ok(child.rotate_z(req_f64(v, "angle")?.to_radians()))
         }
 
@@ -288,6 +294,18 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
 }
 
 // ── arg helpers ───────────────────────────────────────────────────────────────
+
+/// 子ノードを取得して再帰評価し、失敗時に親文脈 (`op.key`) をパスへ積む (問64)。
+fn build_child(
+    v: &Value,
+    key: &str,
+    op: &str,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Sdf, ScriptError> {
+    let child = req_child(v, key).map_err(|e| e.at(op, key))?;
+    build(child, depth + 1, budget).map_err(|e| e.at(op, key))
+}
 
 fn req_f64(v: &Value, key: &str) -> Result<f64, ScriptError> {
     v.get(key)
@@ -354,6 +372,22 @@ mod tests {
         let direct = Sdf::sphere(1.0).translate(Vec3::new(2.0, 0.0, 0.0));
         let p = Vec3::new(2.0, 1.0, 0.0);
         assert!((s.eval(p) - direct.eval(p)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nested_error_reports_path_to_failing_node() {
+        // 問64: 深い木の失敗はパス付きで報告される (どのノードが原因か特定可能)。
+        // difference.a > union.b > sphere の r=0 が原因。
+        let src = r#"{"op":"difference",
+            "a":{"op":"union","a":{"op":"sphere","r":1},"b":{"op":"sphere","r":0}},
+            "b":{"op":"cylinder","r":0.3,"h":2}}"#;
+        let e = eval_scene(src).unwrap_err();
+        assert!(
+            e.message.contains("difference.a > union.b >"),
+            "error must carry the path to the failing node, got: {}",
+            e.message
+        );
+        assert!(e.message.contains("must be > 0"), "and the leaf cause: {}", e.message);
     }
 
     #[test]

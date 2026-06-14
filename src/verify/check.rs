@@ -67,6 +67,13 @@ impl Report {
         self.issues.iter().all(|e| e.severity != Severity::Error)
     }
 
+    /// 体積が信頼できるか (問65)。発散定理による体積は**閉じた**メッシュでのみ意味を持つ。
+    /// 開境界 (OPEN_MESH) や空メッシュでは符号付き体積は無意味なので、AI/利用者が
+    /// 誤って信頼しないよう明示する。
+    pub fn volume_reliable(&self) -> bool {
+        self.is_manifold && self.triangle_count > 0
+    }
+
     /// 人間可読なサマリー。
     pub fn summary(&self) -> String {
         let errors = self
@@ -85,8 +92,10 @@ impl Report {
             .unwrap_or((Vec3::ZERO, Vec3::ZERO));
         // 寸法を明示する (問62: 単位はミリメートル, 1 unit = 1 mm)。
         let d = hi - lo;
+        // 体積は閉じたメッシュでのみ有効 (問65)。
+        let vol_note = if self.volume_reliable() { "" } else { "(unreliable: not closed)" };
         format!(
-            "triangles={} manifold={} volume={:.3} \
+            "triangles={} manifold={} volume={:.3}{vol_note} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
              digest={:016x} errors={errors} warnings={warnings}",
@@ -137,6 +146,7 @@ impl Report {
             ("triangles", json::n(self.triangle_count as f64)),
             ("manifold", json::b(self.is_manifold)),
             ("volume", json::n(self.volume)),
+            ("volume_reliable", json::b(self.volume_reliable())),
             ("bbox", bbox),
             ("dims_mm", vec3(d)),
             ("digest", json::s(format!("{:016x}", self.digest))),
@@ -439,6 +449,22 @@ mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn volume_is_marked_unreliable_for_open_mesh() {
+        // 問65: 閉じたメッシュは体積信頼可、クリップで開いたメッシュは不可。
+        let s = Sdf::sphere(1.0);
+        let closed = polygonize(&s, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let r = validate(&closed, 0.0, 0.0);
+        assert!(r.volume_reliable(), "closed mesh volume must be reliable");
+        assert!(r.to_json().to_string().contains("\"volume_reliable\":true"));
+
+        // z=0 でクリップして開境界を作る。
+        let open = polygonize(&s, Vec3::new(-1.5, -1.5, -1.5), Vec3::new(1.5, 1.5, 0.0), 24);
+        let r = validate(&open, 0.0, 0.0);
+        assert!(!r.volume_reliable(), "open mesh volume must be flagged unreliable");
+        assert!(r.summary().contains("unreliable"), "summary must warn: {}", r.summary());
+    }
 
     #[test]
     fn to_json_is_machine_readable_and_carries_codes() {
