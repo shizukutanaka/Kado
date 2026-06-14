@@ -123,7 +123,10 @@ pub fn tool_list() -> Value {
         ),
         tool_def(
             "validate",
-            "Validate the current scene mesh for manufacturability (DFM). Returns a structured report.",
+            "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
+             JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
+             issues:[{severity, code, cause, hints}]}. Branch on issue.code (e.g. THIN_WALL, \
+             MULTIPLE_BODIES, OPEN_MESH, OVERHANG, SUSPICIOUS_SCALE).",
             &[
                 (
                     "resolution",
@@ -553,18 +556,8 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     let mesh = polygonize(scene, lo_b, hi_b, res);
     // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
     let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang);
-    let status = if report.is_ok() { "PASS" } else { "FAIL" };
-    let mut lines = vec![format!("[{status}] {}", report.summary())];
-    for issue in &report.issues {
-        lines.push(format!(
-            "  [{:?}] {} — {}",
-            issue.severity, issue.code, issue.cause
-        ));
-        for hint in &issue.fix_hints {
-            lines.push(format!("    hint: {hint}"));
-        }
-    }
-    ToolResult::text(lines.join("\n"))
+    // 機械可読な構造化 JSON を返す (問63): AI が code で分岐し指標を直接読める。
+    ToolResult::text(report.to_json().to_string())
 }
 
 // ── base64 (RFC 4648, std のみ) ───────────────────────────────────────────────

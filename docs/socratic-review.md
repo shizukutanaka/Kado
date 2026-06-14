@@ -995,3 +995,24 @@ JSON チャンクは既存 json モジュールで構築 (4バイト整列パデ
 
 > 総括: v34 は「単位は暗黙では伝わらない」という新視点で、寸法を mm で明示し、
 > スケール誤りを閾値相対で検出。テスト数 125→127 + 統合 3。
+
+## 問63 — 検証レポートは AI が機械処理できる形か?
+**問**: `validate` の結果は人間可読のテキスト塊だった。自己修正ループの AI は
+コードや数値指標を**自由文字列から抽出**せねばならず脆い (部分文字列マッチ)。
+AI-First ツールなら構造化して `code == "THIN_WALL"` で確実に分岐できるべき。
+
+**修正**: `Report::to_json()` を追加 (問63)。`mcp::json` を汎用 JSON ユーティリティとして
+用い、`{ok, triangles, manifold, volume, bbox, dims_mm, digest, issues:[{severity,
+code, cause, hints}]}` を返す。MCP `validate` ツールはこの JSON を返すよう変更
+(CLI check は人間向けテキストのまま据え置き)。スキーマ説明にもコード一覧を明記。
+
+検証 (テスト 127→128): to_json が parse で往復一致、必須フィールド存在、各 issue が
+code/severity を持ち、`ok` が Error 有無と整合することを確認。
+
+## 反映サマリ v35
+| 問 | 実装 |
+|----|------|
+| 63 | 構造化 JSON レポート (Report::to_json) — MCP validate を機械可読化 |
+
+> 総括: v35 は「レポートは AI が機械処理できて初めて自己修正に使える」という新視点で、
+> MCP validate を構造化 JSON 化。テスト数 127→128 + 統合 3。

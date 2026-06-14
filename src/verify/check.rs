@@ -5,6 +5,7 @@
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::Mesh;
+use crate::mcp::json::{self, Value};
 
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
 
@@ -103,6 +104,44 @@ impl Report {
             d.z,
             self.digest,
         )
+    }
+
+    /// 機械可読な構造化レポート (問63)。AI が `code` で分岐し数値指標を直接読めるよう、
+    /// 自由文字列ではなく JSON で返す。`mcp::json` を汎用 JSON ユーティリティとして用いる。
+    pub fn to_json(&self) -> Value {
+        let (lo, hi) = self.bbox.unwrap_or((Vec3::ZERO, Vec3::ZERO));
+        let d = hi - lo;
+        let vec3 = |v: Vec3| json::arr([json::n(v.x), json::n(v.y), json::n(v.z)]);
+        let issues: Vec<Value> = self
+            .issues
+            .iter()
+            .map(|e| {
+                json::obj([
+                    ("severity", json::s(format!("{:?}", e.severity))),
+                    ("code", json::s(e.code)),
+                    ("cause", json::s(e.cause.clone())),
+                    (
+                        "hints",
+                        Value::Array(e.fix_hints.iter().map(|h| json::s(h.clone())).collect()),
+                    ),
+                ])
+            })
+            .collect();
+        let bbox = if self.bbox.is_some() {
+            json::obj([("min", vec3(lo)), ("max", vec3(hi))])
+        } else {
+            json::NULL
+        };
+        json::obj([
+            ("ok", json::b(self.is_ok())),
+            ("triangles", json::n(self.triangle_count as f64)),
+            ("manifold", json::b(self.is_manifold)),
+            ("volume", json::n(self.volume)),
+            ("bbox", bbox),
+            ("dims_mm", vec3(d)),
+            ("digest", json::s(format!("{:016x}", self.digest))),
+            ("issues", Value::Array(issues)),
+        ])
     }
 }
 
@@ -400,6 +439,38 @@ mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn to_json_is_machine_readable_and_carries_codes() {
+        // 問63: 構造化レポートが再パース可能で、code/severity/指標を保持する。
+        use crate::mcp::json::parse;
+        // 薄肉になる穴あき球で THIN_WALL を誘発。
+        let model = Sdf::sphere(1.0).difference(Sdf::cylinder(0.9, 2.0));
+        let (lo, hi) = model.sampling_box();
+        let mesh = polygonize(&model, lo, hi, 40);
+        let report = validate(&mesh, 0.5, 0.0);
+        let v = report.to_json();
+        // 文字列化 → 再パースして往復が壊れないこと。
+        let reparsed = parse(&v.to_string()).expect("report JSON must be valid");
+        assert_eq!(reparsed, v, "to_json must round-trip through parse");
+        // 必須フィールド。
+        assert!(v.get("ok").and_then(|x| x.as_bool()).is_some());
+        assert!(v.get("digest").and_then(|x| x.as_str()).is_some());
+        assert!(v.get("dims_mm").and_then(|x| x.as_array()).is_some());
+        let issues = v.get("issues").and_then(|x| x.as_array()).unwrap();
+        // 少なくとも1つの issue が code/severity/hints を持つ。
+        assert!(
+            issues
+                .iter()
+                .all(|e| e.get("code").is_some() && e.get("severity").is_some()),
+            "every issue must carry a machine-readable code and severity"
+        );
+        // ok は issues のエラー有無と整合。
+        let has_error = issues
+            .iter()
+            .any(|e| e.get("severity").and_then(|s| s.as_str()) == Some("Error"));
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(!has_error));
+    }
 
     #[test]
     fn summary_reports_physical_dimensions_in_mm() {
