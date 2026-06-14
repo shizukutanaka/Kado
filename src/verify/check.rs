@@ -82,9 +82,12 @@ impl Report {
             .bbox
             .map(|(a, b)| (a, b))
             .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+        // 寸法を明示する (問62: 単位はミリメートル, 1 unit = 1 mm)。
+        let d = hi - lo;
         format!(
             "triangles={} manifold={} volume={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
+             dims_mm=[{:.3}x{:.3}x{:.3}] \
              digest={:016x} errors={errors} warnings={warnings}",
             self.triangle_count,
             self.is_manifold,
@@ -95,6 +98,9 @@ impl Report {
             hi.x,
             hi.y,
             hi.z,
+            d.x,
+            d.y,
+            d.z,
             self.digest,
         )
     }
@@ -229,6 +235,25 @@ pub fn validate_with_field(
                     &[
                         "Increase wall thickness via offset() or larger primitives",
                         "Reduce min_wall_mm threshold if intentional",
+                    ],
+                ));
+            }
+
+            // 5.5 スケール健全性 (問62): Kado 座標は mm (1 unit = 1 mm)。最大寸法が
+            //     ユーザ自身の最小肉厚閾値すら下回るなら、形状全体が1壁より小さい =
+            //     ほぼ確実に単位/スケールの誤り。絶対値でなく閾値相対なので恣意的でない。
+            let max_dim = (hi - lo).max_component();
+            if max_dim > 0.0 && max_dim < min_wall_mm {
+                issues.push(KadoError::warn(
+                    "SUSPICIOUS_SCALE",
+                    format!(
+                        "largest dimension {max_dim:.3} mm is smaller than the min wall \
+                         {min_wall_mm:.3} mm — likely a units/scale error \
+                         (Kado coordinates are millimeters; 1 unit = 1 mm)"
+                    ),
+                    &[
+                        "Scale the model up (scale()) if it was authored in other units",
+                        "Verify intended size: the whole part is currently sub-wall-thickness",
                     ],
                 ));
             }
@@ -375,6 +400,38 @@ mod tests {
     use super::*;
     use crate::core::Sdf;
     use crate::extract::polygonize;
+
+    #[test]
+    fn summary_reports_physical_dimensions_in_mm() {
+        // 問62: 要約に dims_mm が含まれ、実寸 (= bbox の幅) を反映する。
+        let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let s = validate(&mesh, 0.0, 0.0).summary();
+        assert!(s.contains("dims_mm="), "summary must expose physical dims: {s}");
+        // 半径1の球 → 約 2x2x2 mm。
+        assert!(s.contains("dims_mm=[2."), "diameter ~2mm expected: {s}");
+    }
+
+    #[test]
+    fn suspicious_scale_warns_when_part_smaller_than_its_own_min_wall() {
+        // 問62: 最大寸法が min_wall すら下回る = 単位/スケール誤りの可能性。
+        // 直径 0.2mm の球に min_wall=0.5mm を課すと SUSPICIOUS_SCALE。
+        let tiny = Sdf::sphere(0.1);
+        let (lo, hi) = tiny.sampling_box();
+        let r = validate(&polygonize(&tiny, lo, hi, 16), 0.5, 0.0);
+        assert!(
+            r.issues.iter().any(|e| e.code == "SUSPICIOUS_SCALE"),
+            "sub-wall-sized part must warn SUSPICIOUS_SCALE"
+        );
+
+        // 通常サイズ (直径 2mm) では出ない。
+        let ok = Sdf::sphere(1.0);
+        let (lo, hi) = ok.sampling_box();
+        let r = validate(&polygonize(&ok, lo, hi, 24), 0.5, 0.0);
+        assert!(
+            !r.issues.iter().any(|e| e.code == "SUSPICIOUS_SCALE"),
+            "normal-sized part must not warn"
+        );
+    }
 
     #[test]
     fn multiple_bodies_warns_but_hollow_shell_does_not() {
