@@ -398,23 +398,31 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             let abs_path = std::fs::canonicalize(&safe)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| safe.display().to_string());
-            // 非多様体メッシュは 3D プリントで問題になる可能性がある。明示警告を付加する。
-            let manifold = mesh.is_edge_manifold();
-            let manifold_note = if manifold {
+            // 問92: manifold 真偽だけでは構造 DFM を網羅しない。watertight でも
+            // MULTIPLE_BODIES (離れた複数ボディ) や NEGATIVE_VOLUME (裏返し) は
+            // manifold=true のまま見逃される。run_script (問81) と同じ閾値非依存の
+            // 構造チェック validate(mesh, 0, 0) を出力解像度で実行し issue code を併記する。
+            // これにより「manifold=true ⇒ DFM 合格」という AI の誤認を防ぐ。
+            let report = validate(&mesh, 0.0, 0.0);
+            let manifold = report.is_manifold;
+            let codes: Vec<&str> = report.issues.iter().map(|e| e.code).collect();
+            let dfm_note = if codes.is_empty() {
                 String::new()
             } else {
-                " [WARNING: non-manifold mesh — may cause issues when 3D printing; \
-                  consider increasing resolution or checking for open boundaries]"
-                    .to_string()
+                format!(
+                    " [structural DFM issues at this resolution: {}; \
+                      run validate(resolution={res}) for full DFM incl. thin walls/overhang]",
+                    codes.join(", ")
+                )
             };
             // 問91: 出力ファイルの再現性同一性を記録・検証できるよう digest と
             // resolution を併記する (問61/問90 と同じ契約)。三角形数だけでは
             // 異なる形状が同数になりうるため弱い指標。digest が正準な内容同一性。
             ToolResult::text(format!(
                 "exported {fmt}: {abs_path} ({} triangles, manifold={manifold}, \
-                 resolution={res}, digest={:016x}){manifold_note}",
+                 resolution={res}, digest={:016x}){dfm_note}",
                 mesh.triangles.len(),
-                mesh.digest(),
+                report.digest,
             ))
         }
         Err(e) => ToolResult::error(format!("export failed: {e}")),
@@ -837,6 +845,36 @@ mod tests {
             digest_hex, vdigest,
             "export and validate digests must match at the same resolution: \
              export={digest_hex} validate={vdigest}"
+        );
+    }
+
+    #[test]
+    fn export_surfaces_multiple_bodies_not_just_manifold() {
+        // 問92: watertight な複数ボディは manifold=true のまま MULTIPLE_BODIES を
+        // 隠す。export が構造 DFM issue code を併記し、AI が「manifold=true ⇒ DFM合格」
+        // と誤認しないことを保証する (run_script 問81 と同じ閾値非依存チェック)。
+        let mut session = Session::new();
+        // 離れた2球 → 各殻は water­tight (manifold=true) だが 2 ボディ。
+        let script = r#"union(translate(-2,0,0,sphere(0.6)),translate(2,0,0,sphere(0.6)))"#;
+        let run_args = json::obj([("script", json::s(script))]);
+        let rr = call_tool(&mut session, "run_script", &run_args);
+        assert!(!rr.is_error, "two-sphere script must be valid");
+
+        let fname = "kado-test-export-q92.stl";
+        let args = json::obj([("path", json::s(fname)), ("resolution", json::n(32.0))]);
+        let r = call_tool(&mut session, "export", &args);
+        let _cleanup = std::fs::remove_file(fname);
+        assert!(!r.is_error, "export must succeed");
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        // manifold は true のはず (各殻は閉じている)。
+        assert!(
+            text.contains("manifold=true"),
+            "each shell is watertight → manifold=true: {text}"
+        );
+        // しかし MULTIPLE_BODIES が併記されていなければならない (問92 の核心)。
+        assert!(
+            text.contains("MULTIPLE_BODIES"),
+            "export must surface MULTIPLE_BODIES even when manifold=true (問92): {text}"
         );
     }
 

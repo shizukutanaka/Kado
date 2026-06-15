@@ -1604,4 +1604,37 @@ mesh は既に計算済みなので `mesh.digest()` は安価。これにより:
 > 総括: v51 は再現性情報のツール間非対称を解消した。export と validate が
 > 同一解像度で同一 digest を返すことを保証し、AI が出力ファイルの同一性を
 > 一貫した方法で検証できるようになった。
+
+## 問92 — `export` の `manifold=true` が DFM 合格と誤認される — 構造 DFM が不完全
+
+**問**: export 応答は `manifold=true/false` のみで構造健全性を表す。しかし
+manifold (= edge-manifold = water­tight) は構造 DFM の一部にすぎない。
+**watertight でも** 以下は manifold=true のまま見逃される:
+- MULTIPLE_BODIES: 離れた複数ボディ (各殻は閉じている → manifold=true だが単一造形物でない)
+- NEGATIVE_VOLUME: 裏返しメッシュ
+run_script は問81 で全構造 issue を併記するのに、export は manifold 真偽のみ。
+AI が export 応答の「manifold=true」を見て「DFM 合格・印刷可能」と誤認し、
+2 ボディや裏返しの成果物を出力してしまう。export 解像度 (既定 64) は validate
+既定 (48) と異なるため、別解像度の validate 合格も保証にならない。
+
+**修正**: export で run_script と同じ閾値非依存の構造チェック
+`validate(&mesh, 0.0, 0.0)` を**出力解像度で**実行し、issue code を併記する。
+これは OPEN_MESH/NON_MANIFOLD/NEGATIVE_VOLUME/MULTIPLE_BODIES を捕捉する
+(min_wall=0/max_overhang=0 で THIN_WALL/OVERHANG/SUSPICIOUS_SCALE はスキップ)。
+issue がある場合「full DFM は validate(resolution=N) で」と案内を付す。
+
+検証テスト追加 (テスト 151→152):
+- `export_surfaces_multiple_bodies_not_just_manifold`:
+  離れた2球を export → manifold=true だが応答に MULTIPLE_BODIES が併記されることを確認。
+
+変更ファイル: `src/mcp/tools.rs` (tool_export + 新テスト)。
+
+## 反映サマリ v52
+| 問 | 実装 |
+|----|------|
+| 92 | export が出力解像度で構造 DFM issue を併記 (manifold 真偽だけの誤認を防止) |
+
+> 総括: v52 は「manifold=true ⇒ DFM 合格」という export の暗黙の誤認を断った。
+> 出力する実物 (export 解像度のメッシュ) の構造 DFM が export 時点で可視化され、
+> run_script (問81) と同じ閾値非依存チェックでツール間の一貫性も保たれる。
 > テスト数 141→142 + 統合 3。
