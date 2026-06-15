@@ -555,7 +555,8 @@ cylinder      {"op":"cylinder","r":0.5,"h":1.0}
               r (req): radius > 0; h (req): half-height > 0
 
 torus         {"op":"torus","major":1.0,"minor":0.25}
-              major (req): ring radius > 0; minor (req): tube radius > 0
+              major (req): ring radius > 0; minor (req): tube radius > 0 AND < major
+              (minor >= major self-intersects: horn/spindle torus, non-manifold)
 
 cone          {"op":"cone","r":0.5,"h":1.5}
               apex at z=0, base at z=-h; r (req) > 0; h (req) > 0
@@ -578,7 +579,8 @@ difference    {"op":"difference","a":<sdf>,"b":<sdf>}  (a minus b)
 smooth_union         {"op":"smooth_union","a":<sdf>,"b":<sdf>,"k":0.3}
 smooth_intersection  {"op":"smooth_intersection","a":<sdf>,"b":<sdf>,"k":0.3}
 smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}
-              k: blend radius (default 0.3)
+              k: blend radius > 0 (default 0.3; k<=0 rejected — use the hard
+              union/intersection/difference op for a sharp boundary)
 
 ## Transforms
 
@@ -853,6 +855,34 @@ mod tests {
         assert!(
             text.contains("scene updated"),
             "session must still be marked as updated: {text}"
+        );
+    }
+
+    #[test]
+    fn help_documents_evaluator_constraints() {
+        // 問89: help は評価器が課す制約を正確に記載しなければならない。
+        // 問77 (torus minor < major) と問75 (smooth k > 0) は評価器で拒否されるが、
+        // help に未記載だと AI が予測できないエラーに遭遇する。help/評価器の同期を保証する。
+        let help = KADOSCENE_HELP;
+        // 問77: torus minor < major 制約。
+        assert!(
+            help.contains("< major"),
+            "help must document torus minor < major constraint (問77)"
+        );
+        // 問75: smooth k > 0 制約。
+        assert!(
+            help.contains("k: blend radius > 0"),
+            "help must document smooth k > 0 constraint (問75)"
+        );
+
+        // 評価器が実際にこれらを拒否することを確認 (help の主張が現実と一致)。
+        assert!(
+            eval_any(r#"{"op":"torus","major":1.0,"minor":1.0}"#).is_err(),
+            "evaluator must reject torus minor >= major as help claims"
+        );
+        assert!(
+            eval_any(r#"{"op":"smooth_union","a":{"op":"sphere","r":1.0},"b":{"op":"sphere","r":1.0},"k":0.0}"#).is_err(),
+            "evaluator must reject smooth k<=0 as help claims"
         );
     }
 }

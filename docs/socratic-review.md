@@ -1518,4 +1518,33 @@ centroid からの h ステップが壁を突き抜けてシェル内部 (符号
 > 総括: v48 はマーチングテトラヘドラの 3 つの隠れた前提を修正した。
 > 浮動小数点誤差・シェル突き抜け・ゼロ勾配という 3 パターンで
 > 非多様体/巻き順誤りが生じていた根本原因を除去した。
+
+## 問89 — help テキストが評価器の制約 (問75/問77) と非同期 — AI が予測不能なエラーに遭遇
+
+**問**: 問77 で torus に `minor < major` 制約を、問75 で smooth_* に `k > 0` 制約を
+評価器に追加したが、`KADOSCENE_HELP` (AI の一次リファレンス) を更新しなかった。
+help は torus を「minor (req): tube radius > 0」、smooth を「k: blend radius (default 0.3)」と
+記載するのみで、AI が help を信頼して `torus(major=1, minor=1)` や `smooth_union(...,k=0)` を
+書くと、help からは予測できないエラーで弾かれる。
+ドキュメントと実装の乖離は AI の自己修正ループを混乱させる。
+
+**修正**: help テキストを評価器の制約に同期させる:
+- torus: 「minor (req): tube radius > 0 AND < major」+ 自己交差の説明
+- smooth: 「k: blend radius > 0 (default 0.3; k<=0 rejected — use the hard
+  union/intersection/difference op for a sharp boundary)」
+
+検証テスト追加 (テスト 148→149):
+- `help_documents_evaluator_constraints`:
+  help に「< major」「k: blend radius > 0」が含まれること、かつ評価器が実際に
+  torus minor>=major と smooth k<=0 を拒否すること (help の主張と現実の一致) を確認。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP + 新テスト)。
+
+## 反映サマリ v49
+| 問 | 実装 |
+|----|------|
+| 89 | help テキストを問75/問77 の評価器制約に同期 + 同期保証テスト |
+
+> 総括: v49 はドキュメント (help) と実装 (評価器) の乖離を解消した。
+> 同期保証テストにより、将来制約を追加したとき help 更新漏れを CI が検知する。
 > テスト数 141→142 + 統合 3。
