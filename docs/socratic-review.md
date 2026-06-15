@@ -1788,4 +1788,31 @@ negative half is REPLACED). To mirror to both sides, place the part on +axis fir
 > 総括: v57 は mirror という最も誤解されやすい変形の意味論を明文化した。
 > 「反転移動」でなく「+半分を源とする面対称化」であることを help と挙動テストで
 > 固定し、-x のみ形状が空になる直感に反するケースも AI が予測できるようにした。
+
+## 問98 — `shell` が内向き中空化か外向き肥厚か help が示さない
+
+**問**: `shell` の eval は `d.max(-(d+thickness))` で、**外側表面を保持して内向きに
+壁を作る** (中空化、内半径 = 元 - thickness)。しかし help は「thickness > 0」としか
+書かず、壁が内向き (中空化) か外向き (肥厚) か中心振り分けか不明。AI が
+shell(sphere(1), 0.2) で「外半径 1.2 に育つ」のか「外半径 1.0 のまま中空」なのか
+予測できず、寸法設計を誤る。
+
+**修正**: help の shell 節に「Hollows the solid INWARD: keeps the outer surface and
+carves a cavity, leaving a wall of thickness just inside the surface. Outer size is
+unchanged. e.g. shell(sphere(1.0),0.2) → hollow ball, outer r=1, inner r=0.8」と明記。
+
+検証テスト追加 (テスト 156→157):
+- `shell_hollows_inward_keeping_outer_surface`:
+  shell(sphere(1.0),0.3) で外表面 r=1.0 維持・壁(r=0.85)内部・内表面 r=0.7・中心中空
+  を確認 (内向き中空化を挙動で証明)。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP shell 節), `src/core/sdf.rs` (新テスト)。
+
+## 反映サマリ v58
+| 問 | 実装 |
+|----|------|
+| 98 | shell の内向き中空化 (外表面保持・内半径=元-厚) を help で明示 + 挙動テスト |
+
+> 総括: v58 は shell の「外を保持し内へ掘る」意味論を固定した。AI が中空部品の
+> 外寸と肉厚を正しく設計でき、肥厚との取り違えによる寸法エラーを防ぐ。
 > テスト数 141→142 + 統合 3。

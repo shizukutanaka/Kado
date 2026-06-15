@@ -608,6 +608,21 @@ mod tests {
     }
 
     #[test]
+    fn shell_hollows_inward_keeping_outer_surface() {
+        // 問98: shell は外側表面を保持し内向きに壁を作る (中空化)。
+        // shell(sphere(1.0), 0.3) → 外半径 1.0 維持・内半径 0.7・壁厚 0.3。
+        let s = Sdf::sphere(1.0).shell(0.3);
+        // 外側表面は元の半径 1.0 のまま (肥大しない)。
+        assert!(s.eval(Vec3::new(1.0, 0.0, 0.0)).abs() < EPS, "outer surface preserved at r=1");
+        // 壁の内部 (r=0.85) は内側 (負)。
+        assert!(s.eval(Vec3::new(0.85, 0.0, 0.0)) < 0.0, "wall is inward of the surface");
+        // 内側表面は r = 1 - thickness = 0.7。
+        assert!(s.eval(Vec3::new(0.7, 0.0, 0.0)).abs() < EPS, "inner wall at r=0.7");
+        // 中心は中空 (壁の外 = 正)。
+        assert!(s.eval(Vec3::ZERO) > 0.0, "deep interior is hollow");
+    }
+
+    #[test]
     fn repeat_periodic_field() {
         // 既定 repeat は片側1コピー (合計3個/軸)。範囲内では周期的。
         let s = Sdf::sphere(0.3).repeat(Vec3::new(2.0, 2.0, 2.0));

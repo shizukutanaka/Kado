@@ -619,7 +619,10 @@ smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}
 translate     {"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":<sdf>}
 scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0
 offset        {"op":"offset","amount":0.1,"shape":<sdf>}    inflates/deflates
-shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0
+shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0.
+              Hollows the solid INWARD: keeps the outer surface and carves a cavity,
+              leaving a wall of `thickness` just inside the surface. Outer size is
+              unchanged. e.g. shell(sphere(1.0),0.2) → hollow ball, outer r=1, inner r=0.8.
 mirror_x      {"op":"mirror_x","shape":<sdf>}  Makes the shape symmetric about the
 mirror_y      {"op":"mirror_y","shape":<sdf>}  axis=0 plane: it KEEPS the positive-axis
 mirror_z      {"op":"mirror_z","shape":<sdf>}  half and reflects it onto the negative
