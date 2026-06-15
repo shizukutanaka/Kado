@@ -131,8 +131,11 @@ pub fn tool_list() -> Value {
             "validate",
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
-             issues:[{severity, code, cause, hints}]}. Branch on issue.code (e.g. THIN_WALL, \
-             MULTIPLE_BODIES, OPEN_MESH, OVERHANG, SUSPICIOUS_SCALE). \
+             issues:[{severity, code, cause, hints}]}. \
+             All issue codes: EMPTY_MESH (no geometry), NON_MANIFOLD (self-intersecting faces), \
+             OPEN_MESH (boundary edges, unprintable), MULTIPLE_BODIES (separate shells), \
+             THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
+             SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units). \
              Overhang is measured against build_dir (default +Z). \
              If your printer builds along a different axis, set build_dir to get correct results.",
             &[
@@ -635,6 +638,17 @@ If your 3D printer builds along a different axis, specify build_dir:
   validate(build_dir="-z")  build head-down (inverted)
   validate(build_dir="y")   build along Y axis
 
+## validate issue codes (問79)
+
+Branch on issue.code to categorize results:
+  EMPTY_MESH        — no triangles (script may be outside bounding box)
+  NON_MANIFOLD      — self-intersecting faces (boolean degeneracy)
+  OPEN_MESH         — boundary edges present (shape not watertight; cannot print)
+  MULTIPLE_BODIES   — disconnected shells (may need to merge or orient separately)
+  THIN_WALL         — local wall < min_wall_mm (SDF-ray probe)
+  OVERHANG          — surface > max_overhang_deg from horizontal (support required)
+  SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
+
 ## repeat requires explicit period when count is set
 
 If you specify nx/ny/nz, the matching x/y/z period MUST be positive:
@@ -644,9 +658,11 @@ If you specify nx/ny/nz, the matching x/y/z period MUST be positive:
 "#;
 
 fn tool_get_scene(session: &Session) -> ToolResult {
+    // 問80: sampling_box は実際の形状 AABB より ~5% 広い (polygonize 用の余白を含む)。
+    // AI が eval クエリ領域を設定する際に過大な範囲を使うことを防ぐため、ラベルを明示する。
     let (lo, hi) = session.scene.sampling_box();
     let bounds_info = format!(
-        "bounds=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}]",
+        "sampling_bounds=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] (includes ~5% margin beyond shape AABB)",
         lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
     );
     // 問74: undo_script の可否を明示する。AI が undo を試みる前に確認できる。

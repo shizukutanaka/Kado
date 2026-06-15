@@ -1308,3 +1308,37 @@ AI が `help` で `smooth_union` を学んでも、実際に動作するデモ�
 > 総括: v43 は「デフォルト状態での誤判定」と「torus 縮退の無言生成」を解消した。
 > どちらも AI が正確なフィードバックを受けて自己修正できるよう入力段階で問題を捕捉する。
 > テスト数 140→141 + 統合 3。
+
+## 問79 — `validate` ツールの説明が issue code を全列挙していない
+**問**: `validate` ツールの schema description は「e.g. THIN_WALL, MULTIPLE_BODIES, OPEN_MESH, OVERHANG, SUSPICIOUS_SCALE」と例示するだけで、実際に発行されうる `NON_MANIFOLD` と `EMPTY_MESH` の2コードを欠落している。AI がこれらのコードを`switch`で処理する際に catch-all に落ちて適切な対応ができない。
+
+**修正**:
+- `validate` ツール schema description を全7コード列挙に更新:
+  EMPTY_MESH, NON_MANIFOLD, OPEN_MESH, MULTIPLE_BODIES, THIN_WALL, OVERHANG, SUSPICIOUS_SCALE
+  各コードに1行の意味説明を付ける。
+- `KADOSCENE_HELP` に `validate issue codes` 節を新設し、同じ7コードとその意味を記載。
+
+コード変更: `src/mcp/tools.rs` (tool_def description + KADOSCENE_HELP)。テスト数変化なし。
+
+## 問80 — `get_scene` の bounds フィールドが実 AABB か sampling_box かを区別しない
+**問**: `get_scene` は `bounds=[lo]-[hi]` を返すが、これは `sampling_box()` の値 (実 AABB の ~5% 増し)。
+AI が eval クエリ点を設定する際に `bounds` を「形状の外縁」と解釈すると、実際の形状より少し外側を評価するループを組む。
+例: sphere(1.0) の実半径は 1.0 だが sampling_bounds は ≈1.05。
+これが SDF 正の外側か形状の外側かの判断を誤らせる可能性がある。
+
+**修正**: フィールド名を `bounds=` → `sampling_bounds=` に変更し、
+`(includes ~5% margin beyond shape AABB)` という注釈を追記。
+AI はこの値が polygonize 用の余白込みであることを見てわかる。
+`get_scene_round_trip` テストも新フィールド名を確認するよう更新。
+
+変更ファイル: `src/mcp/tools.rs` (tool_get_scene), `src/mcp/server.rs` (test)。テスト数変化なし。
+
+## 反映サマリ v44
+| 問 | 実装 |
+|----|------|
+| 79 | validate ツール説明と KADOSCENE_HELP に全7 issue code を列挙 |
+| 80 | get_scene の bounds を sampling_bounds にリネーム + 余白注釈を追加 |
+
+> 総括: v44 は「validate の issue code 不完全列挙」と「get_scene bounds の意味の曖昧さ」を解消した。
+> AI がツール返値を機械的に処理する際に隠れた仮定 (知らないコードは無視する) を排除する。
+> テスト数は変化なし (141 + 統合 3)。

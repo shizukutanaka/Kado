@@ -273,8 +273,8 @@ mod tests {
             "get_scene must echo back the exact script: {text2}"
         );
         assert!(
-            text2.contains("bounds="),
-            "get_scene must include sampling bounds: {text2}"
+            text2.contains("sampling_bounds="),
+            "get_scene must include sampling_bounds field (問80): {text2}"
         );
     }
 
