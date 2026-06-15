@@ -622,8 +622,25 @@ DSL arg order mirrors the constructors:
 ## Workflow
 
 1. Call run_script with your KadoScene JSON or text DSL.
-2. Call screenshot to preview; validate for DFM; export to save STL/GLB/3MF/HTML.
-3. Call get_scene to read back the current script if needed.
+2. Call screenshot to preview (valid views: front|back|right|left|top|bottom|iso).
+3. Call validate for DFM; export to save STL/GLB/3MF/HTML.
+4. Call get_scene to read back the current script if needed (also reports undo availability).
+5. If a run_script went wrong, call undo_script to restore the previous scene (single-level).
+
+## validate build_dir parameter
+
+The validate tool checks overhang relative to a build direction (default +Z = gravity up).
+If your 3D printer builds along a different axis, specify build_dir:
+  validate(build_dir="z")   same as default (+Z up)
+  validate(build_dir="-z")  build head-down (inverted)
+  validate(build_dir="y")   build along Y axis
+
+## repeat requires explicit period when count is set
+
+If you specify nx/ny/nz, the matching x/y/z period MUST be positive:
+  {"op":"repeat","nx":3,"shape":...}          ERROR: x period required
+  {"op":"repeat","x":2.0,"nx":3,"shape":...}  OK: 7 copies (3 each side + center)
+  {"op":"repeat","x":2.0,"shape":...}         OK: default count=1 (3 copies: -1, 0, +1)
 "#;
 
 fn tool_get_scene(session: &Session) -> ToolResult {
@@ -632,10 +649,18 @@ fn tool_get_scene(session: &Session) -> ToolResult {
         "bounds=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}]",
         lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
     );
+    // 問74: undo_script の可否を明示する。AI が undo を試みる前に確認できる。
+    let undo_info = if session.prev_scene.is_some() {
+        "undo_available=true"
+    } else {
+        "undo_available=false"
+    };
     match &session.script {
-        Some(script) => ToolResult::text(format!("script={script}\n{bounds_info}")),
+        Some(script) => ToolResult::text(format!(
+            "script={script}\n{bounds_info}\n{undo_info}"
+        )),
         None => ToolResult::text(format!(
-            "script=(default scene — no run_script call yet)\n{bounds_info}"
+            "script=(default scene — no run_script call yet)\n{bounds_info}\n{undo_info}"
         )),
     }
 }

@@ -513,6 +513,68 @@ mod tests {
     }
 
     #[test]
+    fn get_scene_reports_undo_availability() {
+        // 問74: get_scene は undo_script が使えるかどうかを undo_available フィールドで報告する。
+        // AI が盲目的に undo を試みる前に状態を確認できる。
+        let mut s = tools::Session::new();
+        let params_get = json::obj([("name", json::s("get_scene")), ("arguments", json::obj([]))]);
+
+        // 初期状態: undo 不可。
+        let resp1 = handle(&mut s, &req("tools/call", 60, Some(params_get.clone()))).unwrap();
+        let text1 = resp1
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text1.contains("undo_available=false"),
+            "before any run_script, undo must not be available: {text1}"
+        );
+
+        // run_script でシーンを変更 → undo 可能になる。
+        let params_run = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(r#"{"op":"sphere","r":1.0}"#))])),
+        ]);
+        handle(&mut s, &req("tools/call", 61, Some(params_run))).unwrap();
+
+        let resp2 = handle(&mut s, &req("tools/call", 62, Some(params_get.clone()))).unwrap();
+        let text2 = resp2
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text2.contains("undo_available=true"),
+            "after run_script, undo must be available: {text2}"
+        );
+
+        // undo_script を呼ぶ → 再び undo 不可。
+        let params_undo = json::obj([("name", json::s("undo_script")), ("arguments", json::obj([]))]);
+        handle(&mut s, &req("tools/call", 63, Some(params_undo))).unwrap();
+
+        let resp3 = handle(&mut s, &req("tools/call", 64, Some(params_get))).unwrap();
+        let text3 = resp3
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text3.contains("undo_available=false"),
+            "after undo_script, undo must not be available again: {text3}"
+        );
+    }
+
+    #[test]
     fn notification_returns_none() {
         let mut s = tools::Session::new();
         let notif = json::obj([

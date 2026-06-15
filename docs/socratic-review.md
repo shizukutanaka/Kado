@@ -1182,3 +1182,45 @@ AI が品質問題に気づけるようにする。
 > 総括: v40 は「無言のフォールバック」と「相対パスの不透明性」を解消し、
 > AI がどこに何が書かれたか・どのビューを見ているかを確実に把握できるようにした。
 > テスト数 136→137 + 統合 3。
+
+## 問73 — `help` ツールのドキュメントが追加済み機能を反映していない
+**問**: `help` ツールが返す `KADOSCENE_HELP` は当初のワークフロー 3 ステップしか説明していない。
+`undo_script` (問67)・`validate` の `build_dir` 引数 (問68)・`repeat` の period 制約 (問70)・
+`get_scene` の undo 可否表示 (問74) が追加されたが、`help` は一切案内しない。
+AI は `undo_script` ツールが存在することも、どう使うかも `help` からは分からない状態だった。
+
+**修正**: `KADOSCENE_HELP` の Workflow 節を全面更新し:
+1. undo_script を 5 番目のステップとして明示
+2. get_scene が undo 可否を報告することを説明
+3. validate の build_dir パラメータ節を新設 (例: "z"/"-z"/"y" の指定方法)
+4. repeat の period 必須ルールを新設 (OK/ERROR 例付き)
+
+変更ファイル: `src/mcp/tools.rs` (`KADOSCENE_HELP` 定数)。テスト増減なし。
+
+## 問74 — `get_scene` が undo_script の可否を知らせないため AI が盲目的に試みる
+**問**: AI が誤ったスクリプトを適用した後、`undo_script` を呼べば戻れる「かもしれない」が
+呼んでみるまでわからない (成功か `nothing to undo` エラーかは不定)。
+`get_scene` が状態を返すのに undo 可否を含まないため、AI が不要なエラーリカバリループに入る。
+
+**修正**: `tool_get_scene` のレスポンスに `undo_available=true/false` フィールドを追加。
+- `session.prev_scene.is_some()` → `undo_available=true`
+- `session.prev_scene.is_none()` → `undo_available=false`
+
+`get_scene` のレスポンス末尾にこのフィールドが常に含まれる。
+
+検証テスト追加 (テスト 137→138):
+- `get_scene_reports_undo_availability`:
+  初期状態 `undo_available=false`
+  → `run_script` 後 `undo_available=true`
+  → `undo_script` 後 `undo_available=false` に戻る
+
+## 反映サマリ v41
+| 問 | 実装 |
+|----|------|
+| 73 | KADOSCENE_HELP を全面更新: undo_script・build_dir・repeat 制約を説明 |
+| 74 | get_scene が `undo_available=true/false` を返すよう拡張 |
+
+> 総括: v41 は「ドキュメントと実装の乖離」と「undo 可否の不透明性」を解消した。
+> help ツールは現行の 8 ツール全ての主要パラメータを案内でき、
+> get_scene は AI が次のアクションを決定するのに必要な状態を完全に提供する。
+> テスト数 137→138 + 統合 3。
