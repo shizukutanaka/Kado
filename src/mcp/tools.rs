@@ -100,7 +100,11 @@ pub fn tool_list() -> Value {
         ),
         tool_def(
             "eval",
-            "Evaluate the SDF signed distance at a point. Negative = inside, positive = outside.",
+            "Evaluate the SDF signed distance at a point, in millimeters (Kado: 1 unit = 1 mm). \
+             Negative = inside, positive = outside, ~0 = on the surface. The magnitude is exact \
+             for primitives but a conservative lower bound on the true distance for \
+             composite/smoothed shapes (union/difference/smooth_* yield a Lipschitz-bounded \
+             field), so treat it as a safe under-estimate when measuring clearances or wall gaps.",
             &[
                 ("x", "number", "X coordinate", true),
                 ("y", "number", "Y coordinate", true),
@@ -957,8 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn run_script_discloses_check_resolution() {
-        // 問93: run_script の summary は digest を含むが res=32 のチェック。
+    fn run_script_discloses_check_resolution() {        // 問93: run_script の summary は digest を含むが res=32 のチェック。
         // 解像度を開示しないと AI が digest の不一致を説明できず、粗い「issue なし」を
         // 確定的と誤認する。既定 (32) と明示指定の両方で check_resolution が出ることを確認。
         let mut s = Session::new();
@@ -1032,6 +1035,48 @@ mod tests {
         assert!(
             v.get("digest").and_then(|x| x.as_str()).is_some(),
             "validate JSON must still report digest: {text}"
+        );
+    }
+
+    #[test]
+    fn eval_schema_discloses_units_and_lower_bound() {
+        // 問94: eval の戻り値は mm 単位の符号付き距離だが、合成/平滑形状では
+        // 真の距離の保守的下界 (Lipschitz 場) にすぎない。AI がクリアランス計測で
+        // 過信しないよう、スキーマ説明が単位と下界性を開示することを保証する。
+        let tools = tool_list();
+        let arr = tools.as_array().expect("tool_list returns an array");
+        let eval_desc = arr
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("eval"))
+            .and_then(|t| t.get("description"))
+            .and_then(|d| d.as_str())
+            .expect("eval tool must exist with a description");
+        assert!(
+            eval_desc.contains("mm"),
+            "eval schema must state units are mm (問94): {eval_desc}"
+        );
+        assert!(
+            eval_desc.contains("lower bound"),
+            "eval schema must disclose magnitude is a conservative lower bound (問94): {eval_desc}"
+        );
+
+        // 例外なくプリミティブでは厳密 (下界主張のアンカー)。球面上の点で距離 ≈ 0。
+        let mut s = Session::new();
+        let run = json::obj([("script", json::s("sphere(1.0)"))]);
+        assert!(!call_tool(&mut s, "run_script", &run).is_error);
+        let q = json::obj([("x", json::n(2.0)), ("y", json::n(0.0)), ("z", json::n(0.0))]);
+        let r = call_tool(&mut s, "eval", &q);
+        let d: f64 = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // (2,0,0) は半径1球の外、表面まで厳密に 1.0 mm。
+        assert!(
+            (d - 1.0).abs() < 1e-9,
+            "sphere eval must be exact for a primitive: expected 1.0, got {d}"
         );
     }
 }
