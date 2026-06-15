@@ -298,8 +298,13 @@ impl Sdf {
             }
             Sdf::Offset(c, amount) => {
                 let (lo, hi) = c.aabb();
-                let e = Vec3::splat(amount.max(0.0));
-                (lo - e, hi + e)
+                // 問84: 符号付き拡張。amount>0→膨張, amount<0→収縮。
+                // max(0)クランプでは負 amount 時の AABB が子のまま (保守的すぎ)。
+                // 過侵食 (lo2 > hi2) を正規化する。
+                let e = Vec3::splat(*amount);
+                let lo2 = lo - e;
+                let hi2 = hi + e;
+                (lo2.min(hi2), lo2.max(hi2))
             }
             Sdf::Shell(c, _) => c.aabb(),
             Sdf::Repeat(c, period, count) => {
@@ -897,5 +902,45 @@ mod tests {
         let (slo, shi) = tree.sampling_box();
         assert!(slo.x <= lo.x && slo.y <= lo.y && slo.z <= lo.z);
         assert!(shi.x >= hi.x && shi.y >= hi.y && shi.z >= hi.z);
+    }
+
+    #[test]
+    fn offset_negative_aabb_tightens_not_stays_at_child_size() {
+        // 問84: offset(-r) は形状を収縮させる。
+        // 修正前は AABB = child の AABB (保守的すぎ)。
+        // 修正後は AABB が収縮した形状に合わせてタイトになる。
+        let child = Sdf::sphere(1.0);
+        let (child_lo, child_hi) = child.aabb();
+
+        let shrunk = child.offset(-0.4);
+        let (lo, hi) = shrunk.aabb();
+        // 収縮後 AABB は子の AABB より小さくなければならない。
+        assert!(
+            lo.x > child_lo.x,
+            "shrunk AABB lo.x must be > child lo.x: lo.x={}, child_lo.x={}",
+            lo.x, child_lo.x
+        );
+        assert!(
+            hi.x < child_hi.x,
+            "shrunk AABB hi.x must be < child hi.x: hi.x={}, child_hi.x={}",
+            hi.x, child_hi.x
+        );
+        // AABB は等方 (sphere): 各軸 ±(1.0 - 0.4) = ±0.6。
+        assert!((lo.x - (-0.6)).abs() < 1e-12, "expected lo.x=-0.6, got {}", lo.x);
+        assert!((hi.x - 0.6).abs() < 1e-12, "expected hi.x=0.6, got {}", hi.x);
+
+        // AABB は依然 isosurface を内包する (表面点 (0.6,0,0) は AABB 内または境界)。
+        let surface = Vec3::new(0.6, 0.0, 0.0);
+        assert!(
+            surface.x >= lo.x && surface.x <= hi.x,
+            "surface point must be within AABB: {:?} in [{:?}, {:?}]",
+            surface, lo, hi
+        );
+
+        // 過侵食 (amount > 子半径) では lo2 > hi2 → min/max で正規化されるため有限。
+        let over_eroded = Sdf::sphere(1.0).offset(-1.5);
+        let (elo, ehi) = over_eroded.aabb();
+        assert!(elo.x.is_finite() && ehi.x.is_finite(), "over-eroded AABB must be finite");
+        assert!(elo.x <= ehi.x, "over-eroded AABB must not be inverted: {elo:?} {ehi:?}");
     }
 }

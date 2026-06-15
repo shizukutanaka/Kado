@@ -692,11 +692,14 @@ fn arg_build_dir(args: &Value) -> Vec3 {
             _ => Vec3::new(0.0, 0.0, 1.0), // "z" / "+z" / 未知
         }
     } else if let Some(arr) = args.get("build_dir").and_then(|v| v.as_array()) {
+        // 問85: 要素数が 3 未満なら z=1.0 のサイレント補完をせずに +Z デフォルトへ
+        // フォールバックする。[1,0] を渡して x-build を意図したAIが対角 [1,0,1] で
+        // オーバーハング解析される誤りを防ぐ。
         if arr.len() >= 3 {
             Vec3::new(
                 arr[0].as_f64().unwrap_or(0.0),
                 arr[1].as_f64().unwrap_or(0.0),
-                arr[2].as_f64().unwrap_or(1.0),
+                arr[2].as_f64().unwrap_or(0.0),
             )
         } else {
             Vec3::new(0.0, 0.0, 1.0)

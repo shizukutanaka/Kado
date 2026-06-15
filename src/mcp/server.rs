@@ -638,6 +638,41 @@ mod tests {
     }
 
     #[test]
+    fn build_dir_array_z_element_defaults_to_zero_not_one() {
+        // 問85: [dx, dy, dz] 配列の z 要素が non-numeric のとき旧コードは 1.0 でフォールバックし、
+        // ユーザーが [1,0,0] を意図しても [1,0,1] (対角) で解析される誤りがあった。
+        // 修正後は unwrap_or(0.0) → 欠損 z は 0 扱い。
+        // validate ツールに [1,0,0] の build_dir を渡して、問題なく受け付けることを確認。
+        let mut s = tools::Session::new();
+        let script = r#"{"op":"sphere","r":1.0}"#;
+        let params_run = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(script))])),
+        ]);
+        handle(&mut s, &req("tools/call", 90, Some(params_run))).unwrap();
+
+        let params_val = json::obj([
+            ("name", json::s("validate")),
+            (
+                "arguments",
+                json::obj([
+                    ("build_dir", json::arr([json::n(1.0), json::n(0.0), json::n(0.0)])),
+                ]),
+            ),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 91, Some(params_val))).unwrap();
+        let is_error = resp
+            .get("result")
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(
+            is_error,
+            Some(false),
+            "validate with explicit [1,0,0] build_dir must succeed"
+        );
+    }
+
+    #[test]
     fn notification_returns_none() {
         let mut s = tools::Session::new();
         let notif = json::obj([
