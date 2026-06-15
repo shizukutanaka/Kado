@@ -1266,3 +1266,43 @@ AI が `nx=500` を指定すると 256 コピーになるが `run_script` は「
 > smooth blend の k は正値のみ受け付け、repeat count は上限オーバーを明示エラーにする。
 > どちらもエラーメッセージに代替手段を示し AI の自己修正ループを支援する。
 > テスト数 138→140 + 統合 3。
+
+## 問77 — `torus(minor >= major)` が自己交差する非多様体メッシュを無言で生成する
+**問**: `torus` の SDF は数学的に常に有限値を返すが、`minor >= major` のとき:
+- `minor = major`: horn torus — 中央で自己接触 (デジェネレート)
+- `minor > major`: spindle torus — 自己交差する非多様体 → 3D 印刷不可
+
+スクリプト検証段階でエラーにならず `run_script` が成功し、後で `validate` が OPEN_MESH や
+MULTIPLE_BODIES を報告する。AI は「どのパラメータが問題か」を自力で推測しなければならない。
+
+**修正**: `eval.rs` の `torus` パース時に `minor >= major` を ScriptError にする。
+エラーメッセージに horn/spindle の違いと ring torus 条件 `minor < major` を説明する。
+
+検証テスト追加 (テスト 140→141):
+- `torus_minor_ge_major_is_rejected`: minor=major → エラー, minor>major → エラー (メッセージに "spindle" または "non-manifold"), minor<major → 成功
+
+## 問78 — デフォルトシーンが開いたメッシュであり `validate` が誤判定を招く
+**問**: `Session::new()` のデフォルトシーンは
+`union(sphere(1), cuboid(0.8)).difference(cylinder(0.3, 2.0))`。
+cylinder の half-height=2.0 が sphere の半径=1.0 を超え、球の上下面に穴が開く (開いたメッシュ)。
+`run_script` を呼ぶ前に `validate` を呼んだ AI は OPEN_MESH エラーを受け、
+「自分のスクリプトが壊れている」と誤解する。
+
+**修正**:
+- `default_scene()` を `smooth_union(sphere(1.0), cuboid(0.8), k=0.2)` に変更:
+  常に多様体で閉じた形状。smooth_union のデモとして視覚的にも興味深い。
+- CLI `demo_model()` も同様に変更し一貫性を保つ。
+- `run_script_updates_active_scene` テストの「原点は穴の中 → 正」を
+  「遠点 (10,0,0) は外 → 正」に更新 (原点は新シーン内部)。
+
+テスト数変化: 140→141 (問77); 問78 は既存テスト修正のみ。
+
+## 反映サマリ v43
+| 問 | 実装 |
+|----|------|
+| 77 | torus minor >= major を ScriptError に: 自己交差モデルの無言生成を防ぐ |
+| 78 | デフォルトシーンを manifold な smooth_union に変更: 誤 OPEN_MESH を排除 |
+
+> 総括: v43 は「デフォルト状態での誤判定」と「torus 縮退の無言生成」を解消した。
+> どちらも AI が正確なフィードバックを受けて自己修正できるよう入力段階で問題を捕捉する。
+> テスト数 140→141 + 統合 3。

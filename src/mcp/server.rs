@@ -294,8 +294,10 @@ mod tests {
         // 問12 のリグレッション防止: run_script 後に eval/他ツールが
         // ハードコード形状ではなくスクリプトのシーンを見ることを保証する。
         let mut s = tools::Session::new();
-        // 既定 (デモ) では原点は穴の中 → 正。
-        assert!(eval_at(&mut s, 0.0, 0.0, 0.0) > 0.0);
+        // 問78: 既定デモは smooth_union(sphere(1), cuboid(0.8)) → 原点は形状内 (負)。
+        // 遠点 (10, 0, 0) は外 (正) → 問12 検証に使う。
+        let default_far = eval_at(&mut s, 10.0, 0.0, 0.0);
+        assert!(default_far > 0.0, "far point in default scene must be outside: {default_far}");
 
         // 半径 3 の球に差し替える。
         let params = json::obj([

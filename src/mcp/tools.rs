@@ -248,10 +248,11 @@ impl ToolResult {
 }
 
 /// 既定シーン (デモ形状)。`run_script` 実行前の初期状態。
+/// 問78: 旧デモは cylinder(h=2.0) が sphere(r=1.0) を貫通しメッシュが開いていた。
+/// AI が run_script 前に validate を呼ぶと OPEN_MESH が返り誤判定を招く。
+/// smooth_union で球と直方体をブレンドした多様体閉曲面に変更する。
 pub fn default_scene() -> Sdf {
-    Sdf::sphere(1.0)
-        .union(Sdf::cuboid(Vec3::splat(0.8)))
-        .difference(Sdf::cylinder(0.3, 2.0))
+    Sdf::sphere(1.0).smooth_union(Sdf::cuboid(Vec3::splat(0.8)), 0.2)
 }
 
 /// MCP セッション状態。**正本はスクリプトが評価した [`Sdf`] 木**であり、

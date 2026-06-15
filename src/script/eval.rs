@@ -130,6 +130,16 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
         "torus" => {
             let major = req_positive_f64(v, "major")?;
             let minor = req_positive_f64(v, "minor")?;
+            // 問77: minor >= major → horn (minor=major) or spindle (minor>major) torus。
+            // どちらも自己交差して非多様体メッシュになり 3D 印刷が失敗する。
+            // ring torus の数学的必要条件は minor < major。
+            if minor >= major {
+                return Err(ScriptError::new(format!(
+                    "torus minor radius {minor} must be < major radius {major} \
+                     (minor=major → horn torus (self-touching at center); \
+                      minor>major → spindle torus (self-intersecting, non-manifold))"
+                )));
+            }
             Ok(Sdf::torus(major, minor))
         }
         "cone" => {
@@ -670,6 +680,30 @@ mod tests {
             eval_scene(default_ok).is_ok(),
             "repeat with explicit nx=1 and positive period must succeed"
         );
+    }
+
+    #[test]
+    fn torus_minor_ge_major_is_rejected() {
+        // 問77: minor >= major → 自己交差 (horn/spindle torus) → 非多様体メッシュ → 印刷不可。
+        // 数学的 ring torus の要件 (minor < major) をスクリプト評価段階で強制する。
+
+        // minor = major → horn torus
+        let horn = r#"{"op":"torus","major":1.0,"minor":1.0}"#;
+        assert!(eval_scene(horn).is_err(), "minor=major (horn torus) must be rejected");
+
+        // minor > major → spindle torus
+        let spindle = r#"{"op":"torus","major":0.5,"minor":0.8}"#;
+        let err = eval_scene(spindle);
+        assert!(err.is_err(), "minor>major (spindle torus) must be rejected");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("spindle") || msg.contains("non-manifold"),
+            "error must explain the self-intersection: {msg}"
+        );
+
+        // minor < major → 有効な ring torus
+        let ring = r#"{"op":"torus","major":1.0,"minor":0.3}"#;
+        assert!(eval_scene(ring).is_ok(), "minor<major ring torus must be accepted");
     }
 
     #[test]

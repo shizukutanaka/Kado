@@ -18,9 +18,9 @@ use kado::script::eval_any;
 use kado::verify::{validate, validate_with_field};
 
 fn demo_model() -> Sdf {
-    Sdf::sphere(1.0)
-        .union(Sdf::cuboid(Vec3::splat(0.8)))
-        .difference(Sdf::cylinder(0.3, 2.0))
+    // 問78: 旧デモは cylinder が sphere を貫通し開いたメッシュだった。
+    // smooth_union で閉じた多様体に変更する。
+    Sdf::sphere(1.0).smooth_union(Sdf::cuboid(Vec3::splat(0.8)), 0.2)
 }
 
 fn main() {
