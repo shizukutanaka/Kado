@@ -6,7 +6,7 @@ use crate::io::{gltf, html, stl, threemf};
 use crate::mcp::json::{self, Value};
 use crate::render::{draw_axes, render, Camera};
 use crate::script::eval_any;
-use crate::verify::{validate, validate_with_field, Severity};
+use crate::verify::{validate, validate_with_field};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
 // polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
@@ -668,8 +668,12 @@ fn tool_get_scene(session: &Session) -> ToolResult {
         Some(script) => ToolResult::text(format!(
             "script={script}\n{bounds_info}\n{undo_info}"
         )),
+        // 問83: デフォルトシーンは Rust コードで定義され、対応するスクリプト文字列がない。
+        // AI がデフォルトシーンを再現したい場合のため、等価な DSL 文字列を案内する。
         None => ToolResult::text(format!(
-            "script=(default scene — no run_script call yet)\n{bounds_info}\n{undo_info}"
+            "script=(default scene — no run_script call yet; \
+             to reproduce: smooth_union(sphere(1.0),cuboid(0.8),0.2))\n\
+             {bounds_info}\n{undo_info}"
         )),
     }
 }

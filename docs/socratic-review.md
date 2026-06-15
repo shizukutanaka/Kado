@@ -1380,4 +1380,32 @@ DFM エラーが見過ごされる。ツール説明も `{severity}` と書く�
 
 > 総括: v45 は「警告のサイレント通過」と「severity の大文字小文字不整合」を解消した。
 > AI がレポートを機械処理するときに比較ミスで DFM 問題を見逃す可能性を排除する。
+
+## 問83 — `get_scene` のデフォルトシーン応答が再現用 DSL を提供しない
+
+**問**: `run_script` を一度も呼んでいない初期状態で `get_scene` を呼ぶと
+`script=(default scene — no run_script call yet)` とだけ返る。
+AI はデフォルトシーンが何で構成されているかを知らないまま作業を始めるため、
+「デフォルトに戻したい」「現在の形状を基に変形したい」ときに
+既存のシーン定義をコピーして run_script に渡すことができない。
+セッション再接続後に AI がコンテキストを失うと自己修正ループが断絶する。
+
+**修正**: `tool_get_scene` の None ブランチ (スクリプト未設定) に
+`to reproduce: smooth_union(sphere(1.0),cuboid(0.8),0.2)` というヒントを付加する。
+AI はこれをそのまま run_script に渡してデフォルトシーンを再現できる。
+
+検証テスト追加 (テスト 142→143):
+- `get_scene_default_includes_reproducible_dsl`:
+  初期状態の get_scene レスポンスに `"smooth_union"` と `"to reproduce"` が含まれる
+
+変更ファイル: `src/mcp/tools.rs` (tool_get_scene None ブランチ),
+`src/mcp/server.rs` (新テスト追加)。
+
+## 反映サマリ v46
+| 問 | 実装 |
+|----|------|
+| 83 | get_scene デフォルトシーンに再現用 DSL スニペットを付加 |
+
+> 総括: v46 は AI の「デフォルトシーン不透明問題」を解消した。
+> セッション再接続後も get_scene 1回でデフォルトシーンを再現する DSL が手に入る。
 > テスト数 141→142 + 統合 3。

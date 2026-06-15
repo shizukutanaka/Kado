@@ -279,6 +279,32 @@ mod tests {
     }
 
     #[test]
+    fn get_scene_default_includes_reproducible_dsl() {
+        // 問83: デフォルトシーン状態の get_scene は再現用 DSL スニペットを含む必要がある。
+        // AIが run_script をまだ呼んでいない場合でも、デフォルトシーンの DSL を
+        // コピーして実行できるようにすることで自己修正ループが成立する。
+        let mut s = tools::Session::new();
+        let params = json::obj([("name", json::s("get_scene")), ("arguments", json::obj([]))]);
+        let resp = handle(&mut s, &req("tools/call", 99, Some(params))).unwrap();
+        let text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            text.contains("smooth_union"),
+            "default get_scene should include 'smooth_union' DSL snippet for reproducibility (問83): {text}"
+        );
+        assert!(
+            text.contains("to reproduce"),
+            "default get_scene should include 'to reproduce' hint (問83): {text}"
+        );
+    }
+
+    #[test]
     fn tools_call_eval_returns_number() {
         // (0.5, 0, 0): inside sphere/cuboid union and outside cylinder hole → SDF < 0
         let mut s = tools::Session::new();
