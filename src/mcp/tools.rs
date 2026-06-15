@@ -569,6 +569,12 @@ const KADOSCENE_HELP: &str = r#"# KadoScene JSON Format Reference
 All scripts are a single JSON object with an "op" field.
 Parameters marked (req) are required; others are optional with their default shown.
 
+## Units & coordinates (問62/問95)
+
+All lengths are in MILLIMETERS (1 coordinate unit = 1 mm). e.g. sphere(10) is a
+10 mm-radius ball, not arbitrary units. +Z is "up" for FDM build direction by default.
+Authoring at the wrong scale triggers a SUSPICIOUS_SCALE warning from validate.
+
 ## Primitives
 
 sphere        {"op":"sphere","r":1.0}
@@ -961,7 +967,8 @@ mod tests {
     }
 
     #[test]
-    fn run_script_discloses_check_resolution() {        // 問93: run_script の summary は digest を含むが res=32 のチェック。
+    fn run_script_discloses_check_resolution() {
+        // 問93: run_script の summary は digest を含むが res=32 のチェック。
         // 解像度を開示しないと AI が digest の不一致を説明できず、粗い「issue なし」を
         // 確定的と誤認する。既定 (32) と明示指定の両方で check_resolution が出ることを確認。
         let mut s = Session::new();
@@ -1002,6 +1009,13 @@ mod tests {
         assert!(
             help.contains("k: blend radius > 0"),
             "help must document smooth k > 0 constraint (問75)"
+        );
+
+        // 問95: 著作リファレンス (help) は座標の単位 (mm) を述べなければならない。
+        // AI が寸法を指定する基礎情報であり、欠落すると scale が不定になる。
+        assert!(
+            help.contains("MILLIMETERS") && help.contains("1 mm"),
+            "help must state the mm unit convention for authoring (問95)"
         );
 
         // 評価器が実際にこれらを拒否することを確認 (help の主張が現実と一致)。

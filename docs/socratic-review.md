@@ -1701,4 +1701,33 @@ resolutions」と案内する。これで digest 不一致の理由が自明に�
 > 総括: v54 は eval の戻り値の意味論を正直に開示した。符号だけでなく単位と、
 > 「大きさは合成形状では厳密距離でなく保守的下界」という SDF の本質的性質を
 > AI に伝え、クリアランス計測での誤用を防ぐ。
+
+## 問95 — 著作リファレンス (help) が座標の単位 (mm) を述べない — AI が scale 不定で作図
+
+**問**: 問62 で内部単位は mm と定め、問94 で eval の**読み取り**側に mm を開示した。
+だが KADOSCENE_HELP — AI がシーンを**書く**ときの一次リファレンス — は
+`sphere(10)` が 10mm なのか cm なのか任意単位なのかを一切述べていない。
+`min_wall_mm` や SUSPICIOUS_SCALE の説明に mm は出るが、プリミティブ寸法
+(sphere r, cuboid x/y/z) の単位規約は未記載。AI が部品を寸法指定する基礎情報が
+欠落し、scale が不定のまま作図してしまう (読み取りは mm と分かるのに書き込みは不明、
+という非対称)。
+
+**修正**: help ヘッダに「Units & coordinates」節を追加し、
+「All lengths are in MILLIMETERS (1 coordinate unit = 1 mm). e.g. sphere(10) is a
+10 mm-radius ball」「+Z is up for FDM」「wrong scale → SUSPICIOUS_SCALE」を明示。
+読み取り (eval, 問94) と書き込み (help) で単位開示の対称性を確立。
+あわせて問93 テストのコメント混入 (関数シグネチャ行) を整形。
+
+検証: 既存 `help_documents_evaluator_constraints` に
+help が "MILLIMETERS" と "1 mm" を含む assertion を追加 (テスト数 154 維持)。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP ヘッダ + テスト assertion + 整形)。
+
+## 反映サマリ v55
+| 問 | 実装 |
+|----|------|
+| 95 | help に単位規約 (1 unit = 1 mm) を明示 (作図側の単位開示) |
+
+> 総括: v55 で「読み取り (eval) は mm と分かるが書き込み (help) では単位不明」という
+> 非対称を解消した。AI はシーンを書くときも読むときも一貫して mm 規約を把握できる。
 > テスト数 141→142 + 統合 3。
