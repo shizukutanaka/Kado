@@ -660,6 +660,28 @@ mod tests {
     }
 
     #[test]
+    fn mirror_keeps_positive_half_and_reflects_to_negative() {
+        // 問97: mirror_x は +x 半分を保持し -x 側へ鏡像化する (abs(p.x))。
+        // 元の -x 半分は破棄され、+x 半分の鏡像で置き換わる。
+        // +x にある球は mirror 後、+x と -x の両方に対称コピーとして現れる。
+        let plus = Sdf::sphere(0.5).translate(Vec3::new(2.0, 0.0, 0.0));
+        let m = plus.mirror_x();
+        assert!(m.eval(Vec3::new(2.0, 0.0, 0.0)) < 0.0, "+x copy preserved");
+        assert!(m.eval(Vec3::new(-2.0, 0.0, 0.0)) < 0.0, "reflected onto -x");
+
+        // 逆に -x にしかない球を mirror_x すると、source となる +x 半分が空のため
+        // 結果は空 (両側とも外部)。これが「+半分が源」という意味論の決定的証拠。
+        let minus = Sdf::sphere(0.5).translate(Vec3::new(-2.0, 0.0, 0.0));
+        let m2 = minus.mirror_x();
+        assert!(
+            m2.eval(Vec3::new(-2.0, 0.0, 0.0)) > 0.0,
+            "a -x-only shape mirrors to empty (source is the +x half): {}",
+            m2.eval(Vec3::new(-2.0, 0.0, 0.0))
+        );
+        assert!(m2.eval(Vec3::new(2.0, 0.0, 0.0)) > 0.0, "+x also empty");
+    }
+
+    #[test]
     fn rotation_is_rigid_and_preserves_distance_field() {
         // 問51: 回転は剛体変換。回転形状を回転点で評価すると元の場と一致する。
         // S = rotate_z(child, θ) のとき S(R_θ x) == child(x) が任意 x で成り立つ。

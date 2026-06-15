@@ -620,9 +620,11 @@ translate     {"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":<sdf>}
 scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0
 offset        {"op":"offset","amount":0.1,"shape":<sdf>}    inflates/deflates
 shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0
-mirror_x      {"op":"mirror_x","shape":<sdf>}
-mirror_y      {"op":"mirror_y","shape":<sdf>}
-mirror_z      {"op":"mirror_z","shape":<sdf>}
+mirror_x      {"op":"mirror_x","shape":<sdf>}  Makes the shape symmetric about the
+mirror_y      {"op":"mirror_y","shape":<sdf>}  axis=0 plane: it KEEPS the positive-axis
+mirror_z      {"op":"mirror_z","shape":<sdf>}  half and reflects it onto the negative
+              half (the shape's original negative-axis half is REPLACED, not kept).
+              To mirror a part to both sides, place it on the +axis side first.
 rotate_x      {"op":"rotate_x","angle":90,"shape":<sdf>}  angle in DEGREES
 rotate_y      {"op":"rotate_y","angle":45,"shape":<sdf>}
 rotate_z      {"op":"rotate_z","angle":30,"shape":<sdf>}

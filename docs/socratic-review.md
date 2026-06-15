@@ -1758,4 +1758,34 @@ total = 2*count+1 per axis」と明記し、「nx=2 gives 5 copies along x
 > 総括: v56 は repeat の個数指定という、AI が数を直接コントロールする操作の
 > 曖昧さを解消した。doc コメントにしかなかった「片側」の意味論を help と
 > 挙動テストの両方で固定し、AI の作図意図と結果を一致させる。
+
+## 問97 — `mirror_*` の意味論が help に皆無 — AI が「反転移動」と誤解
+
+**問**: `mirror_x` は `p.x.abs()` による IQ opMirror で、**+x 半分を保持して -x 側へ
+鏡像化**する (x=0 平面で対称化)。元の -x 半分は破棄され +x 半分の鏡像に置き換わる。
+しかし help は `mirror_x {"op":"mirror_x","shape":<sdf>}` と書くだけで意味論の説明が
+**皆無**。AI は「形状を反対側へ反転移動する」「対称コピーを足す」等と誤解しうる。
+特に -x にしかない形状を mirror_x すると結果が空になる (源の +x 半分が空のため) という
+直感に反する挙動を予測できない。
+
+**修正**: help の mirror 節に「Makes the shape symmetric about the axis=0 plane:
+KEEPS the positive-axis half and reflects it onto the negative half (original
+negative half is REPLACED). To mirror to both sides, place the part on +axis first」
+と明記。
+
+検証テスト追加 (テスト 155→156):
+- `mirror_keeps_positive_half_and_reflects_to_negative`:
+  +x の球を mirror_x → +x と -x 両方に対称コピー。-x のみの球を mirror_x →
+  源 (+x半分) が空のため結果も空。「+半分が源」の意味論を挙動で証明。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP mirror 節), `src/core/sdf.rs` (新テスト)。
+
+## 反映サマリ v57
+| 問 | 実装 |
+|----|------|
+| 97 | mirror_* の対称化意味論 (+半分を源に -半分へ鏡像) を help で明示 + 挙動テスト |
+
+> 総括: v57 は mirror という最も誤解されやすい変形の意味論を明文化した。
+> 「反転移動」でなく「+半分を源とする面対称化」であることを help と挙動テストで
+> 固定し、-x のみ形状が空になる直感に反するケースも AI が予測できるようにした。
 > テスト数 141→142 + 統合 3。
