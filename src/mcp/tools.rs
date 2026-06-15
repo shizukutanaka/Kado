@@ -431,7 +431,22 @@ fn tool_eval(session: &Session, args: &Value) -> ToolResult {
     let z = args.get("z").and_then(|v| v.as_f64());
     match (x, y, z) {
         (Some(x), Some(y), Some(z)) => {
+            // 問69: 非有限座標 (Infinity, NaN) は SDF 演算内で伝播し NaN 結果を生む。
+            // AI が `1e999` (→ +Inf) を送ると SDF 全体が無意味な値を返す。早期拒否する。
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return ToolResult::error(format!(
+                    "coordinates must be finite: x={x}, y={y}, z={z} \
+                     (Infinity and NaN are not valid SDF query points)"
+                ));
+            }
             let d = session.scene.eval(Vec3::new(x, y, z));
+            // SDF 結果の非有限チェック: 正常な SDF 木では起こらないが防御的に検出する。
+            if !d.is_finite() {
+                return ToolResult::error(format!(
+                    "SDF evaluation produced non-finite result {d} at ({x},{y},{z}) \
+                     — this may indicate a degenerate shape in the scene"
+                ));
+            }
             ToolResult::text(format!("{d:.6}"))
         }
         _ => ToolResult::error("x, y, z are required numeric fields"),

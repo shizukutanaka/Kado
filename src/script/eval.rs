@@ -262,6 +262,20 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             let px = opt_f64(v, "x").unwrap_or(0.0);
             let py = opt_f64(v, "y").unwrap_or(0.0);
             let pz = opt_f64(v, "z").unwrap_or(0.0);
+            // 問70: count が明示指定されているのに対応する period が正でない場合はサイレント縮退
+            // (= period=0 → snap が v を素通し → タイルなし) を起こす。エラーとして明示する。
+            // count が指定されていない (= 既定 1) の場合は period=0 で「その軸は繰り返さない」
+            // という既存の慣例と互換なため、チェックしない。
+            for (axis, period, count_key) in [("x", px, "nx"), ("y", py, "ny"), ("z", pz, "nz")] {
+                if let Some(cnt) = opt_f64(v, count_key) {
+                    if cnt.is_finite() && cnt > 0.0 && period <= 0.0 {
+                        return Err(ScriptError::new(format!(
+                            "repeat: \"{count_key}\"={cnt} requires a positive \"{axis}\" period \
+                             (omitting \"{axis}\" or setting it to 0 silently disables repetition on that axis)"
+                        )));
+                    }
+                }
+            }
             // 各軸のコピー数 (片側)。既定1。非有限/負は1へ、過大は上限へ丸める (問21/問16)。
             let n = |key: &str| -> u32 {
                 opt_f64(v, key)
@@ -592,5 +606,37 @@ mod tests {
         assert!(s.eval(Vec3::new(2.0, 0.0, 0.0)) < 0.0);
         // 範囲外 (4セル目) は外側 → 無限タイルでない。
         assert!(s.eval(Vec3::new(8.0, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn repeat_count_without_period_is_rejected() {
+        // 問70: nx を明示したのに x 周期を省略 → サイレント縮退ではなくエラー。
+        // count=3 なのに period=0 → タイルなしで元の球1個になる縮退を防ぐ。
+        let bad = r#"{"op":"repeat","nx":3,"shape":{"op":"sphere","r":0.5}}"#;
+        assert!(
+            eval_scene(bad).is_err(),
+            "repeat nx=3 with no x period must be an error, not silent degeneration"
+        );
+
+        // ny を明示、nz は既定 (= 省略扱い) → ny のみエラー、nz はチェックなし。
+        let bad_y = r#"{"op":"repeat","y":0.0,"ny":2,"shape":{"op":"sphere","r":0.5}}"#;
+        assert!(
+            eval_scene(bad_y).is_err(),
+            "repeat ny=2 with y=0 period must be an error"
+        );
+
+        // period を正しく指定すれば OK。
+        let good = r#"{"op":"repeat","x":2.0,"nx":2,"shape":{"op":"sphere","r":0.5}}"#;
+        assert!(
+            eval_scene(good).is_ok(),
+            "repeat with explicit positive period must succeed"
+        );
+
+        // count を省略 (既定 1) かつ period=0 は「その軸は繰り返さない」 → エラー不要。
+        let default_ok = r#"{"op":"repeat","x":2.0,"nx":1,"shape":{"op":"sphere","r":0.3}}"#;
+        assert!(
+            eval_scene(default_ok).is_ok(),
+            "repeat with explicit nx=1 and positive period must succeed"
+        );
     }
 }

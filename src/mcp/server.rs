@@ -402,6 +402,70 @@ mod tests {
     }
 
     #[test]
+    fn eval_rejects_non_finite_coordinates() {
+        // 問69: Infinity/NaN の座標が SDF に渡ると NaN 伝播する。早期拒否することを確認。
+        // JSON では 1e999 → Infinity が parse::<f64>() で表現される。
+        let mut s = tools::Session::new();
+
+        // x = Infinity
+        let params_inf = json::obj([
+            ("name", json::s("eval")),
+            (
+                "arguments",
+                json::obj([
+                    ("x", json::n(f64::INFINITY)),
+                    ("y", json::n(0.0)),
+                    ("z", json::n(0.0)),
+                ]),
+            ),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 30, Some(params_inf))).unwrap();
+        assert_eq!(
+            resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(true)),
+            "eval with Infinity coordinate must return isError=true"
+        );
+
+        // z = NaN
+        let params_nan = json::obj([
+            ("name", json::s("eval")),
+            (
+                "arguments",
+                json::obj([
+                    ("x", json::n(0.0)),
+                    ("y", json::n(0.0)),
+                    ("z", json::n(f64::NAN)),
+                ]),
+            ),
+        ]);
+        let resp2 = handle(&mut s, &req("tools/call", 31, Some(params_nan))).unwrap();
+        assert_eq!(
+            resp2.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(true)),
+            "eval with NaN coordinate must return isError=true"
+        );
+
+        // 有限値は通常通り成功。
+        let params_ok = json::obj([
+            ("name", json::s("eval")),
+            (
+                "arguments",
+                json::obj([
+                    ("x", json::n(0.5)),
+                    ("y", json::n(0.0)),
+                    ("z", json::n(0.0)),
+                ]),
+            ),
+        ]);
+        let resp3 = handle(&mut s, &req("tools/call", 32, Some(params_ok))).unwrap();
+        assert_eq!(
+            resp3.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false)),
+            "eval with finite coordinates must succeed"
+        );
+    }
+
+    #[test]
     fn notification_returns_none() {
         let mut s = tools::Session::new();
         let notif = json::obj([
