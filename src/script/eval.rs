@@ -206,18 +206,37 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             let a = build_child(v, "a", op, depth, budget)?;
             let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
+            // 問75: k=0 → 除算ゼロで NaN; k<0 → AABB が縮小しメッシュが欠損する。
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "smooth_union \"k\" blend radius must be > 0, got {k} \
+                     (k=0 causes division by zero; use union for hard boundary)"
+                )));
+            }
             Ok(a.smooth_union(b, k))
         }
         "smooth_intersection" => {
             let a = build_child(v, "a", op, depth, budget)?;
             let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "smooth_intersection \"k\" blend radius must be > 0, got {k} \
+                     (use intersection for hard boundary)"
+                )));
+            }
             Ok(a.smooth_intersection(b, k))
         }
         "smooth_difference" => {
             let a = build_child(v, "a", op, depth, budget)?;
             let b = build_child(v, "b", op, depth, budget)?;
             let k = opt_f64(v, "k").unwrap_or(0.3);
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "smooth_difference \"k\" blend radius must be > 0, got {k} \
+                     (use difference for hard boundary)"
+                )));
+            }
             Ok(a.smooth_difference(b, k))
         }
 
@@ -276,14 +295,27 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
                     }
                 }
             }
-            // 各軸のコピー数 (片側)。既定1。非有限/負は1へ、過大は上限へ丸める (問21/問16)。
-            let n = |key: &str| -> u32 {
-                opt_f64(v, key)
-                    .filter(|f| f.is_finite() && *f >= 0.0)
-                    .map(|f| (f as u32).min(MAX_REPEAT))
-                    .unwrap_or(1)
-            };
-            Ok(child.repeat_n(Vec3::new(px, py, pz), [n("nx"), n("ny"), n("nz")]))
+            // 各軸のコピー数 (片側)。既定1。非有限/負は1へ、過大はエラー (問76)。
+            // サイレントクランプでは AI が要求したコピー数が反映されたか判断できない。
+            let mut counts = [1u32; 3];
+            for (i, key) in ["nx", "ny", "nz"].iter().enumerate() {
+                if let Some(f) = opt_f64(v, key) {
+                    if !f.is_finite() || f < 0.0 {
+                        return Err(ScriptError::new(format!(
+                            "repeat \"{key}\" must be a non-negative integer, got {f}"
+                        )));
+                    }
+                    let cnt = f as u32;
+                    if cnt > MAX_REPEAT {
+                        return Err(ScriptError::new(format!(
+                            "repeat \"{key}\"={cnt} exceeds the maximum of {MAX_REPEAT} \
+                             (total copies = 2*n+1 per axis; use smaller count to stay within limits)"
+                        )));
+                    }
+                    counts[i] = cnt;
+                }
+            }
+            Ok(child.repeat_n(Vec3::new(px, py, pz), counts))
         }
         "mirror_x" => Ok(build_child(v, "shape", op, depth, budget)?.mirror_x()),
         "mirror_y" => Ok(build_child(v, "shape", op, depth, budget)?.mirror_y()),
@@ -638,5 +670,53 @@ mod tests {
             eval_scene(default_ok).is_ok(),
             "repeat with explicit nx=1 and positive period must succeed"
         );
+    }
+
+    #[test]
+    fn repeat_count_over_max_is_rejected_not_silently_clamped() {
+        // 問76: count > MAX_REPEAT をサイレントクランプするのではなく明示エラーにする。
+        // AI が nx=500 を指定したのに 256 コピーしか生成されないことに気づけない問題を防ぐ。
+        let too_many = r#"{"op":"repeat","x":1.0,"nx":300,"shape":{"op":"sphere","r":0.3}}"#;
+        let err = eval_scene(too_many);
+        assert!(err.is_err(), "repeat nx=300 > MAX_REPEAT must be an error, not clamped silently");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("256") || msg.contains("maximum"),
+            "error must mention the max limit: {msg}"
+        );
+
+        // MAX_REPEAT(256) 以内は OK。
+        let at_max = r#"{"op":"repeat","x":1.0,"nx":256,"shape":{"op":"sphere","r":0.3}}"#;
+        assert!(eval_scene(at_max).is_ok(), "repeat nx=256 (= MAX_REPEAT) must be accepted");
+
+        // 負のカウントもエラー。
+        let neg_count = r#"{"op":"repeat","x":1.0,"nx":-1,"shape":{"op":"sphere","r":0.3}}"#;
+        assert!(eval_scene(neg_count).is_err(), "repeat nx=-1 must be rejected");
+    }
+
+    #[test]
+    fn smooth_k_zero_or_negative_is_rejected() {
+        // 問75: smooth_* の k=0 は除算ゼロで NaN を生む; k<0 は AABB を縮小し
+        // メッシュが欠損する。スクリプト検証段階で拒否することを確認する。
+        let a = r#"{"op":"sphere","r":1.0}"#;
+        let b = r#"{"op":"sphere","r":0.8}"#;
+
+        // k=0 はエラー。
+        let zero_u = format!(r#"{{"op":"smooth_union","k":0,"a":{a},"b":{b}}}"#);
+        assert!(eval_scene(&zero_u).is_err(), "smooth_union k=0 must be rejected (NaN risk)");
+
+        let zero_i = format!(r#"{{"op":"smooth_intersection","k":0,"a":{a},"b":{b}}}"#);
+        assert!(eval_scene(&zero_i).is_err(), "smooth_intersection k=0 must be rejected");
+
+        let zero_d = format!(r#"{{"op":"smooth_difference","k":0,"a":{a},"b":{b}}}"#);
+        assert!(eval_scene(&zero_d).is_err(), "smooth_difference k=0 must be rejected");
+
+        // k<0 もエラー。
+        let neg_u = format!(r#"{{"op":"smooth_union","k":-0.5,"a":{a},"b":{b}}}"#);
+        assert!(eval_scene(&neg_u).is_err(), "smooth_union k<0 must be rejected (AABB shrinks)");
+
+        // k>0 は有効。
+        let pos_u = format!(r#"{{"op":"smooth_union","k":0.2,"a":{a},"b":{b}}}"#);
+        assert!(eval_scene(&pos_u).is_ok(), "smooth_union positive k must succeed");
     }
 }

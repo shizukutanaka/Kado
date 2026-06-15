@@ -1224,3 +1224,45 @@ AI は `undo_script` ツールが存在することも、どう使うかも `hel
 > help ツールは現行の 8 ツール全ての主要パラメータを案内でき、
 > get_scene は AI が次のアクションを決定するのに必要な状態を完全に提供する。
 > テスト数 137→138 + 統合 3。
+
+## 問75 — `smooth_*` の `k=0` で除算ゼロ; `k<0` で AABB 縮小
+**問**: `smooth_union`/`smooth_intersection`/`smooth_difference` は IQ の polySmoothMin 公式
+`h = clamp(0.5 + 0.5*(db-da)/k, 0, 1)` を使う。`k=0` のとき `/k` が除算ゼロで NaN を生み、
+`polygonize` が沈黙のまま壊れたメッシュ (または空) を出力する。
+`k<0` のとき `aabb()` が `(lo - Vec3::splat(*k), hi + Vec3::splat(*k))` → AABB が縮小し、
+メッシュが sampling_box からはみ出してクリップされる。
+デフォルト 0.3 は有効だが、明示的に `"k":0` や `"k":-0.1` を渡した場合に無言でバグる。
+
+**修正**: `eval.rs` の smooth_union/intersection/difference で `k <= 0` を即座に ScriptError にする。
+エラーメッセージにはハード操作 (`union`/`intersection`/`difference`) への誘導を含める。
+
+検証テスト追加 (テスト 139→140 で先行):
+- `smooth_k_zero_or_negative_is_rejected`:
+  k=0, k<0 の各操作でエラー; k>0 は正常動作
+
+## 問76 — `repeat` count > MAX_REPEAT がサイレントクランプされ AI が気づかない
+**問**: `repeat` の `nx/ny/nz` は内部で `MAX_REPEAT=256` に `.min()` クランプされる。
+AI が `nx=500` を指定すると 256 コピーになるが `run_script` は「scene updated」とだけ返し、
+クランプを知らせない。AI はモデルが期待通りに生成されたと思い込む。
+`repeat` の period 省略 (問70) はエラーにしたのに、count 超過は無言クランプという非対称。
+
+**修正**: `eval.rs` の count 解析を `.min(MAX_REPEAT)` によるクランプから
+`cnt > MAX_REPEAT → ScriptError` に変更。エラーメッセージに最大値 256 と
+「2*n+1 コピー/軸」の説明を含める。負の count も同様にエラー。
+
+検証テスト追加 (テスト 139→140):
+- `repeat_count_over_max_is_rejected_not_silently_clamped`:
+  nx=300 → エラー (メッセージに "256" または "maximum" を含む)
+  nx=256 → 成功 (= MAX_REPEAT)
+  nx=-1 → エラー
+
+## 反映サマリ v42
+| 問 | 実装 |
+|----|------|
+| 75 | smooth_* k≤0 を ScriptError に: NaN 伝播 + AABB 縮小バグを防ぐ |
+| 76 | repeat count > 256 をサイレントクランプからエラーに変更 |
+
+> 総括: v42 は「サイレントな数値劣化」パターンを2件解消した。
+> smooth blend の k は正値のみ受け付け、repeat count は上限オーバーを明示エラーにする。
+> どちらもエラーメッセージに代替手段を示し AI の自己修正ループを支援する。
+> テスト数 138→140 + 統合 3。
