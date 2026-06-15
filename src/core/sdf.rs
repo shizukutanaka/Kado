@@ -637,6 +637,29 @@ mod tests {
     }
 
     #[test]
+    fn repeat_count_is_per_side_total_is_two_n_plus_one() {
+        // 問96: count は「片側」のコピー数 → 1軸あたり合計 2*count+1 個。
+        // nx=2, period 2 → x ∈ {-4,-2,0,2,4} の5コピー。x=6 (3個目/側) は存在しない。
+        let s = Sdf::sphere(0.3).repeat_n(Vec3::new(2.0, 0.0, 0.0), [2, 0, 0]);
+        // 2個目/側 (x=4) は内部 (コピーが存在)。
+        assert!(
+            s.eval(Vec3::new(4.0, 0.0, 0.0)) < 0.0,
+            "2nd copy per side (x=4) must exist: {}",
+            s.eval(Vec3::new(4.0, 0.0, 0.0))
+        );
+        // 3個目/側 (x=6) は存在しない → 外部。これが per-side=2 (合計5) の証拠。
+        assert!(
+            s.eval(Vec3::new(6.0, 0.0, 0.0)) > 0.0,
+            "no 3rd copy per side (x=6) → count is per-side, total=2n+1: {}",
+            s.eval(Vec3::new(6.0, 0.0, 0.0))
+        );
+        // AABB も両側に count*period = 4 広がる (hi.x = 0.3 + 4)。
+        let (lo, hi) = s.aabb();
+        assert!((hi.x - (0.3 + 4.0)).abs() < 1e-9, "hi.x={}", hi.x);
+        assert!((lo.x + (0.3 + 4.0)).abs() < 1e-9, "lo.x={}", lo.x);
+    }
+
+    #[test]
     fn rotation_is_rigid_and_preserves_distance_field() {
         // 問51: 回転は剛体変換。回転形状を回転点で評価すると元の場と一致する。
         // S = rotate_z(child, θ) のとき S(R_θ x) == child(x) が任意 x で成り立つ。

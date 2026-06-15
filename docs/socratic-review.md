@@ -1730,4 +1730,32 @@ help が "MILLIMETERS" と "1 mm" を含む assertion を追加 (テスト数 15
 
 > 総括: v55 で「読み取り (eval) は mm と分かるが書き込み (help) では単位不明」という
 > 非対称を解消した。AI はシーンを書くときも読むときも一貫して mm 規約を把握できる。
+
+## 問96 — `repeat` の count 意味論が help で曖昧 — AI が個数を取り違える
+
+**問**: `repeat_n` の実装は `count[a]` を「原点の**両側**へのコピー数」と定義する
+(コード doc コメント: 両側へのコピー数)。つまり nx=2 は1軸あたり合計 5 個
+(左2 + 中央 + 右2) を生む。しかし help は「count per axis (nx/ny/nz, default 1)」
+としか書かず、片側か合計か曖昧。AI は nx=2 を「2個」と解釈しがちだが実際は5個。
+要求した個数と実際の個数が食い違い、意図しない密度のパターンになる。
+
+**修正**: help の repeat 節に「count is copies PER SIDE of the origin →
+total = 2*count+1 per axis」と明記し、「nx=2 gives 5 copies along x
+(2 left + center + 2 right)」と例示。
+
+検証テスト追加 (テスト 154→155):
+- `repeat_count_is_per_side_total_is_two_n_plus_one`:
+  nx=2,period2 で x=4 (2個目/側) は内部・x=6 (3個目/側) は外部であることを確認
+  (= per-side が2、合計5 の挙動的証明)。AABB も両側 count*period 広がることを確認。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP repeat 節), `src/core/sdf.rs` (新テスト)。
+
+## 反映サマリ v56
+| 問 | 実装 |
+|----|------|
+| 96 | repeat count の「片側・合計2n+1」意味論を help で明示 + 挙動テスト |
+
+> 総括: v56 は repeat の個数指定という、AI が数を直接コントロールする操作の
+> 曖昧さを解消した。doc コメントにしかなかった「片側」の意味論を help と
+> 挙動テストの両方で固定し、AI の作図意図と結果を一致させる。
 > テスト数 141→142 + 統合 3。

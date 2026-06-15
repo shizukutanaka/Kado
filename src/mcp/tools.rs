@@ -627,7 +627,9 @@ rotate_x      {"op":"rotate_x","angle":90,"shape":<sdf>}  angle in DEGREES
 rotate_y      {"op":"rotate_y","angle":45,"shape":<sdf>}
 rotate_z      {"op":"rotate_z","angle":30,"shape":<sdf>}
 repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
-              period per axis (x/y/z), count per axis (nx/ny/nz, default 1)
+              period per axis (x/y/z); count per axis (nx/ny/nz, default 1).
+              count is copies PER SIDE of the origin → total = 2*count+1 per axis.
+              e.g. nx=2 gives 5 copies along x (2 left + center + 2 right).
 
 ## Example: sphere with a cylindrical hole
 
