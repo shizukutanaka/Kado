@@ -1637,4 +1637,37 @@ issue がある場合「full DFM は validate(resolution=N) で」と案内を�
 > 総括: v52 は「manifold=true ⇒ DFM 合格」という export の暗黙の誤認を断った。
 > 出力する実物 (export 解像度のメッシュ) の構造 DFM が export 時点で可視化され、
 > run_script (問81) と同じ閾値非依存チェックでツール間の一貫性も保たれる。
+
+## 問93 — `run_script` が digest を出すのにチェック解像度 (res=32) を開示しない
+
+**問**: 問90/91 で validate・export は解像度を開示した。だが run_script の応答
+(`report.summary()` を含む) も digest を出しており、そのチェックは res=32
+(validate 既定48・export 既定64 より粗い) で行われる。解像度を開示しないため:
+- (a) AI は run_script の summary digest が validate/export の digest と一致しない
+  理由を説明できない (解像度が違えば digest は変わる — 問90)
+- (b) 粗い res=32 の「issue なし」を確定的と誤認する。NON_MANIFOLD 等は解像度依存で、
+  高解像度の validate では現れうる
+digest を出す3番目のツールに、問90 と同じ「digest を出すが resolution を出さない」
+ギャップが残っていた。
+
+**修正**: run_script 応答に `check_resolution={res}` を併記し、
+「quick check; validate/export use higher res by default — digests differ across
+resolutions」と案内する。これで digest 不一致の理由が自明になり、粗い check を
+確定的 DFM と誤認しなくなる (問90/91/92 と同じ解像度透明性の完成)。
+
+検証テスト追加 (テスト 152→153):
+- `run_script_discloses_check_resolution`:
+  既定 (check_resolution=32) と明示指定 (=16) の両方が応答に出ることを確認。
+
+変更ファイル: `src/mcp/tools.rs` (tool_run_script + 新テスト)。
+
+## 反映サマリ v53
+| 問 | 実装 |
+|----|------|
+| 93 | run_script が check_resolution を開示 (digest を出す全ツールで解像度透明性完成) |
+
+> 総括: v53 で digest を出す3ツール (run_script/validate/export) すべてが
+> 解像度を開示するようになり、問90 で始まった「digest は解像度なしでは再現不能」
+> という契約欠陥が全面的に解消された。AI はどのツールの digest も
+> 解像度とセットで解釈・照合できる。
 > テスト数 141→142 + 統合 3。

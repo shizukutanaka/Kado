@@ -519,7 +519,16 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     } else {
         format!("scene updated (check issues: {})", all_codes.join(", "))
     };
-    ToolResult::text(format!("{prefix} — {}", report.summary()))
+    // 問93: summary は digest を含むが、このチェックは res=32 (validate 既定48・
+    // export 既定64 より粗い)。解像度を開示しないと AI は (a) summary の digest が
+    // validate/export の digest と一致しない理由を説明できず、(b) 粗い res の
+    // 「issue なし」を確定的と誤認する。check_resolution を併記し、authoritative な
+    // DFM は validate を使うよう案内する (問90/91/92 と同じ解像度透明性)。
+    ToolResult::text(format!(
+        "{prefix} — {} check_resolution={res} \
+         (quick check; validate/export use higher res by default — digests differ across resolutions)",
+        report.summary()
+    ))
 }
 
 fn tool_undo_script(session: &mut Session) -> ToolResult {
@@ -944,6 +953,34 @@ mod tests {
         assert!(
             text.contains("scene updated"),
             "session must still be marked as updated: {text}"
+        );
+    }
+
+    #[test]
+    fn run_script_discloses_check_resolution() {
+        // 問93: run_script の summary は digest を含むが res=32 のチェック。
+        // 解像度を開示しないと AI が digest の不一致を説明できず、粗い「issue なし」を
+        // 確定的と誤認する。既定 (32) と明示指定の両方で check_resolution が出ることを確認。
+        let mut s = Session::new();
+        // 既定解像度 (32)。
+        let args = json::obj([("script", json::s("sphere(1.0)"))]);
+        let r = call_tool(&mut s, "run_script", &args);
+        assert!(!r.is_error);
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        assert!(
+            text.contains("check_resolution=32"),
+            "run_script must disclose its (default 32) check resolution (問93): {text}"
+        );
+        // 明示指定 (16) も反映される。
+        let args2 = json::obj([
+            ("script", json::s("sphere(1.0)")),
+            ("resolution", json::n(16.0)),
+        ]);
+        let r2 = call_tool(&mut s, "run_script", &args2);
+        let text2 = r2.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        assert!(
+            text2.contains("check_resolution=16"),
+            "run_script must disclose the explicit check resolution (問93): {text2}"
         );
     }
 
