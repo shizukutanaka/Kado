@@ -1547,4 +1547,31 @@ help は torus を「minor (req): tube radius > 0」、smooth を「k: blend rad
 
 > 総括: v49 はドキュメント (help) と実装 (評価器) の乖離を解消した。
 > 同期保証テストにより、将来制約を追加したとき help 更新漏れを CI が検知する。
+
+## 問90 — `validate` の digest を解像度なしで報告 — 再現性契約が実行不能
+
+**問**: digest (問61) は再現性の要であり、その決定性契約は mesh.rs に
+「同一バイナリ・同一arch・同一スクリプト・**同一解像度**なら同じ digest」と明記される。
+しかし `validate` の JSON / summary 出力は digest を報告するが、それを生成した
+**解像度を含まない**。AI が `digest=abc123` を記録して後で再現性を検証しようとしても、
+どの解像度で生成されたか分からず再現できない。res=48 と res=64 で digest は異なるため、
+解像度なしの digest は再現性検証に使えない (契約が宣言されているのに実行不能)。
+
+**修正**: `tool_validate` で `to_json()` の結果 (Value::Object) に `resolution` フィールドを
+挿入する。tool レイヤは res を知っている (arg_resolution)。digest と resolution が
+セットで報告され、AI/第三者が再現条件を完全に把握できる。
+
+検証テスト追加 (テスト 149→150):
+- `validate_reports_resolution_alongside_digest`:
+  validate(resolution=40) の JSON に resolution=40 と digest が両方含まれることを確認。
+
+変更ファイル: `src/mcp/tools.rs` (tool_validate + 新テスト)。
+
+## 反映サマリ v50
+| 問 | 実装 |
+|----|------|
+| 90 | validate JSON に resolution を併記し digest 再現性契約を実行可能に |
+
+> 総括: v50 は「宣言されているが実行不能だった再現性契約」を実行可能にした。
+> digest 単体では無意味だった再現性検証が、resolution 併記により完結する。
 > テスト数 141→142 + 統合 3。

@@ -730,7 +730,13 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
     let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang, build_dir);
     // 機械可読な構造化 JSON を返す (問63): AI が code で分岐し指標を直接読める。
-    ToolResult::text(report.to_json().to_string())
+    // 問90: digest の決定性契約 (問61) は「同一解像度」が前提だが、report 単体には
+    // 解像度が含まれず digest が再現性検証に使えなかった。resolution を併記する。
+    let mut report_json = report.to_json();
+    if let Value::Object(ref mut map) = report_json {
+        map.insert("resolution".to_string(), json::n(res as f64));
+    }
+    ToolResult::text(report_json.to_string())
 }
 
 // ── base64 (RFC 4648, std のみ) ───────────────────────────────────────────────
@@ -883,6 +889,29 @@ mod tests {
         assert!(
             eval_any(r#"{"op":"smooth_union","a":{"op":"sphere","r":1.0},"b":{"op":"sphere","r":1.0},"k":0.0}"#).is_err(),
             "evaluator must reject smooth k<=0 as help claims"
+        );
+    }
+
+    #[test]
+    fn validate_reports_resolution_alongside_digest() {
+        // 問90: digest の決定性契約 (問61) は同一解像度が前提。report に resolution が
+        // 無いと digest を後で再現できない。validate 応答が resolution を含むことを保証する。
+        use crate::mcp::json::parse;
+        let mut s = Session::new();
+        let args = json::obj([("resolution", json::n(40.0))]);
+        let r = call_tool(&mut s, "validate", &args);
+        assert!(!r.is_error, "validate must succeed");
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        let v = parse(text).expect("validate output must be valid JSON");
+        // resolution と digest が両方含まれること。
+        assert_eq!(
+            v.get("resolution").and_then(|x| x.as_f64()),
+            Some(40.0),
+            "validate JSON must report the resolution used (問90): {text}"
+        );
+        assert!(
+            v.get("digest").and_then(|x| x.as_str()).is_some(),
+            "validate JSON must still report digest: {text}"
         );
     }
 }
