@@ -319,13 +319,18 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     }
     let (lo, hi) = mesh.bounds().unwrap();
     let presets = Camera::presets(lo, hi);
-    let cam = presets
-        .iter()
-        .find(|(n, _)| *n == view)
-        .or_else(|| presets.iter().find(|(n, _)| *n == "iso"))
-        .unwrap_or(&presets[0])
-        .1
-        .clone();
+    // 問71: 未知のビュー名はサイレントに "iso" フォールバックするのではなく、
+    // 明示エラーを返す。AI が無効な view を指定した場合に気づけるようにする。
+    let cam = match presets.iter().find(|(n, _)| *n == view) {
+        Some((_, c)) => c.clone(),
+        None => {
+            let valid: Vec<&str> = presets.iter().map(|(n, _)| *n).collect();
+            return ToolResult::error(format!(
+                "unknown view '{view}'; valid views: {}",
+                valid.join(", ")
+            ));
+        }
+    };
 
     // スーパーサンプルして縮小 (アンチエイリアス)。
     let big = render(&mesh, &cam, width * samples, height * samples);
@@ -384,13 +389,26 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
         ("STL", stl::write_binary(&mesh, &safe))
     };
     match write_res {
-        Ok(()) => ToolResult::text(format!(
-            "exported {}: {} ({} triangles, manifold={})",
-            fmt,
-            safe.display(),
-            mesh.triangles.len(),
-            mesh.is_edge_manifold()
-        )),
+        Ok(()) => {
+            // 問72: 相対パスだけでは MCP サーバーの CWD が不明な AI はファイルの場所を
+            // 特定できない。書き込み後に canonicalize で絶対パスを解決して返す。
+            let abs_path = std::fs::canonicalize(&safe)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| safe.display().to_string());
+            // 非多様体メッシュは 3D プリントで問題になる可能性がある。明示警告を付加する。
+            let manifold = mesh.is_edge_manifold();
+            let manifold_note = if manifold {
+                String::new()
+            } else {
+                " [WARNING: non-manifold mesh — may cause issues when 3D printing; \
+                  consider increasing resolution or checking for open boundaries]"
+                    .to_string()
+            };
+            ToolResult::text(format!(
+                "exported {fmt}: {abs_path} ({} triangles, manifold={manifold}){manifold_note}",
+                mesh.triangles.len(),
+            ))
+        }
         Err(e) => ToolResult::error(format!("export failed: {e}")),
     }
 }

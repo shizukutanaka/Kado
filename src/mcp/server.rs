@@ -402,6 +402,53 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_unknown_view_returns_error() {
+        // 問71: 未知ビュー名はサイレントフォールバックせずエラーを返す。
+        let mut s = tools::Session::new();
+        let params = json::obj([
+            ("name", json::s("screenshot")),
+            (
+                "arguments",
+                json::obj([("view", json::s("above-45-deg"))]),
+            ),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 50, Some(params))).unwrap();
+        assert_eq!(
+            resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(true)),
+            "unknown view must return isError=true"
+        );
+        // エラーメッセージに有効なビュー名リストが含まれる。
+        let err_text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            err_text.contains("iso") && err_text.contains("front"),
+            "error message must list valid views: {err_text}"
+        );
+
+        // 既知のビュー名 ("front") は成功する。
+        let params_ok = json::obj([
+            ("name", json::s("screenshot")),
+            (
+                "arguments",
+                json::obj([("view", json::s("front"))]),
+            ),
+        ]);
+        let resp_ok = handle(&mut s, &req("tools/call", 51, Some(params_ok))).unwrap();
+        assert_eq!(
+            resp_ok.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false)),
+            "known view 'front' must succeed"
+        );
+    }
+
+    #[test]
     fn eval_rejects_non_finite_coordinates() {
         // 問69: Infinity/NaN の座標が SDF に渡ると NaN 伝播する。早期拒否することを確認。
         // JSON では 1e999 → Infinity が parse::<f64>() で表現される。

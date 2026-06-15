@@ -107,13 +107,15 @@ fn main() {
             }
             let (lo, hi) = mesh.bounds().unwrap();
             let presets = Camera::presets(lo, hi);
-            let cam = presets
-                .iter()
-                .find(|(n, _)| *n == view.as_str())
-                .or_else(|| presets.iter().find(|(n, _)| *n == "iso"))
-                .unwrap_or(&presets[0])
-                .1
-                .clone();
+            // 問71: 未知ビュー名は明示エラー (サイレントフォールバックしない)。
+            let cam = match presets.iter().find(|(n, _)| *n == view.as_str()) {
+                Some((_, c)) => c.clone(),
+                None => {
+                    let valid: Vec<&str> = presets.iter().map(|(n, _)| *n).collect();
+                    eprintln!("unknown view '{view}'; valid: {}", valid.join(", "));
+                    std::process::exit(2);
+                }
+            };
             // 2× スーパーサンプルしてアンチエイリアス (問56)。
             let mut img = render(&mesh, &cam, 1024, 1024).downsample(2);
             // 向きの基準として座標軸グノモンを重ねる (問66)。
