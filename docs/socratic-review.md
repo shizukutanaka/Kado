@@ -1281,19 +1281,21 @@ MULTIPLE_BODIES を報告する。AI は「どのパラメータが問題か」�
 検証テスト追加 (テスト 140→141):
 - `torus_minor_ge_major_is_rejected`: minor=major → エラー, minor>major → エラー (メッセージに "spindle" または "non-manifold"), minor<major → 成功
 
-## 問78 — デフォルトシーンが開いたメッシュであり `validate` が誤判定を招く
+## 問78 — デフォルトシーンが SDF の最大の特長 (スムーズブレンド) を示していない
 **問**: `Session::new()` のデフォルトシーンは
 `union(sphere(1), cuboid(0.8)).difference(cylinder(0.3, 2.0))`。
-cylinder の half-height=2.0 が sphere の半径=1.0 を超え、球の上下面に穴が開く (開いたメッシュ)。
-`run_script` を呼ぶ前に `validate` を呼んだ AI は OPEN_MESH エラーを受け、
-「自分のスクリプトが壊れている」と誤解する。
+このシーンは幾何的には正当 (多様体、有効なメッシュ) だが、SDF の最大の強みである
+「スムーズな有機的ブレンド」を全く使っていない。
+シャープエッジの boolean 形状はメッシュCSGでも生成でき、SDF 固有の価値を示せない。
+AI が `help` で `smooth_union` を学んでも、実際に動作するデモを見る前に
+`run_script` を呼ばなければならない非対称がある。
 
 **修正**:
 - `default_scene()` を `smooth_union(sphere(1.0), cuboid(0.8), k=0.2)` に変更:
-  常に多様体で閉じた形状。smooth_union のデモとして視覚的にも興味深い。
+  SDF の有機的ブレンドを即座にデモし、視覚的にも印象的な形状。
 - CLI `demo_model()` も同様に変更し一貫性を保つ。
-- `run_script_updates_active_scene` テストの「原点は穴の中 → 正」を
-  「遠点 (10,0,0) は外 → 正」に更新 (原点は新シーン内部)。
+- `run_script_updates_active_scene` テストの初期値チェック条件を更新
+  (原点は新シーン内部 → 負なので「遠点 (10,0,0) は外 → 正」を使用)。
 
 テスト数変化: 140→141 (問77); 問78 は既存テスト修正のみ。
 
