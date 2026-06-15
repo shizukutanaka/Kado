@@ -162,8 +162,8 @@ fn main() {
             let sdf = parse_scene(&load_scene_file(path));
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, res);
-            // SDF を渡し局所薄肉の内向きレイ探針を有効化する (問58)。
-            let report = validate_with_field(&mesh, Some(&sdf), min_wall, max_overhang);
+            // SDF を渡し局所薄肉の内向きレイ探針を有効化する (問58)。ビルド方向 +Z (問68)。
+            let report = validate_with_field(&mesh, Some(&sdf), min_wall, max_overhang, Vec3::new(0.0, 0.0, 1.0));
             let status = if report.is_ok() { "PASS" } else { "FAIL" };
             println!("[{status}] {}", report.summary());
             for issue in &report.issues {

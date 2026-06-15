@@ -212,14 +212,16 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_seven_tools() {
+    fn tools_list_has_eight_tools() {
+        // 問67で undo_script ツールを追加した (screenshot, export, eval, run_script,
+        // validate, get_scene, undo_script, help)。
         let mut s = tools::Session::new();
         let resp = handle(&mut s, &req("tools/list", 2, None)).unwrap();
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
             .and_then(|v| v.as_array());
-        assert_eq!(tools.map(|a| a.len()), Some(7));
+        assert_eq!(tools.map(|a| a.len()), Some(8));
     }
 
     #[test]
@@ -348,6 +350,55 @@ mod tests {
         assert!(text.contains("sphere"), "help must mention sphere");
         assert!(text.contains("smooth_union"), "help must mention smooth_union");
         assert!(text.contains("run_script"), "help must reference workflow");
+    }
+
+    #[test]
+    fn undo_script_restores_previous_scene() {
+        // 問67: run_script で上書きしたシーンを undo_script で1段戻せることを確認。
+        let mut s = tools::Session::new();
+
+        // 初期状態の SDF 値を記録 (デフォルトシーン)。
+        let initial_val = eval_at(&mut s, 0.0, 0.0, 0.0);
+
+        // 半径 3 の球に差し替える。
+        let params_run = json::obj([
+            ("name", json::s("run_script")),
+            (
+                "arguments",
+                json::obj([("script", json::s(r#"{"op":"sphere","r":3.0}"#))]),
+            ),
+        ]);
+        handle(&mut s, &req("tools/call", 20, Some(params_run))).unwrap();
+        let after_run = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!(
+            (after_run - (-3.0)).abs() < 1e-9,
+            "after run_script, sphere r=3 expected: got {after_run}"
+        );
+
+        // undo_script: デフォルトシーンへ戻る。
+        let params_undo = json::obj([
+            ("name", json::s("undo_script")),
+            ("arguments", json::obj([])),
+        ]);
+        let undo_resp = handle(&mut s, &req("tools/call", 21, Some(params_undo.clone()))).unwrap();
+        assert_eq!(
+            undo_resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false)),
+            "first undo must succeed"
+        );
+        let after_undo = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!(
+            (after_undo - initial_val).abs() < 1e-9,
+            "after undo, scene must revert: expected {initial_val}, got {after_undo}"
+        );
+
+        // 2回目の undo は履歴なしでエラー。
+        let undo2_resp = handle(&mut s, &req("tools/call", 22, Some(params_undo))).unwrap();
+        assert_eq!(
+            undo2_resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(true)),
+            "second undo must fail (single-level undo)"
+        );
     }
 
     #[test]

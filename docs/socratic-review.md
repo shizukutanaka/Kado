@@ -1062,3 +1062,47 @@ MCP screenshot は `axes` (既定 true) で切替、CLI は常時表示。
 
 > 総括: v37 は「AI はプレビューから向きを読めない」という新視点で、全スクショに
 > RGB 軸グノモンを重ねた。テスト数 130→132 + 統合 3。
+
+---
+
+## 問67 — `run_script` で上書きしたら元に戻せないのか?
+**問**: AI が誤ったスクリプトを `run_script` で実行するとシーンが上書きされる。
+空メッシュや破損シーンに差し替えた後、セッションを再起動せずに復元する手段がない。
+開発中の AI エージェントは誤字・パラメータミス・論理エラーを頻繁に起こすが、
+失敗ごとにセッションを再作成するのは高コスト。**single-level undo** で十分か?
+
+**修正**: `Session` に `prev_scene: Option<Sdf>` と `prev_script: Option<String>` を追加。
+`run_script` は上書き前に現在状態を `prev_*` に退避する。
+新ツール `undo_script`: `prev_scene.take()` で前のシーンを復元し、
+同じスクリプトを 2 度 undo しようとすると `is_error=true` (single-level undo の明示)。
+
+検証 (テスト 134→135): `undo_restores_previous_scene` — run後の eval値→undo後の eval値が
+初期値に戻り、2回目 undo はエラー。
+
+## 問68 — OVERHANG 検査はビルド方向を暗黙に +Z 固定しているが、AI はそれを知っているか?
+**問**: `validate_with_field` のオーバーハング検査は `n.z` (Z成分) のみを見ていた。
+ユーザーが形状を別の向きで印刷する場合 (例: Y軸方向に立てて積層) に正しい判定ができない。
+ツールのスキーマにも「ビルド方向は +Z」という記述がなく、AI に暗黙の仮定が伝わらない。
+
+**修正**: `validate_with_field(…, build_dir: Vec3)` に `build_dir` パラメータを追加。
+オーバーハング検査を `n.dot(bd) / |n|` に一般化し、任意の方向を使えるようにする。
+`validate()` 便利ラッパーは `Vec3::new(0,0,1)` (+Z) をデフォルトとして維持。
+MCP `validate` ツールに `build_dir` 文字列パラメータを追加
+(`"z"` / `"-z"` / `"x"` / `"-x"` / `"y"` / `"-y"` / `[dx,dy,dz]`; デフォルト `"z"`)。
+ツールスキーマの説明文も更新し、「ビルド方向は +Z 前提; 別軸ならパラメータを設定すること」
+と明示する。OVERHANG エラーメッセージに build_dir ベクトルを埋め込み、
+AI がどの方向で評価されたかを確認できるようにする。
+
+検証 (テスト 135→137): `overhang_check_respects_build_direction` —
+- 球の +Z ビルドレポートの OVERHANG メッセージが `"[0.00,0.00,1.00]"` を含む
+- +X ビルドレポートの OVERHANG メッセージが `"[1.00,0.00,0.00]"` を含む
+- `max_overhang_deg=0` でスキップ確認。
+
+## 反映サマリ v38
+| 問 | 実装 |
+|----|------|
+| 67 | single-level undo (`undo_script` ツール追加、Session に prev_scene/prev_script) |
+| 68 | OVERHANG のビルド方向を明示パラメータ化 (validate build_dir、デフォルト +Z) |
+
+> 総括: v38 は「上書き操作の不可逆性」と「暗黙のビルド方向仮定」を Socratic 問答で
+> 摘出し、AI エージェントの作業安全性と DFM 評価の正確性を高めた。テスト数 132→137 + 統合 3。

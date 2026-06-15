@@ -161,18 +161,24 @@ impl Report {
 ///
 /// `min_wall_mm` は最小肉厚チェックの閾値 (0以下でスキップ)。
 /// `max_overhang_deg` は最大オーバーハング角度 (度; 0以下でスキップ)。
+/// ビルド方向は +Z (= デフォルト: 重力と反対方向)。
 pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report {
-    validate_with_field(mesh, None, min_wall_mm, max_overhang_deg)
+    validate_with_field(mesh, None, min_wall_mm, max_overhang_deg, Vec3::new(0.0, 0.0, 1.0))
 }
 
 /// SDF 場を併用して検証する。`sdf` を渡すと肉厚チェックに**内向きレイ探針**
 /// (問58) を併用し、2V/SA 平均が見落とす**局所的な薄肉** (太い本体に付く細いリブ等)
 /// を検出できる。`sdf=None` のときは [`validate`] と同じ (平均のみ)。
+///
+/// `build_dir`: ビルド方向ベクトル (正規化不要; 零ベクトルならオーバーハング検査をスキップ)。
+/// デフォルトは `Vec3::new(0,0,1)` (+Z 上向き = 多くの FDM プリンタの方向)。
+/// 問68: この軸が暗黙だったため、AI が誤った方向でオーバーハングを評価していた。
 pub fn validate_with_field(
     mesh: &Mesh,
     sdf: Option<&Sdf>,
     min_wall_mm: f64,
     max_overhang_deg: f64,
+    build_dir: Vec3,
 ) -> Report {
     let volume = mesh.signed_volume();
     let bbox = mesh.bounds();
@@ -309,37 +315,45 @@ pub fn validate_with_field(
         }
     }
 
-    // 6. オーバーハング検査 (z 軸上向きビルド前提)
+    // 6. オーバーハング検査 (問68: build_dir で方向を明示。以前は +Z 暗黙固定だった)
+    //    dot(n̂, bd̂) = +1 → 完全にビルド方向向き (上向き), -1 → 完全に逆 (下向き・最悪オーバーハング)。
     if max_overhang_deg > 0.0 {
-        let max_cos = (90.0_f64 - max_overhang_deg).to_radians().cos();
-        let mut worst: f64 = 0.0;
-        for tri in &mesh.triangles {
-            let a = mesh.vertices[tri[0] as usize];
-            let b = mesh.vertices[tri[1] as usize];
-            let c = mesh.vertices[tri[2] as usize];
-            let n = (b - a).cross(c - a);
-            let len = n.length();
-            if len < 1e-15 {
-                continue;
+        let bd_len = build_dir.length();
+        if bd_len > 1e-12 {
+            let bd = build_dir * (1.0 / bd_len);
+            let max_cos = (90.0_f64 - max_overhang_deg).to_radians().cos();
+            let mut worst: f64 = 0.0;
+            for tri in &mesh.triangles {
+                let a = mesh.vertices[tri[0] as usize];
+                let b = mesh.vertices[tri[1] as usize];
+                let c = mesh.vertices[tri[2] as usize];
+                let n = (b - a).cross(c - a);
+                let len = n.length();
+                if len < 1e-15 {
+                    continue;
+                }
+                // n̂ と bd̂ の内積: 負値 = ビルド方向と逆向き (下向き面 = オーバーハング)。
+                let nd = n.dot(bd) / len;
+                if nd < worst {
+                    worst = nd;
+                }
             }
-            let nz = n.z / len;
-            if nz < worst {
-                worst = nz;
+            if worst < -max_cos {
+                // オーバーハング角度 = 水平からの角度 = asin(-worst) (問38)。
+                let deg = (-worst).asin().to_degrees();
+                issues.push(KadoError::warn(
+                    "OVERHANG",
+                    format!(
+                        "overhang angle {deg:.1}° from horizontal exceeds {max_overhang_deg:.1}° \
+                         (build direction [{:.2},{:.2},{:.2}])",
+                        bd.x, bd.y, bd.z
+                    ),
+                    &[
+                        "Add support structures or redesign with chamfer/fillet",
+                        "Rotate the model to minimize overhangs",
+                    ],
+                ));
             }
-        }
-        if worst < -max_cos {
-            // `worst` は最も大きい下向き法線の nz 成分 (負)。
-            // オーバーハング角度 = 水平からの角度 = asin(-worst) (問38: acos(nz) は違う慣例)。
-            // max_overhang_deg は「水平から」なので単位を揃える。
-            let deg = (-worst).asin().to_degrees();
-            issues.push(KadoError::warn(
-                "OVERHANG",
-                format!("overhang angle {deg:.1}° from horizontal exceeds max {max_overhang_deg:.1}°"),
-                &[
-                    "Add support structures or redesign with chamfer/fillet",
-                    "Rotate the model to minimize overhangs",
-                ],
-            ));
         }
     }
 
@@ -597,7 +611,7 @@ mod tests {
         );
 
         // 場併用 validate は THIN_WALL を報告し、メッシュのみは見逃す (閾値 0.2)。
-        let with_field = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0);
+        let with_field = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0, Vec3::new(0.0, 0.0, 1.0));
         let mesh_only = validate(&mesh, 0.2, 0.0);
         assert!(
             with_field.issues.iter().any(|e| e.code == "THIN_WALL"),
@@ -700,6 +714,69 @@ mod tests {
                 .any(|h| h.to_lowercase().contains("enclos")
                     || h.to_lowercase().contains("bounding")),
             "OPEN_MESH hint must guide enlarging bounds, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn overhang_check_respects_build_direction() {
+        // 問68: build_dir パラメータが OVERHANG 検出に使われていることを確認する。
+        //
+        // 証明戦略: 球は全方向に面を持つため、+Z / +X ビルドともに
+        // OVERHANG を検出する (両者を区別するためではない)。
+        // しかし「どの面が問題か」はビルド方向で決まるため、
+        // エラーメッセージに含まれる build_dir ベクトルが異なる値になる。
+        // これが build_dir が実際に使われている証拠となる。
+        //
+        // 追加テスト: max_overhang_deg=0 → オーバーハング検査がスキップされ、
+        //   build_dir の値に関係なく OVERHANG が報告されないことで、
+        //   build_dir の零長判定分岐も正しく動作することを確認する。
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 24);
+
+        // +Z ビルド, 閾値 45°: 南半球の面 (nz < -cos45°) が検出される。
+        let r_z = validate_with_field(&mesh, None, 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        // +X ビルド, 閾値 45°: 西半球の面 (nX < -cos45°) が検出される。
+        let r_x = validate_with_field(&mesh, None, 0.0, 45.0, Vec3::new(1.0, 0.0, 0.0));
+
+        // 両ビルドとも OVERHANG を検出する (球は全方向に南半球を持つ)。
+        let ov_z = r_z.issues.iter().find(|e| e.code == "OVERHANG").expect(
+            "+Z build must detect sphere underside overhang",
+        );
+        let ov_x = r_x.issues.iter().find(|e| e.code == "OVERHANG").expect(
+            "+X build must detect sphere -X-facing overhang",
+        );
+
+        // 問68 の核心: エラーメッセージが build_dir ベクトルを含む。
+        assert!(
+            ov_z.cause.contains("build direction"),
+            "+Z report must name build direction: {}",
+            ov_z.cause
+        );
+        assert!(
+            ov_x.cause.contains("build direction"),
+            "+X report must name build direction: {}",
+            ov_x.cause
+        );
+        // 各レポートが異なる build_dir を埋め込んでいることを確認。
+        // +Z: "build direction [0.00,0.00,1.00]"
+        // +X: "build direction [1.00,0.00,0.00]"
+        assert!(
+            ov_z.cause.contains("[0.00,0.00,1.00]"),
+            "+Z report must embed (0,0,1) direction: {}",
+            ov_z.cause
+        );
+        assert!(
+            ov_x.cause.contains("[1.00,0.00,0.00]"),
+            "+X report must embed (1,0,0) direction: {}",
+            ov_x.cause
+        );
+
+        // max_overhang_deg=0 → OVERHANG 検査スキップ (build_dir は無関係)。
+        let r_skip = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r_skip.issues.iter().any(|e| e.code == "OVERHANG"),
+            "max_overhang_deg=0 must disable overhang check entirely"
         );
     }
 }

@@ -132,7 +132,9 @@ pub fn tool_list() -> Value {
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
              issues:[{severity, code, cause, hints}]}. Branch on issue.code (e.g. THIN_WALL, \
-             MULTIPLE_BODIES, OPEN_MESH, OVERHANG, SUSPICIOUS_SCALE).",
+             MULTIPLE_BODIES, OPEN_MESH, OVERHANG, SUSPICIOUS_SCALE). \
+             Overhang is measured against build_dir (default +Z). \
+             If your printer builds along a different axis, set build_dir to get correct results.",
             &[
                 (
                     "resolution",
@@ -149,7 +151,15 @@ pub fn tool_list() -> Value {
                 (
                     "max_overhang_deg",
                     "number",
-                    "Maximum overhang angle in degrees (0 to skip, default: 45)",
+                    "Maximum overhang angle in degrees from horizontal (0 to skip, default: 45)",
+                    false,
+                ),
+                (
+                    "build_dir",
+                    "string",
+                    "FDM build direction for overhang check: \"z\" (default +Z up), \"-z\", \
+                     \"x\", \"-x\", \"y\", \"-y\", or a JSON array [dx,dy,dz]. \
+                     Governs which faces are considered overhanging (問68).",
                     false,
                 ),
             ],
@@ -158,6 +168,14 @@ pub fn tool_list() -> Value {
             "get_scene",
             "Return the KadoScene JSON script that produced the current active scene, \
              along with sampling bounds. Allows AI agents to inspect state before modifying it (問26).",
+            &[],
+        ),
+        tool_def(
+            "undo_script",
+            "Restore the scene to the state before the last run_script call (single-level undo). \
+             If run_script was never called, or undo was already applied, returns an error. \
+             Useful when a bad script overwrites a valid scene and the AI needs to recover \
+             without restarting the session (問67).",
             &[],
         ),
         tool_def(
@@ -246,6 +264,11 @@ pub struct Session {
     /// `run_script` で更新; `get_scene` でAIが読み返せる (問26)。
     /// 未設定 (デフォルトシーン) の場合は None。
     pub script: Option<String>,
+    /// 一つ前のシーン (undo 用, 問67)。`run_script` が更新前に保存する。
+    /// `undo_script` 呼び出し後はクリアされる (single-level undo)。
+    pub prev_scene: Option<Sdf>,
+    /// 一つ前のスクリプト (undo 用, 問67)。
+    pub prev_script: Option<String>,
 }
 
 impl Default for Session {
@@ -253,6 +276,8 @@ impl Default for Session {
         Session {
             scene: default_scene(),
             script: None,
+            prev_scene: None,
+            prev_script: None,
         }
     }
 }
@@ -271,6 +296,7 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "run_script" => tool_run_script(session, args),
         "validate" => tool_validate(session, args),
         "get_scene" => tool_get_scene(session),
+        "undo_script" => tool_undo_script(session),
         "help" => tool_help(),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
@@ -424,6 +450,9 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
         Ok(s) => s,
         Err(e) => return ToolResult::error(format!("script error: {e}")),
     };
+    // 問67: 上書き前に現在の状態を保存し、undo_script で1段戻れるようにする。
+    session.prev_scene = Some(session.scene.clone());
+    session.prev_script = session.script.clone();
     // スクリプトが正本 (問2/問12): 評価結果とスクリプトをセッションに保存する。
     // スクリプトを保存しておくことでAIがget_sceneで読み返せる (問26)。
     let (lo_b, hi_b) = sdf.sampling_box();
@@ -449,6 +478,31 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
         }
     };
     ToolResult::text(format!("{prefix} — {}", report.summary()))
+}
+
+fn tool_undo_script(session: &mut Session) -> ToolResult {
+    // 問67: 前のシーンを復元する (single-level undo)。
+    // prev_scene が None = undo 不可 (まだ run_script が呼ばれていない、または既に undo 済み)。
+    match session.prev_scene.take() {
+        Some(prev_sdf) => {
+            let prev_script = session.prev_script.take();
+            session.scene = prev_sdf;
+            session.script = prev_script;
+            let (lo, hi) = session.scene.sampling_box();
+            let script_info = match &session.script {
+                Some(s) => format!("script={s}"),
+                None => "script=(default scene)".to_string(),
+            };
+            ToolResult::text(format!(
+                "undo ok — {script_info}\n\
+                 bounds=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}]",
+                lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
+            ))
+        }
+        None => ToolResult::error(
+            "nothing to undo — no previous script in this session (undo is single-level)",
+        ),
+    }
 }
 
 fn tool_help() -> ToolResult {
@@ -553,6 +607,34 @@ fn tool_get_scene(session: &Session) -> ToolResult {
     }
 }
 
+/// ビルド方向を args から解釈する (問68)。
+/// 文字列: "x"/"+x"/"-x"/"y"/"+y"/"-y"/"z"/"+z"/"-z"。
+/// 数値配列: [dx, dy, dz]。省略時: +Z (FDM 標準)。
+fn arg_build_dir(args: &Value) -> Vec3 {
+    if let Some(s) = args.get("build_dir").and_then(|v| v.as_str()) {
+        match s.trim() {
+            "x" | "+x" => Vec3::new(1.0, 0.0, 0.0),
+            "-x" => Vec3::new(-1.0, 0.0, 0.0),
+            "y" | "+y" => Vec3::new(0.0, 1.0, 0.0),
+            "-y" => Vec3::new(0.0, -1.0, 0.0),
+            "-z" => Vec3::new(0.0, 0.0, -1.0),
+            _ => Vec3::new(0.0, 0.0, 1.0), // "z" / "+z" / 未知
+        }
+    } else if let Some(arr) = args.get("build_dir").and_then(|v| v.as_array()) {
+        if arr.len() >= 3 {
+            Vec3::new(
+                arr[0].as_f64().unwrap_or(0.0),
+                arr[1].as_f64().unwrap_or(0.0),
+                arr[2].as_f64().unwrap_or(1.0),
+            )
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        }
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    }
+}
+
 fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     let res = arg_resolution(args, 48);
     let min_wall = args
@@ -563,12 +645,14 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
         .get("max_overhang_deg")
         .and_then(|v| v.as_f64())
         .unwrap_or(45.0);
+    // 問68: ビルド方向を明示受け取り (デフォルト +Z)。
+    let build_dir = arg_build_dir(args);
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
     // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
-    let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang);
+    let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang, build_dir);
     // 機械可読な構造化 JSON を返す (問63): AI が code で分岐し指標を直接読める。
     ToolResult::text(report.to_json().to_string())
 }
