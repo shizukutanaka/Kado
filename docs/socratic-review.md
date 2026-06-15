@@ -1574,4 +1574,34 @@ help は torus を「minor (req): tube radius > 0」、smooth を「k: blend rad
 
 > 総括: v50 は「宣言されているが実行不能だった再現性契約」を実行可能にした。
 > digest 単体では無意味だった再現性検証が、resolution 併記により完結する。
+
+## 問91 — `export` 応答が digest/resolution を欠き、出力ファイルの同一性を検証不能
+
+**問**: 問90 で validate には resolution を併記したが、`export` の応答は
+三角形数と manifold 状態のみで digest も resolution も含まない。
+AI がモデルをエクスポートして「このファイルは何か」を記録・検証しようとしても、
+三角形数は弱い指標 (異なる形状が同数になりうる) で、正準な内容同一性 (digest) が無い。
+export と validate で同じシーン・同じ解像度なのに、export 側だけ digest が見えないのは
+ツール間で再現性情報が非対称。
+
+**修正**: `tool_export` の成功応答に `resolution={res}, digest={:016x}` を併記する。
+mesh は既に計算済みなので `mesh.digest()` は安価。これにより:
+- export 出力の再現性同一性を AI が記録・検証できる
+- export(res=N) の digest と validate(res=N) の digest が一致する (ツール間整合)
+
+検証テスト追加 (テスト 150→151):
+- `export_reports_digest_and_resolution_matching_validate`:
+  export(res=24) 応答に resolution=24 と digest が含まれ、その digest が
+  validate(res=24) の digest と一致することを確認 (ツール間整合の保証)。
+
+変更ファイル: `src/mcp/tools.rs` (tool_export + 新テスト)。
+
+## 反映サマリ v51
+| 問 | 実装 |
+|----|------|
+| 91 | export 応答に digest/resolution 併記 + export↔validate digest 整合保証 |
+
+> 総括: v51 は再現性情報のツール間非対称を解消した。export と validate が
+> 同一解像度で同一 digest を返すことを保証し、AI が出力ファイルの同一性を
+> 一貫した方法で検証できるようになった。
 > テスト数 141→142 + 統合 3。

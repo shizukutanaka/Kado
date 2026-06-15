@@ -407,9 +407,14 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
                   consider increasing resolution or checking for open boundaries]"
                     .to_string()
             };
+            // 問91: 出力ファイルの再現性同一性を記録・検証できるよう digest と
+            // resolution を併記する (問61/問90 と同じ契約)。三角形数だけでは
+            // 異なる形状が同数になりうるため弱い指標。digest が正準な内容同一性。
             ToolResult::text(format!(
-                "exported {fmt}: {abs_path} ({} triangles, manifold={manifold}){manifold_note}",
+                "exported {fmt}: {abs_path} ({} triangles, manifold={manifold}, \
+                 resolution={res}, digest={:016x}){manifold_note}",
                 mesh.triangles.len(),
+                mesh.digest(),
             ))
         }
         Err(e) => ToolResult::error(format!("export failed: {e}")),
@@ -793,6 +798,46 @@ mod tests {
         let args = json::obj([("path", json::s("../../escape.stl"))]);
         let r = call_tool(&mut session, "export", &args);
         assert!(r.is_error, "export must reject traversal path");
+    }
+
+    #[test]
+    fn export_reports_digest_and_resolution_matching_validate() {
+        // 問91: export 応答は出力の再現性同一性 (digest + resolution) を含み、
+        // 同一解像度の validate と同じ digest になる (ツール間整合)。
+        let mut session = Session::new();
+        let fname = "kado-test-export-q91.stl";
+        let args = json::obj([
+            ("path", json::s(fname)),
+            ("resolution", json::n(24.0)),
+        ]);
+        let r = call_tool(&mut session, "export", &args);
+        // テスト後の後始末 (成否に関わらず削除)。
+        let _cleanup = std::fs::remove_file(fname);
+        assert!(!r.is_error, "export must succeed");
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        assert!(
+            text.contains("resolution=24"),
+            "export response must report resolution (問91): {text}"
+        );
+        // export の digest を抽出。
+        let digest_hex = text
+            .split("digest=")
+            .nth(1)
+            .and_then(|s| s.split(')').next())
+            .map(|s| s.trim())
+            .expect("export response must contain digest");
+
+        // 同一解像度の validate が同じ digest を報告する (ツール間整合)。
+        let val_args = json::obj([("resolution", json::n(24.0))]);
+        let vr = call_tool(&mut session, "validate", &val_args);
+        let vtext = vr.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        let vjson = crate::mcp::json::parse(vtext).unwrap();
+        let vdigest = vjson.get("digest").and_then(|x| x.as_str()).unwrap();
+        assert_eq!(
+            digest_hex, vdigest,
+            "export and validate digests must match at the same resolution: \
+             export={digest_hex} validate={vdigest}"
+        );
     }
 
     #[test]
