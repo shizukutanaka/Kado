@@ -1342,3 +1342,42 @@ AI はこの値が polygonize 用の余白込みであることを見てわか�
 > 総括: v44 は「validate の issue code 不完全列挙」と「get_scene bounds の意味の曖昧さ」を解消した。
 > AI がツール返値を機械的に処理する際に隠れた仮定 (知らないコードは無視する) を排除する。
 > テスト数は変化なし (141 + 統合 3)。
+
+## 問81 — `run_script` が MULTIPLE_BODIES 警告をサイレントに通過させる
+**問**: `run_script` のクイック検証は `validate(&mesh, 0, 0)` を使い、エラーコードのみを
+`"scene updated (check issues: ...)"` に含め、警告コードをフィルタしていた。
+`MULTIPLE_BODIES` は Warning なので `report.is_ok()==true` のときも、
+`is_ok()==false` のときも、応答に含まれなかった。
+AI が2つの離れた球を設計して `run_script` したとき「scene updated」と返り、
+MULTIPLE_BODIES に気づかずに出力できた。
+
+**修正**: `run_script` のプレフィックス計算でエラーのみをフィルタせず、
+全 issue code (エラー＋警告) を列挙するよう変更する。
+`MULTIPLE_BODIES` が含まれるケースをカバーするテスト追加。
+
+検証テスト追加 (テスト 141→142):
+- `run_script_surfaces_multiple_bodies_warning`:
+  2つの離れた球 → isError=false, テキストに "MULTIPLE_BODIES" を含む
+
+## 問82 — `validate` JSON レポートの `severity` が Rust Debug 形式 (PascalCase) で AIが文字列比較しにくい
+**問**: `to_json()` では `format!("{:?}", e.severity)` → `"Error"` / `"Warning"` (先頭大文字)。
+AI が `if severity == "error"` (lowercase) で分岐するコードを書くと全件マッチせず、
+DFM エラーが見過ごされる。ツール説明も `{severity}` と書くだけでフォーマットを明示しない。
+
+**修正**: `to_json()` の severity フィールドを `match` で小文字 `"error"/"warning"/"info"` に変更。
+ツール schema description に `severity:\"error\"|\"warning\"` を明示する。
+既存の `to_json_is_machine_readable_and_carries_codes` テストの severity 比較を
+`"Error"` → `"error"` に更新 (正確な regression test)。
+
+変更ファイル: `src/verify/check.rs` (to_json severity), `src/mcp/tools.rs` (schema description)。
+テスト数変化なし (142 + 統合 3)。
+
+## 反映サマリ v45
+| 問 | 実装 |
+|----|------|
+| 81 | run_script が MULTIPLE_BODIES 等の警告も "check issues:" に列挙 |
+| 82 | validate JSON severity を小文字 "error"/"warning"/"info" に標準化 |
+
+> 総括: v45 は「警告のサイレント通過」と「severity の大文字小文字不整合」を解消した。
+> AI がレポートを機械処理するときに比較ミスで DFM 問題を見逃す可能性を排除する。
+> テスト数 141→142 + 統合 3。

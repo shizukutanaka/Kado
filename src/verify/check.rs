@@ -126,7 +126,13 @@ impl Report {
             .iter()
             .map(|e| {
                 json::obj([
-                    ("severity", json::s(format!("{:?}", e.severity))),
+                    // 問82: Debug 形式 "Error"/"Warning" (PascalCase) の代わりに
+                    // 小文字 "error"/"warning" を使う。AI が文字列比較しやすい標準形式。
+                    ("severity", json::s(match e.severity {
+                        Severity::Error => "error",
+                        Severity::Warning => "warning",
+                        Severity::Info => "info",
+                    })),
                     ("code", json::s(e.code)),
                     ("cause", json::s(e.cause.clone())),
                     (
@@ -505,10 +511,10 @@ mod tests {
                 .all(|e| e.get("code").is_some() && e.get("severity").is_some()),
             "every issue must carry a machine-readable code and severity"
         );
-        // ok は issues のエラー有無と整合。
+        // ok は issues のエラー有無と整合 (問82: severity は小文字 "error"/"warning")。
         let has_error = issues
             .iter()
-            .any(|e| e.get("severity").and_then(|s| s.as_str()) == Some("Error"));
+            .any(|e| e.get("severity").and_then(|s| s.as_str()) == Some("error"));
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(!has_error));
     }
 

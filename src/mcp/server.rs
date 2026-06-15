@@ -404,6 +404,41 @@ mod tests {
     }
 
     #[test]
+    fn run_script_surfaces_multiple_bodies_warning() {
+        // 問81: MULTIPLE_BODIES は Warning なので is_ok()=true だが、
+        // run_script がサイレントに通過させると AI が切断ボディに気づかない。
+        // 2つの離れた球 → MULTIPLE_BODIES warning → run_script 応答に "MULTIPLE_BODIES" が含まれる。
+        let mut s = tools::Session::new();
+        let two_spheres = r#"{"op":"union",
+            "a":{"op":"sphere","r":0.3},
+            "b":{"op":"translate","x":5.0,"y":0,"z":0,"shape":{"op":"sphere","r":0.3}}}"#;
+        let params = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(two_spheres))])),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 70, Some(params))).unwrap();
+        let text = resp
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.as_array())
+            .unwrap()[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // isError=false (スクリプトは有効)。
+        assert_eq!(
+            resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false)),
+            "run_script with disconnected bodies is not an error: {text}"
+        );
+        // 応答に MULTIPLE_BODIES が含まれる (問81)。
+        assert!(
+            text.contains("MULTIPLE_BODIES"),
+            "run_script must surface MULTIPLE_BODIES warning: {text}"
+        );
+    }
+
+    #[test]
     fn screenshot_unknown_view_returns_error() {
         // 問71: 未知ビュー名はサイレントフォールバックせずエラーを返す。
         let mut s = tools::Session::new();

@@ -131,7 +131,7 @@ pub fn tool_list() -> Value {
             "validate",
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
-             issues:[{severity, code, cause, hints}]}. \
+             issues:[{severity:\"error\"|\"warning\", code, cause, hints:[]}]}. \
              All issue codes: EMPTY_MESH (no geometry), NON_MANIFOLD (self-intersecting faces), \
              OPEN_MESH (boundary edges, unprintable), MULTIPLE_BODIES (separate shells), \
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
@@ -497,21 +497,14 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
     session.scene = sdf;
     session.script = Some(src);
     // 問46: エラーがある場合はコードを明示してAI自己修正ループを補助する。
+    // 問81: 警告 (MULTIPLE_BODIES 等) もサイレントにせず列挙する。
+    // "scene updated" だけでは AI が切断ボディを見逃す可能性がある。
     // is_error=false のまま (スクリプト自体は有効) だが問題を可視化する。
-    let prefix = if report.is_ok() {
+    let all_codes: Vec<&str> = report.issues.iter().map(|e| e.code).collect();
+    let prefix = if all_codes.is_empty() {
         "scene updated".to_string()
     } else {
-        let codes: Vec<&str> = report
-            .issues
-            .iter()
-            .filter(|e| e.severity == Severity::Error)
-            .map(|e| e.code)
-            .collect();
-        if codes.is_empty() {
-            "scene updated".to_string()
-        } else {
-            format!("scene updated (check issues: {})", codes.join(", "))
-        }
+        format!("scene updated (check issues: {})", all_codes.join(", "))
     };
     ToolResult::text(format!("{prefix} — {}", report.summary()))
 }
