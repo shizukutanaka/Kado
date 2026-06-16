@@ -236,4 +236,36 @@ mod tests {
         assert_eq!(bodies, 1, "hollow shell is a single solid body");
         assert_eq!(cavities, 1, "with one internal cavity");
     }
+
+    #[test]
+    fn triangle_indices_are_in_bounds_and_nondegenerate() {
+        // 問109: 全ての出力経路 (STL/GLB/3MF/HTML/レンダラ/体積/検証) は
+        // `mesh.vertices[t[i] as usize]` で頂点を引く。インデックスが範囲外だと全経路が
+        // パニックする。また from_soup は退化三角形 (重複インデックス) を捨てる契約。
+        // 代表形状群でこの基礎不変条件を固定する。
+        let shapes = [
+            Sdf::sphere(1.0),
+            Sdf::cuboid(Vec3::splat(0.8)),
+            Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0)),
+            Sdf::sphere(1.0).smooth_union(Sdf::cuboid(Vec3::splat(0.7)), 0.2),
+            Sdf::sphere(1.0).shell(0.25),
+        ];
+        for (k, s) in shapes.iter().enumerate() {
+            let (lo, hi) = s.sampling_box();
+            let m = polygonize(s, lo, hi, 24);
+            let n = m.vertices.len() as u32;
+            for (ti, t) in m.triangles.iter().enumerate() {
+                // 範囲内。
+                assert!(
+                    t[0] < n && t[1] < n && t[2] < n,
+                    "shape {k} tri {ti} index out of bounds: {t:?} (n={n})"
+                );
+                // 非退化 (3 頂点が相異)。from_soup の契約。
+                assert!(
+                    t[0] != t[1] && t[1] != t[2] && t[0] != t[2],
+                    "shape {k} tri {ti} is degenerate (duplicate index): {t:?}"
+                );
+            }
+        }
+    }
 }
