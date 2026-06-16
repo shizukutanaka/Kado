@@ -1845,4 +1845,31 @@ Z軸整列だが、その契約が AI に開示されていない。
 > 総括: v59 は全プリミティブの既定の向きを help で統一的に開示した。AI が
 > 円柱・カプセル・トーラスを積む/回す/組む際の空間的前提が明確になり、
 > 配置ミス (既定軸の取り違え) を防ぐ。
+
+## 問100 — `scale` が uniform 限定である事実と理由が help で未開示
+
+**問**: `scale` の eval は `factor * child.eval(p/factor)` で**単一スカラ=等方**。
+非等方スケールは SDF の距離計量 (|∇f|=1) を壊すため意図的に非対応。だが help は
+「s > 0」としか書かず、AI は `scale(x,y,z)` のような per-axis スケールを期待して
+誤用しうる。なぜ uniform 限定か、非等方寸法をどう実現するか (cuboid/ellipsoid の
+per-axis extent) の案内も無い。
+
+**修正**: help の scale 節に「s > 0 (UNIFORM only); one factor for all axes;
+non-uniform scaling is unsupported because it breaks the SDF distance metric.
+For different per-axis sizes use a primitive with per-axis extents
+(cuboid x/y/z, ellipsoid x/y/z)」と明記。挙動は既存テスト
+`uniform_scale_preserves_distance_field` (scale(sphere(1),2)==sphere(2)) が担保済み。
+
+検証: 既存 help テストに "UNIFORM only" を含む assertion を追加 (テスト数 158 維持)。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP scale 節 + テスト assertion)。
+
+## 反映サマリ v60
+| 問 | 実装 |
+|----|------|
+| 100 | scale の uniform 限定・理由・非等方の代替手段を help で明示 |
+
+> 総括: v60 は scale の「等方限定」という SDF 由来の制約と、その回避策
+> (per-axis プリミティブ) を開示した。AI が非等方スケールを期待して
+> 行き詰まるのを防ぐ。
 > テスト数 141→142 + 統合 3。

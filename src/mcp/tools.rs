@@ -620,7 +620,10 @@ smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}
 ## Transforms
 
 translate     {"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":<sdf>}
-scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0
+scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0 (UNIFORM only)
+              one factor for all axes; non-uniform scaling is unsupported because it
+              breaks the SDF distance metric. For different per-axis sizes use a
+              primitive with per-axis extents (cuboid x/y/z, ellipsoid x/y/z).
 offset        {"op":"offset","amount":0.1,"shape":<sdf>}    inflates/deflates
 shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0.
               Hollows the solid INWARD: keeps the outer surface and carves a cavity,
@@ -1026,6 +1029,13 @@ mod tests {
         assert!(
             help.contains("MILLIMETERS") && help.contains("1 mm"),
             "help must state the mm unit convention for authoring (問95)"
+        );
+
+        // 問100: scale が uniform 限定であることを help が明示しなければならない
+        // (AI が per-axis scale を期待して誤用しないため)。
+        assert!(
+            help.contains("UNIFORM only"),
+            "help must state scale is uniform-only (問100)"
         );
 
         // 評価器が実際にこれらを拒否することを確認 (help の主張が現実と一致)。
