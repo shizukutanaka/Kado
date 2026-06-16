@@ -801,4 +801,84 @@ mod tests {
             "max_overhang_deg=0 must disable overhang check entirely"
         );
     }
+
+    #[test]
+    fn issue_severity_serializes_as_lowercase_valid_value() {
+        // 問114: validate が emit する全 issue の severity JSON 表現が小文字の
+        // "error"/"warning"/"info" のいずれかであることを固定する。
+        //
+        // 問82 で to_json の lowercase を確認したが、その確認は1形状・1issue のみ。
+        // 実際に severity バリアントを持ちうる全コードが、代表形状電池で全て
+        // 正当な小文字値にシリアライズされることを回帰ガードする。
+        //
+        // 実装側 check.rs:148 が Severity::Error => "error" のように固定しているが
+        // 将来の enum バリアント追加や serialization 経路変更で大文字化するリスクがある。
+        use crate::mcp::json::parse;
+
+        // 多様な issue を誘発する形状/パラメータの電池。
+        let shapes_params: &[(&str, Box<dyn Fn() -> crate::extract::Mesh>)] = &[
+            // EMPTY_MESH: 非重複 smooth_intersection
+            ("empty", Box::new(|| {
+                let a = Sdf::sphere(1.0);
+                let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
+                let (lo, hi) = a.clone().smooth_intersection(b.clone(), 0.3).sampling_box();
+                crate::extract::polygonize(&a.smooth_intersection(b, 0.3), lo, hi, 8)
+            })),
+            // OPEN_MESH: クリップ
+            ("open", Box::new(|| {
+                crate::extract::polygonize(
+                    &Sdf::sphere(1.0),
+                    Vec3::new(-1.5, -1.5, -1.5),
+                    Vec3::new(1.5, 1.5, 0.0),
+                    24,
+                )
+            })),
+            // THIN_WALL + 通常: 穴あき球
+            ("thinwall", Box::new(|| {
+                let m = Sdf::sphere(1.0).difference(Sdf::cylinder(0.9, 2.0));
+                let (lo, hi) = m.sampling_box();
+                crate::extract::polygonize(&m, lo, hi, 40)
+            })),
+            // SUSPICIOUS_SCALE: 極小形状
+            ("tiny", Box::new(|| {
+                let tiny = Sdf::sphere(0.1);
+                let (lo, hi) = tiny.sampling_box();
+                crate::extract::polygonize(&tiny, lo, hi, 16)
+            })),
+            // 正常: 球
+            ("ok", Box::new(|| {
+                let s = Sdf::sphere(1.0);
+                let (lo, hi) = s.sampling_box();
+                crate::extract::polygonize(&s, lo, hi, 24)
+            })),
+        ];
+
+        const VALID_VALUES: &[&str] = &["error", "warning", "info"];
+
+        for (label, make_mesh) in shapes_params {
+            let mesh = make_mesh();
+            // min_wall=0.5 で THIN_WALL, max_overhang=0 で OVERHANG スキップ。
+            let report = validate(&mesh, 0.5, 0.0);
+            let v = report.to_json();
+            let json_str = v.to_string();
+            let reparsed = parse(&json_str).expect("report JSON must be valid");
+            let issues = reparsed.get("issues").and_then(|x| x.as_array()).unwrap();
+            for issue in issues {
+                let sev = issue
+                    .get("severity")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("<missing>");
+                assert!(
+                    VALID_VALUES.contains(&sev),
+                    "shape '{label}': severity must be lowercase valid value, got '{sev}'"
+                );
+                // 大文字でないことを明示確認 (大文字バリアント "Error"/"Warning" が混入しない)。
+                assert_eq!(
+                    sev,
+                    sev.to_lowercase(),
+                    "shape '{label}': severity must be all-lowercase, got '{sev}'"
+                );
+            }
+        }
+    }
 }

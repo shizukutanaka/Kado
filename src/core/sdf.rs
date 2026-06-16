@@ -1064,4 +1064,118 @@ mod tests {
         assert!(elo.x.is_finite() && ehi.x.is_finite(), "over-eroded AABB must be finite");
         assert!(elo.x <= ehi.x, "over-eroded AABB must not be inverted: {elo:?} {ehi:?}");
     }
+
+    #[test]
+    fn translate_composition_is_additive_and_roundtrip() {
+        // 問112: translate の合成 (入れ子) の代数法則を固定する。
+        // 回転合成 (問110) と対称なペアとして、平行移動の加法性・往復恒等を保証する。
+        //
+        // (1) 加法性: translate(v1, translate(v2, S)) == translate(v1+v2, S)
+        //     SDF: S(p - v2 - v1) = S(p - (v1+v2))。数値的に完全一致すること。
+        // (2) 往復恒等: translate(-v, translate(v, S)) == S
+        //     SDF: S(p - v - (-v)) = S(p - 0) = S(p)。
+        let child = Sdf::cuboid(Vec3::new(0.8, 0.5, 0.3));
+        let v1 = Vec3::new(0.7, -0.3, 0.5);
+        let v2 = Vec3::new(-0.4, 1.2, -0.6);
+        let pts = grid();
+
+        // (1) 加法性: translate(v2).translate(v1) == translate(v1+v2)
+        let composed = child.clone().translate(v2).translate(v1);
+        let single = child.clone().translate(v1 + v2);
+        for &p in &pts {
+            assert!(
+                (composed.eval(p) - single.eval(p)).abs() < EPS,
+                "translate composition must be additive: translate(v1)∘translate(v2) == translate(v1+v2) at {p:?}"
+            );
+        }
+
+        // (2) 往復恒等: translate(v).translate(-v) == identity
+        let roundtrip = child.clone().translate(v1).translate(-v1);
+        for &p in &pts {
+            assert!(
+                (roundtrip.eval(p) - child.eval(p)).abs() < EPS,
+                "translate(v) then translate(-v) must be identity at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn boolean_idempotency_union_intersection_difference_self() {
+        // 問113: ブーリアン等冪法則。AI がノードを複製して union/intersection/difference を
+        // 掛ける DSL を生成した場合、代数的に予測可能な結果になることを固定する。
+        //
+        // (1) union(A, A) == A everywhere      (min(f,f) = f)
+        // (2) intersection(A, A) == A everywhere (max(f,f) = f)
+        // (3) difference(A, A) >= 0 everywhere  (max(f,-f) = |f| >= 0 → 自己差分は常に外部)
+        let a = Sdf::sphere(1.0)
+            .smooth_union(Sdf::cuboid(Vec3::splat(0.6)), 0.2);
+        let pts = grid();
+
+        // (1) union の等冪性。
+        let u = a.clone().union(a.clone());
+        for &p in &pts {
+            assert!(
+                (u.eval(p) - a.eval(p)).abs() < EPS,
+                "union(A, A) must equal A at {p:?}: got {} vs {}",
+                u.eval(p), a.eval(p)
+            );
+        }
+
+        // (2) intersection の等冪性。
+        let i = a.clone().intersection(a.clone());
+        for &p in &pts {
+            assert!(
+                (i.eval(p) - a.eval(p)).abs() < EPS,
+                "intersection(A, A) must equal A at {p:?}: got {} vs {}",
+                i.eval(p), a.eval(p)
+            );
+        }
+
+        // (3) difference(A, A) は全域 d >= 0 (自己差分は空 = 外部のみ)。
+        let d = a.clone().difference(a.clone());
+        for &p in &pts {
+            assert!(
+                d.eval(p) >= -EPS,
+                "difference(A, A) must be >= 0 everywhere (self-subtraction is empty) at {p:?}: got {}",
+                d.eval(p)
+            );
+        }
+    }
+
+    #[test]
+    fn sampling_box_encloses_aabb_for_representative_shapes() {
+        // 問115: sampling_box は AABB を 5% マージンで内包する。
+        // aabb_encloses_surface_samples (問14) は1つの複合ツリーでこれを確認するが、
+        // 全形状電池で invariant が成り立つことは未確認だった。
+        // primitive/変換/ブーリアン/複合 を網羅する代表電池で固定する。
+        let shapes: &[Sdf] = &[
+            Sdf::sphere(1.0),
+            Sdf::cuboid(Vec3::new(1.0, 0.8, 0.5)),
+            Sdf::cylinder(0.5, 1.5),
+            Sdf::capsule(0.4, 1.2),
+            Sdf::torus(0.8, 0.2),
+            Sdf::sphere(1.0).translate(Vec3::new(0.5, -0.3, 0.2)),
+            Sdf::sphere(0.6).union(Sdf::cuboid(Vec3::splat(0.5))),
+            Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0)),
+            Sdf::sphere(1.0).shell(0.25),
+            Sdf::sphere(0.5).repeat_n(Vec3::splat(2.0), [1, 1, 1]),
+        ];
+        for (k, s) in shapes.iter().enumerate() {
+            let (alo, ahi) = s.aabb();
+            let (slo, shi) = s.sampling_box();
+            assert!(
+                slo.x <= alo.x && slo.y <= alo.y && slo.z <= alo.z,
+                "shape {k}: sampling_box lo must be <= aabb lo: slo={slo:?} alo={alo:?}"
+            );
+            assert!(
+                shi.x >= ahi.x && shi.y >= ahi.y && shi.z >= ahi.z,
+                "shape {k}: sampling_box hi must be >= aabb hi: shi={shi:?} ahi={ahi:?}"
+            );
+            // sampling_box 自体は反転しない。
+            assert!(
+                slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+                "shape {k}: sampling_box must not be inverted: slo={slo:?} shi={shi:?}"
+            );
+        }
+    }
 }

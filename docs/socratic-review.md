@@ -2192,3 +2192,98 @@ NEGATIVE_VOLUME/MULTIPLE_BODIES) が無いことのみを保証する。
 > 第一印象がデフォルトシーンに依存するため、将来のデフォルト変更が壊れたデモを
 > 出荷しないことを CI で保証する。
 > テスト数 141→142 + 統合 3。
+
+## 問112 — 平行移動合成の代数法則 (加法性・往復恒等) が未検証
+
+**問**: 回転合成 (問110) に対称な代数法則として、translate の合成挙動が未検証。
+AI が `translate(v1, translate(v2, S))` を生成した場合、それが `translate(v1+v2, S)` と
+等価になることは、実装が `S(p - offset)` の連鎖として正しく動くことへの依存。
+往復恒等 `translate(-v, translate(v, S)) = S` も未テスト。
+
+**調査結果 (実装は正しい)**: Translate(c, offset) の eval は `c.eval(p - *offset)` の
+入れ子で正確に加算される。バグは無いが、代数法則として回帰固定が必要。
+
+**対処**: translate 合成の 2 法則を回帰テストとして固定:
+1. **加法性**: translate(v1)∘translate(v2) == translate(v1+v2) — 格子点全体で数値完全一致。
+2. **往復恒等**: translate(v)∘translate(-v) == identity — 格子点全体で子と同値。
+
+検証テスト追加 (テスト 170→171):
+- `translate_composition_is_additive_and_roundtrip`: 非同一 v1/v2 ベクトルで両法則を格子点確認。
+
+変更ファイル: `src/core/sdf.rs` (新テスト)。
+
+## 問113 — ブーリアン等冪法則 (自己演算) が未検証
+
+**問**: AI が操作を二重適用したり同一形状を重複参照した場合、
+`union(A, A)` / `intersection(A, A)` / `difference(A, A)` の結果は何か。
+既存テストは union/intersection/difference の「異形状」ペアのみで、
+「同一形状を両引数に与えた場合」の代数法則が未検証。
+
+**調査結果 (実装は代数的に正しい)**:
+- union(A, A): min(f, f) = f (等冪) → A そのまま
+- intersection(A, A): max(f, f) = f (等冪) → A そのまま
+- difference(A, A): max(f, -f) = |f| ≥ 0 (自己差分は外部のみ = 空集合)
+
+**対処**: 上記 3 法則を格子点全体で固定する回帰テストを追加。
+
+検証テスト追加 (テスト 171→172):
+- `boolean_idempotency_union_intersection_difference_self`:
+  smooth_union(sphere, cuboid, 0.2) を A として 3 法則を格子点確認。
+
+変更ファイル: `src/core/sdf.rs` (新テスト)。
+
+## 問114 — issue severity JSON 値が小文字であることの全電池回帰が欠如
+
+**問**: validate の to_json() が severity を "error"/"warning"/"info" (小文字) で
+シリアライズすることは問82 で一度確認したが、その確認は1形状・1 issue のみだった。
+将来 Severity enum に新バリアントを追加した場合、match アームに大文字変換
+(例: `Severity::Critical => "Critical"`) が混入してもテストが通ってしまう。
+全コードが実際に誘発される電池 (EMPTY/OPEN/THIN_WALL/SUSPICIOUS_SCALE 等) で
+小文字であることを固定できていない。
+
+**調査結果 (実装は正しい)**: check.rs の serialization は全バリアントで小文字固定。
+バグは無いが、多様な issue コードを誘発する電池での回帰ガードが欠落。
+
+**対処**: 5 形状×パラメータの電池で誘発された全 issue の severity が
+`VALID_VALUES = ["error","warning","info"]` のいずれかであり、かつ `sev == sev.to_lowercase()`
+を確認する回帰テストを追加。
+
+検証テスト追加 (テスト 172→173):
+- `issue_severity_serializes_as_lowercase_valid_value`:
+  empty/open/thinwall/tiny/ok の 5 電池で全 issue severity が小文字正当値であることを確認。
+
+変更ファイル: `src/verify/check.rs` (新テスト)。
+
+## 問115 — sampling_box が AABB を内包する invariant の全形状電池が欠如
+
+**問**: sampling_box は aabb の 5% マージン外包を保証するが、既存の確認は
+`aabb_encloses_surface_samples` (問14) の1つの複合ツリーのみ。
+`sampling_box_is_never_inverted` (問40) は反転防止のみ。primitive/変換/ブーリアン/複合/
+repeat を含む代表電池での `slo <= alo` かつ `shi >= ahi` が未検証。
+将来の AABB 実装変更が特定の形状クラスで包含を壊しても気づけない。
+
+**調査結果 (実装は正しい)**: sampling_box は aabb に 5% マージンを加えた後
+max(lo,hi) 正規化する。バグは無いが代表電池での invariant 固定が欠落。
+
+**対処**: 10 形状電池 (sphere/cuboid/cylinder/capsule/torus/translated/union/difference/
+shell/repeat_n) で sampling_box lo <= aabb lo, sampling_box hi >= aabb hi,
+sampling_box 非反転の 3 条件を固定する回帰テストを追加。
+
+検証テスト追加 (テスト 173→174):
+- `sampling_box_encloses_aabb_for_representative_shapes`: 10 形状で 3 invariant を確認。
+
+変更ファイル: `src/core/sdf.rs` (新テスト)。
+
+## 反映サマリ v72
+| 問 | 実装 |
+|----|------|
+| 112 | translate 合成の加法性・往復恒等を格子点全体で回帰固定 |
+| 113 | union/intersection/difference の自己演算等冪法則を回帰固定 |
+| 114 | issue severity JSON 値が全電池で小文字かつ正当な値のみであることを回帰固定 |
+| 115 | sampling_box ⊇ AABB の invariant を 10 形状電池で回帰固定 |
+
+> 総括: v72 は変換代数 (問112)・ブーリアン代数 (問113)・シリアライズ規約 (問114)・
+> 幾何インフラ (問115) の 4 つの独立した前提をそれぞれ代表電池で固定した。
+> 問110 (回転合成) と対称に translate 合成を、問82 (severity 小文字) を電池で強化し、
+> 問14 (AABB 包含) を全形状に拡張した。
+> テスト数 170→174 + 統合 3。
