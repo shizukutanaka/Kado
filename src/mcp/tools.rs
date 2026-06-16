@@ -1143,6 +1143,29 @@ mod tests {
     }
 
     #[test]
+    fn base64_matches_rfc4648_vectors_including_padding() {
+        // 問107: screenshot は PNG を base64 で返すため、パディング (= / ==) を含む
+        // エンコードが正確でなければ AI/クライアントが画像をデコードできない。
+        // RFC 4648 §10 の正準テストベクタで全パディングケース (0/1/2 余りバイト) を固定する。
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // バイナリ安全性: 上位ビット (>0x7F) でも符号拡張等で壊れないこと。
+        assert_eq!(base64_encode(&[0xFF]), "/w==");
+        assert_eq!(base64_encode(&[0xFF, 0xFF, 0xFF]), "////");
+        assert_eq!(base64_encode(&[0x00]), "AA==");
+        // 出力長は常に 4 の倍数 (パディングで埋まる)。
+        for n in 0..20usize {
+            let data = vec![0xABu8; n];
+            assert_eq!(base64_encode(&data).len() % 4, 0, "base64 length must be a multiple of 4 (n={n})");
+        }
+    }
+
+    #[test]
     fn run_script_to_validate_digest_is_deterministic_across_sessions() {
         // 問105: 再現性契約 (問5/問61/問90) を MCP ツール経路で end-to-end に固定する。
         // polygonize_is_byte_deterministic は抽出単体を見るが、ここでは
