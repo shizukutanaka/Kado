@@ -14,6 +14,16 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const SERVER_NAME: &str = "kado";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// 1 フレームの本文バイト数上限 (問118: トランスポート層の DoS 防御)。
+///
+/// `Content-Length` は信頼できないクライアントから来る。これを無検査で
+/// `vec![0u8; len]` の確保に使うと、`Content-Length: 999999999999` 一発で
+/// OOM クラッシュ (= DoS) を起こせる。DSL 評価器の問16 リソース上限
+/// (ソース 1 MiB) は**本文を全部メモリに読んだ後**にしか効かないため、確保前に
+/// ここで遮断する。本文は JSON-RPC エンベロープ + エスケープでスクリプト生バイトより
+/// 膨らむため、ソース上限 (1 MiB) に十分な余裕を見て 16 MiB を上限とする。
+const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 /// stdio で MCP サーバーを起動する。返らない。
 pub fn run_stdio() -> ! {
     let stdin = io::stdin();
@@ -59,6 +69,13 @@ fn read_message(r: &mut impl BufRead) -> io::Result<Value> {
     }
     let len = content_length
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length"))?;
+    // 問118: 確保前にフレーム上限を検査し、巨大 Content-Length による OOM を防ぐ。
+    if len > MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Content-Length {len} exceeds limit {MAX_MESSAGE_BYTES}"),
+        ));
+    }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     let text =
@@ -742,5 +759,38 @@ mod tests {
             json::obj([("name", json::s("nonexistent_tool")), ("arguments", json::obj([]))]),
         );
         assert!(e4 && t4.contains("unknown tool"), "unknown tool path unchanged: {t4}");
+    }
+
+    #[test]
+    fn oversized_content_length_is_rejected_before_allocation() {
+        // 問118: 巨大 Content-Length は確保前に拒否される (OOM/DoS 防御)。
+        // 信頼できないクライアントが Content-Length: 999999999999 を送っても
+        // テラバイト級の vec を確保せず、即座に InvalidData エラーを返す。
+        let header = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE_BYTES + 1);
+        let mut cursor = std::io::Cursor::new(header.into_bytes());
+        let err = read_message(&mut cursor).expect_err("oversized frame must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("exceeds limit"),
+            "error must explain the limit: {err}"
+        );
+
+        // 上限ちょうどの宣言は許容される (本文が足りなければ EOF になるが、
+        // 確保前の上限チェックは通過する = 拒否されない)。
+        let header_ok = format!("Content-Length: {MAX_MESSAGE_BYTES}\r\n\r\n");
+        let mut cursor_ok = std::io::Cursor::new(header_ok.into_bytes());
+        let err_ok = read_message(&mut cursor_ok).expect_err("body is absent so read_exact fails");
+        // 上限超過エラーではなく、本文不足 (EOF) であることを確認。
+        assert!(
+            !err_ok.to_string().contains("exceeds limit"),
+            "at-limit declaration must pass the size gate, got: {err_ok}"
+        );
+
+        // 通常サイズのフレームは正常にパースされる (回帰: 正当な経路を壊さない)。
+        let body = r#"{"jsonrpc":"2.0","method":"ping","id":1}"#;
+        let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut cursor_good = std::io::Cursor::new(frame.into_bytes());
+        let msg = read_message(&mut cursor_good).expect("normal frame must parse");
+        assert_eq!(msg.get("method").and_then(|m| m.as_str()), Some("ping"));
     }
 }
