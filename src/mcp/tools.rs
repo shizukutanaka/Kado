@@ -1166,6 +1166,52 @@ mod tests {
     }
 
     #[test]
+    fn default_scene_is_structurally_sound_for_first_impression() {
+        // 問111: AI が接続直後 (run_script 前) に validate を呼ぶとデフォルトシーンを
+        // 検証する。「デフォルトは健全なデモ」という前提を固定し、将来 default_scene を
+        // 変更しても構造的に壊れたデモを出荷しないことを保証する。
+        // 閾値依存の OVERHANG/THIN_WALL (閉形状なら下面は常に overhang) は対象外とし、
+        // 構造的健全性 (manifold/単一ボディ/正体積/開境界なし) のみを固定する。
+        use crate::mcp::json::parse;
+        let mut s = Session::new();
+        // 構造チェックのみ: min_wall=0, max_overhang=0 で閾値系をスキップ。
+        let args = json::obj([
+            ("min_wall_mm", json::n(0.0)),
+            ("max_overhang_deg", json::n(0.0)),
+            ("resolution", json::n(48.0)),
+        ]);
+        let r = call_tool(&mut s, "validate", &args);
+        assert!(!r.is_error, "validate must run on the default scene");
+        let v = parse(r.content[0].get("text").and_then(|t| t.as_str()).unwrap()).unwrap();
+
+        assert_eq!(
+            v.get("manifold").and_then(|x| x.as_bool()),
+            Some(true),
+            "default scene must be watertight (manifold)"
+        );
+        assert!(
+            v.get("volume").and_then(|x| x.as_f64()).unwrap_or(-1.0) > 0.0,
+            "default scene must have positive volume (correct orientation)"
+        );
+        // 構造エラーが無いこと: OPEN_MESH/NON_MANIFOLD/EMPTY_MESH/NEGATIVE_VOLUME/MULTIPLE_BODIES。
+        let codes: Vec<&str> = v
+            .get("issues")
+            .and_then(|i| i.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.get("code").and_then(|c| c.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for bad in ["OPEN_MESH", "NON_MANIFOLD", "EMPTY_MESH", "NEGATIVE_VOLUME", "MULTIPLE_BODIES"] {
+            assert!(
+                !codes.contains(&bad),
+                "default scene must not have structural issue {bad}; got {codes:?}"
+            );
+        }
+    }
+
+    #[test]
     fn run_script_to_validate_digest_is_deterministic_across_sessions() {
         // 問105: 再現性契約 (問5/問61/問90) を MCP ツール経路で end-to-end に固定する。
         // polygonize_is_byte_deterministic は抽出単体を見るが、ここでは

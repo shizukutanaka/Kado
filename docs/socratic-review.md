@@ -2163,4 +2163,32 @@ image.rs の crc32 は tag+data 連結のため分割位置に依らず同値に
 
 > 総括: v70 は単一変換でなく変換の合成挙動を検証した。特に「異軸回転は順序依存」を
 > 明示テスト化し、AI が組立の姿勢を組むとき順序を誤ると結果が変わることを保証する。
+
+## 問111 — デフォルトシーンの構造健全性 (AI の第一印象) が未検証
+
+**問**: AI が接続直後 (run_script 前) に validate/screenshot/export を呼ぶと
+**デフォルトシーン** (smooth_union(sphere(1), cuboid(0.8), 0.2)) が対象になる。
+「デフォルトは健全なデモ」という前提は暗黙で、将来 `default_scene` を変更した際に
+構造的に壊れたデモ (非多様体・複数ボディ・裏返し等) を出荷しても気付けない。
+AI の第一印象とすべての run_script 前操作がこのシーンに依存する。
+
+**対処 (現状は健全)**: デフォルトシーンの構造健全性を固定する回帰テストを追加。
+閾値依存の OVERHANG/THIN_WALL (閉形状の下面は常に overhang なので) は対象外とし、
+manifold=true・正体積・構造エラー (OPEN_MESH/NON_MANIFOLD/EMPTY_MESH/
+NEGATIVE_VOLUME/MULTIPLE_BODIES) が無いことのみを保証する。
+
+検証テスト追加 (テスト 169→170):
+- `default_scene_is_structurally_sound_for_first_impression`:
+  fresh Session で validate(min_wall=0,max_overhang=0) し manifold/正体積/構造エラー無しを確認。
+
+変更ファイル: `src/mcp/tools.rs` (新テスト)。
+
+## 反映サマリ v71
+| 問 | 実装 |
+|----|------|
+| 111 | デフォルトシーンの構造健全性 (manifold/単一ボディ/正体積) を回帰固定 |
+
+> 総括: v71 は「AI が最初に出会う形状」の健全性を固定した。run_script 前の全操作と
+> 第一印象がデフォルトシーンに依存するため、将来のデフォルト変更が壊れたデモを
+> 出荷しないことを CI で保証する。
 > テスト数 141→142 + 統合 3。
