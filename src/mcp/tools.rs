@@ -980,6 +980,44 @@ mod tests {
     }
 
     #[test]
+    fn every_advertised_tool_is_dispatchable() {
+        // 問102: tools/list が広告する全ツールは call_tool で必ずディスパッチされなければ
+        // ならない。広告されているのに未実装だと AI は「unknown tool」という混乱する
+        // エラーを受け取る (リストとディスパッチの構造的整合性)。ツール追加時に
+        // 配線忘れを検知する回帰ガード。
+        let names: Vec<String> = tool_list()
+            .as_array()
+            .expect("tool_list is an array")
+            .iter()
+            .map(|t| t.get("name").and_then(|n| n.as_str()).unwrap().to_string())
+            .collect();
+        assert!(!names.is_empty(), "tool_list must advertise tools");
+
+        for name in &names {
+            let mut session = Session::new();
+            // export は副作用 (ファイル書込) があるため一意な一時パスを与え後始末する。
+            let args = if name == "export" {
+                json::obj([("path", json::s("kado-test-q102-dispatch.stl"))])
+            } else {
+                // 他ツールは引数省略でも「unknown tool」以外を返すはず
+                // (eval は arg エラー、screenshot/validate/get_scene 等は既定で動作)。
+                json::obj([])
+            };
+            let r = call_tool(&mut session, name, &args);
+            if name == "export" {
+                let _ = std::fs::remove_file("kado-test-q102-dispatch.stl");
+            }
+            // 結果がエラーでも良いが、「unknown tool」だけは出てはならない
+            // (= リストにあるのにディスパッチされていない)。
+            let text = r.content.first().and_then(|c| c.get("text")).and_then(|v| v.as_str()).unwrap_or("");
+            assert!(
+                !text.contains("unknown tool"),
+                "advertised tool '{name}' must be dispatched by call_tool, got: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn run_script_discloses_check_resolution() {
         // 問93: run_script の summary は digest を含むが res=32 のチェック。
         // 解像度を開示しないと AI が digest の不一致を説明できず、粗い「issue なし」を
