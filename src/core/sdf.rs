@@ -547,6 +547,28 @@ mod tests {
     }
 
     #[test]
+    fn primitive_axes_are_z_aligned_as_documented() {
+        // 問99: help が主張する向き (cylinder/capsule = Z軸, torus = XY平面リング) を
+        // 挙動で固定する。AI が stacking/rotation を計画する際の前提。
+
+        // cylinder: 長軸は Z。h=2,r=0.5 → z 方向に ±2 まで内部・x 方向は ±0.5 まで。
+        let cy = Sdf::cylinder(0.5, 2.0);
+        assert!(cy.eval(Vec3::new(0.0, 0.0, 1.5)) < 0.0, "cylinder inside along +Z within h");
+        assert!(cy.eval(Vec3::new(1.5, 0.0, 0.0)) > 0.0, "cylinder outside at x=1.5 (r=0.5)");
+        // 非対称 (z は h=2 まで内部だが x は r=0.5 で外部) が「長軸=Z」の証拠。
+
+        // capsule: 軸は Z。端点 (0,0,h) から radius 離れた点が表面。
+        let cap = Sdf::capsule(1.0, 0.5);
+        assert!(cap.eval(Vec3::new(0.0, 0.0, 1.4)) < 0.0, "capsule inside Z cap region");
+        assert!(cap.eval(Vec3::new(1.4, 0.0, 0.0)) > 0.0, "capsule outside far in X");
+
+        // torus: リングは XY 平面。穴は Z 軸を向く → Z 軸上 (0,0,z) は穴の中 (外部)。
+        let t = Sdf::torus(1.0, 0.3);
+        assert!(t.eval(Vec3::ZERO) > 0.0, "torus hole on Z axis → origin is outside");
+        assert!(t.eval(Vec3::new(1.0, 0.0, 0.0)) < 0.0, "torus tube center in XY plane is inside");
+    }
+
+    #[test]
     fn capsule_endpoints_on_surface() {
         let c = Sdf::capsule(1.0, 0.5);
         // 軸端点 (0,0,1) から radius 離れた点が表面

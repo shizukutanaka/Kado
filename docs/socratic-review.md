@@ -1815,4 +1815,34 @@ unchanged. e.g. shell(sphere(1.0),0.2) → hollow ball, outer r=1, inner r=0.8�
 
 > 総括: v58 は shell の「外を保持し内へ掘る」意味論を固定した。AI が中空部品の
 > 外寸と肉厚を正しく設計でき、肥厚との取り違えによる寸法エラーを防ぐ。
+
+## 問99 — cylinder/capsule/torus の軸・平面の向きが help で未記載 — 組立/回転の前提が不明
+
+**問**: cone は「apex at z=0, base at z=-h」と向きを明記するのに、cylinder・capsule
+(いずれも軸=Z)・torus (リング=XY平面・穴=Z軸) は help に向きの記載が無い。
+AI が円柱を積む・回す・組み合わせる際、既定の軸がどれか分からないと配置を誤る
+(例: 2本の円柱を直交させたいのに既定軸を知らず両方Zのまま重ねる)。実装は正しく
+Z軸整列だが、その契約が AI に開示されていない。
+
+**修正**: help に各プリミティブの向きを明記:
+- cylinder: 「axis along Z, centered at origin (spans z=-h..+h)」
+- torus: 「ring lies in the XY plane, hole faces Z」
+- capsule: 「axis along Z (z=-h..+h plus radius hemispherical caps)」
+- cone も「axis along Z:」と前置きして統一。
+
+検証テスト追加 (テスト 157→158):
+- `primitive_axes_are_z_aligned_as_documented`:
+  cylinder の z(h=2)/x(r=0.5) 非対称で長軸=Z を証明、capsule の Z 軸端、
+  torus の穴が Z 軸上 (原点が外部)・チューブが XY 平面内 (inside) を確認。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP プリミティブ向き), `src/core/sdf.rs` (新テスト)。
+
+## 反映サマリ v59
+| 問 | 実装 |
+|----|------|
+| 99 | cylinder/capsule/torus の軸・平面の向き (Z軸/XY平面) を help で明示 + 挙動テスト |
+
+> 総括: v59 は全プリミティブの既定の向きを help で統一的に開示した。AI が
+> 円柱・カプセル・トーラスを積む/回す/組む際の空間的前提が明確になり、
+> 配置ミス (既定軸の取り違え) を防ぐ。
 > テスト数 141→142 + 統合 3。

@@ -584,16 +584,19 @@ cuboid        {"op":"cuboid","x":1.0,"y":1.0,"z":1.0}
               x,y,z (req): half-extents > 0 (or use "s" for uniform)
 
 cylinder      {"op":"cylinder","r":0.5,"h":1.0}
+              axis along Z, centered at origin (spans z=-h..+h);
               r (req): radius > 0; h (req): half-height > 0
 
 torus         {"op":"torus","major":1.0,"minor":0.25}
+              ring lies in the XY plane, hole faces Z;
               major (req): ring radius > 0; minor (req): tube radius > 0 AND < major
               (minor >= major self-intersects: horn/spindle torus, non-manifold)
 
 cone          {"op":"cone","r":0.5,"h":1.5}
-              apex at z=0, base at z=-h; r (req) > 0; h (req) > 0
+              axis along Z: apex at z=0, base at z=-h; r (req) > 0; h (req) > 0
 
 capsule       {"op":"capsule","h":0.5,"r":0.3}
+              axis along Z (z=-h..+h plus radius hemispherical caps);
               h (req): half-height >= 0; r (req): radius > 0
 
 rounded_box   {"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}
