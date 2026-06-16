@@ -2018,4 +2018,34 @@ digest と解像度を全ツールが開示するようにした。だが「同�
 > 総括: v65 は「決定的・再現可能」という製品中核の主張を、抽出関数単体でなく
 > AI が実際に通る run_script→validate 経路で、セッションをまたいで検証した。
 > 問90-93 の「digest+解像度の開示」と対になり、開示した再現条件が実際に成立することを保証する。
+
+## 問106 — 不正な tools/call の応答形が不統一 (name 欠落だけ非標準 result)
+
+**問**: MCP `tools/call` で **name 欠落**時、`handle_tools_call` は `rpc_error`
+({code, message}) を返し、それが `handle()` の `success_response` に包まれて
+**JSON-RPC success の result に {code, message}** が入る — `content`/`isError` を欠く
+非標準応答。一方**未知ツール名**は `call_tool` 経由で正しく {content, isError:true} を返す。
+同じ「不正な tools/call」が経路により異なる応答形を生み、result.content を期待する
+MCP クライアントが name 欠落時だけ破綻しうる。`get` は非オブジェクトで None を返すため
+パニックは無いが、応答形の不整合は実害。
+
+**修正**: name 欠落/非文字列も未知ツールと同じ {content, isError:true} 形で返す
+`tool_error_result` ヘルパを追加し、`rpc_error` (この1箇所でしか使われず) を削除。
+全 tools/call 応答が {content, isError} 形に統一される。
+
+検証テスト追加 (テスト 162→163):
+- `malformed_tools_call_returns_uniform_error_shape`:
+  name 欠落・name 非文字列・arguments 非オブジェクト・未知ツール の4ケースで
+  パニックせず isError:true の統一形を返すことを確認。
+
+変更ファイル: `src/mcp/server.rs` (tool_error_result 追加, rpc_error 削除, 新テスト)。
+
+## 反映サマリ v66
+| 問 | 実装 |
+|----|------|
+| 106 | 不正な tools/call の応答形を {content, isError:true} に統一 (name欠落の非標準resultを解消) |
+
+> 総括: v66 は MCP プロトコル境界の堅牢性を高めた。不正リクエストでもパニックせず、
+> 全 tools/call が一貫した {content, isError} 形で応答するため、クライアントが
+> エラーを一様に扱える。
 > テスト数 141→142 + 統合 3。

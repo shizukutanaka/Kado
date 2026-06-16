@@ -121,9 +121,13 @@ fn handle_tools_list() -> Value {
 }
 
 fn handle_tools_call(session: &mut tools::Session, params: &Value) -> Value {
+    // 問106: 不正な tools/call (name 欠落・非文字列) も、未知ツール (call_tool 経由) と
+    // 同じ {content, isError:true} 形で返し、tools/call 応答の構造を統一する。
+    // 以前は missing name だけ {code, message} を返し、それが success_response で
+    // result に包まれて content/isError を欠く非標準応答になっていた。
     let name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n.to_string(),
-        None => return rpc_error(-32602, "missing tool name"),
+        None => return tool_error_result("missing or non-string tool name"),
     };
     let empty = json::obj([]);
     let args = params.get("arguments").unwrap_or(&empty);
@@ -132,6 +136,20 @@ fn handle_tools_call(session: &mut tools::Session, params: &Value) -> Value {
     json::obj([
         ("content", Value::Array(result.content)),
         ("isError", json::b(result.is_error)),
+    ])
+}
+
+/// tools/call のエラーを標準形 {content:[text], isError:true} で返す (問106)。
+fn tool_error_result(message: &str) -> Value {
+    json::obj([
+        (
+            "content",
+            json::arr([json::obj([
+                ("type", json::s("text")),
+                ("text", json::s(message)),
+            ])]),
+        ),
+        ("isError", json::b(true)),
     ])
 }
 
@@ -155,12 +173,6 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
     ])
 }
 
-fn rpc_error(code: i64, message: &str) -> Value {
-    json::obj([
-        ("code", json::n(code as f64)),
-        ("message", json::s(message)),
-    ])
-}
 
 #[cfg(test)]
 mod tests {
@@ -680,5 +692,55 @@ mod tests {
             ("method", json::s("initialized")),
         ]);
         assert!(handle(&mut s, &notif).is_none());
+    }
+
+    #[test]
+    fn malformed_tools_call_returns_uniform_error_shape() {
+        // 問106: 不正な tools/call (name 欠落、name 非文字列、arguments 非オブジェクト) は
+        // パニックせず、未知ツールと同じ {content, isError:true} 形のツール結果を返す。
+        let mut s = tools::Session::new();
+
+        // ツール結果 (result.content/isError) を取り出すヘルパ。
+        let call = |s: &mut tools::Session, params: Value| -> (bool, String) {
+            let resp = handle(s, &req("tools/call", 1, Some(params))).unwrap();
+            let result = resp.get("result").expect("must have result");
+            let is_err = result.get("isError").and_then(|v| v.as_bool()).expect("isError present");
+            let text = result
+                .get("content")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("text"))
+                .and_then(|v| v.as_str())
+                .expect("content[0].text present")
+                .to_string();
+            (is_err, text)
+        };
+
+        // name 欠落 → isError:true, content あり (code/message の裸オブジェクトではない)。
+        let (e1, _) = call(&mut s, json::obj([("arguments", json::obj([]))]));
+        assert!(e1, "missing name must yield isError:true");
+
+        // name が非文字列 (数値) → 同上。
+        let (e2, _) = call(
+            &mut s,
+            json::obj([("name", json::n(42.0)), ("arguments", json::obj([]))]),
+        );
+        assert!(e2, "non-string name must yield isError:true");
+
+        // arguments が非オブジェクト (文字列) でもパニックしない。
+        // eval は引数を読めず arg エラーになるが unknown tool ではない。
+        let (e3, t3) = call(
+            &mut s,
+            json::obj([("name", json::s("eval")), ("arguments", json::s("not-an-object"))]),
+        );
+        assert!(e3, "eval with non-object arguments must error gracefully");
+        assert!(!t3.contains("unknown tool"), "must dispatch eval, not 'unknown tool': {t3}");
+
+        // 未知ツール名 → isError:true で "unknown tool" を含む (既存の整合した経路)。
+        let (e4, t4) = call(
+            &mut s,
+            json::obj([("name", json::s("nonexistent_tool")), ("arguments", json::obj([]))]),
+        );
+        assert!(e4 && t4.contains("unknown tool"), "unknown tool path unchanged: {t4}");
     }
 }
