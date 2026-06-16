@@ -737,6 +737,45 @@ mod tests {
     }
 
     #[test]
+    fn rotation_composition_is_additive_roundtrip_and_order_dependent() {
+        // 問110: 回転の合成 (入れ子) は AI が向き付き組立を作る際に重要だが、
+        // 既存テストは単一回転のみ。合成の正しさを固定する:
+        //  (1) 同軸加法性: rotate_z(a, rotate_z(b, S)) == rotate_z(a+b, S)
+        //  (2) 往復恒等:   rotate_z(-θ, rotate_z(θ, S)) == S
+        //  (3) 異軸の順序依存 (非可換): rot_x∘rot_y ≠ rot_y∘rot_x
+        let child = Sdf::cuboid(Vec3::new(1.0, 0.6, 0.3));
+        let pts = grid();
+
+        // (1) 同軸加法性。
+        let composed = child.clone().rotate_z(0.3).rotate_z(0.5);
+        let single = child.clone().rotate_z(0.8);
+        for &p in &pts {
+            assert!(
+                (composed.eval(p) - single.eval(p)).abs() < 1e-9,
+                "same-axis rotations must add (z 0.3 then 0.5 == 0.8) at {p:?}"
+            );
+        }
+
+        // (2) 往復恒等。
+        let roundtrip = child.clone().rotate_z(0.7).rotate_z(-0.7);
+        for &p in &pts {
+            assert!(
+                (roundtrip.eval(p) - child.eval(p)).abs() < 1e-9,
+                "rotate_z(θ) then rotate_z(-θ) must be identity at {p:?}"
+            );
+        }
+
+        // (3) 異軸は非可換: rot_x(60°)∘rot_y(60°) と順序逆は一般に異なる。
+        let xy = child.clone().rotate_y(1.0).rotate_x(1.0);
+        let yx = child.clone().rotate_x(1.0).rotate_y(1.0);
+        let differs = pts.iter().any(|&p| (xy.eval(p) - yx.eval(p)).abs() > 1e-6);
+        assert!(
+            differs,
+            "different-axis rotations must be order-dependent (non-commutative)"
+        );
+    }
+
+    #[test]
     fn rotation_of_sphere_is_invariant() {
         // 球は回転不変。任意角でも同一の場。
         let s = Sdf::sphere(1.0);
