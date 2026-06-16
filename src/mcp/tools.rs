@@ -1143,6 +1143,49 @@ mod tests {
     }
 
     #[test]
+    fn run_script_to_validate_digest_is_deterministic_across_sessions() {
+        // 問105: 再現性契約 (問5/問61/問90) を MCP ツール経路で end-to-end に固定する。
+        // polygonize_is_byte_deterministic は抽出単体を見るが、ここでは
+        // run_script → validate という実際の AI 利用経路を、独立した2セッションで通し、
+        // 同一スクリプト・同一解像度なら同一 digest になることを保証する。
+        use crate::mcp::json::parse;
+        let script = "difference(smooth_union(sphere(1.0), cuboid(0.7), 0.2), cylinder(0.3, 2.0))";
+        let digest_via_fresh_session = || -> String {
+            let mut s = Session::new();
+            let run = json::obj([("script", json::s(script))]);
+            assert!(!call_tool(&mut s, "run_script", &run).is_error, "script must be valid");
+            let val = json::obj([("resolution", json::n(36.0))]);
+            let r = call_tool(&mut s, "validate", &val);
+            let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+            parse(text)
+                .unwrap()
+                .get("digest")
+                .and_then(|x| x.as_str())
+                .unwrap()
+                .to_string()
+        };
+        let d1 = digest_via_fresh_session();
+        let d2 = digest_via_fresh_session();
+        assert_eq!(
+            d1, d2,
+            "same script at same resolution must yield identical digest across \
+             independent sessions (MCP-path reproducibility, 問105): {d1} vs {d2}"
+        );
+
+        // 同一セッションで validate を2回呼んでも digest は不変 (validate は非破壊)。
+        let mut s = Session::new();
+        let run = json::obj([("script", json::s(script))]);
+        call_tool(&mut s, "run_script", &run);
+        let val = json::obj([("resolution", json::n(36.0))]);
+        let read = |s: &mut Session| -> String {
+            let r = call_tool(s, "validate", &val);
+            let t = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+            parse(t).unwrap().get("digest").and_then(|x| x.as_str()).unwrap().to_string()
+        };
+        assert_eq!(read(&mut s), read(&mut s), "validate must be non-mutating/repeatable");
+    }
+
+    #[test]
     fn eval_schema_discloses_units_and_lower_bound() {
         // 問94: eval の戻り値は mm 単位の符号付き距離だが、合成/平滑形状では
         // 真の距離の保守的下界 (Lipschitz 場) にすぎない。AI がクリアランス計測で

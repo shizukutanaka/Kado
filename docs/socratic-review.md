@@ -1990,4 +1990,32 @@ DSL 形と JSON 形が同一の場 (サンプル点で eval 一致) を生むこ
 > 総括: v64 は二つの入力記法 (JSON/DSL) が同一 op 集合を扱い同一結果を生むことを
 > 全 op で保証した。問102 (ツール)・問103 (issue code) に続く3つ目の「リスト↔実装整合」
 > ガードで、AI が記法を問わず一貫した結果を得られることを CI で担保する。
+
+## 問105 — 再現性契約が MCP ツール経路で end-to-end に未検証
+
+**問**: Kado の中核主張は決定性 (問5) / 内容 digest による再現性 (問61) で、問90-93 で
+digest と解像度を全ツールが開示するようにした。だが「同一スクリプト・同一解像度なら
+同一 digest」を**実際の AI 利用経路 (run_script→validate) で独立セッション間に渡って**
+保証するテストが無かった。`polygonize_is_byte_deterministic` は抽出関数単体のみを見ており、
+セッション状態・ツールディスパッチ・JSON 整形を含む end-to-end の決定性は未固定。
+
+**対処**: MCP ツール経路の再現性を end-to-end に固定する回帰テストを追加:
+- 同一スクリプトを**独立した2セッション**で run_script→validate(res=36) し、digest 一致を確認。
+- 同一セッションで validate を2回呼んでも digest 不変 (validate が非破壊・冪等) を確認。
+
+検証テスト追加 (テスト 161→162):
+- `run_script_to_validate_digest_is_deterministic_across_sessions`:
+  difference(smooth_union(sphere,cuboid),cylinder) を2セッションで通し digest 一致、
+  かつ validate 反復で不変。
+
+変更ファイル: `src/mcp/tools.rs` (新テスト)。
+
+## 反映サマリ v65
+| 問 | 実装 |
+|----|------|
+| 105 | 再現性契約 (同一スクリプト→同一 digest) を MCP 経路・独立セッション間で end-to-end 固定 |
+
+> 総括: v65 は「決定的・再現可能」という製品中核の主張を、抽出関数単体でなく
+> AI が実際に通る run_script→validate 経路で、セッションをまたいで検証した。
+> 問90-93 の「digest+解像度の開示」と対になり、開示した再現条件が実際に成立することを保証する。
 > テスト数 141→142 + 統合 3。
