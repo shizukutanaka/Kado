@@ -613,7 +613,7 @@ difference    {"op":"difference","a":<sdf>,"b":<sdf>}  (a minus b)
 
 smooth_union         {"op":"smooth_union","a":<sdf>,"b":<sdf>,"k":0.3}
 smooth_intersection  {"op":"smooth_intersection","a":<sdf>,"b":<sdf>,"k":0.3}
-smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}
+smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}  (a minus b, blended)
               k: blend radius > 0 (default 0.3; k<=0 rejected — use the hard
               union/intersection/difference op for a sharp boundary)
 

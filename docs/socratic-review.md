@@ -1872,4 +1872,25 @@ For different per-axis sizes use a primitive with per-axis extents
 > 総括: v60 は scale の「等方限定」という SDF 由来の制約と、その回避策
 > (per-axis プリミティブ) を開示した。AI が非等方スケールを期待して
 > 行き詰まるのを防ぐ。
+
+## 問101 — `smooth_difference` のオペランド順序が help で未記載 (hard difference との非対称)
+
+**問**: hard `difference` は help で「(a minus b)」とオペランド順序を明示するが、
+`smooth_difference` は記載が無い。AI は a-b か b-a か (どちらを削るか) を
+類推に頼ることになる。挙動 (a から b を滑らかに削る) は eval/テスト
+`smooth_operations_via_script` で既に担保されているが、help の開示が非対称。
+
+**修正**: help の smooth_difference 行に「(a minus b, blended)」を追記し、
+hard difference と開示を揃える。挙動は既存テスト (a の排他領域 -0.9 は残存・
+b の領域 0.5 は削除) が回帰ガード済み。
+
+変更ファイル: `src/mcp/tools.rs` (KADOSCENE_HELP smooth_difference 行)。
+
+## 反映サマリ v61
+| 問 | 実装 |
+|----|------|
+| 101 | smooth_difference のオペランド順序 (a minus b) を help で明示 |
+
+> 総括: v61 は smooth_difference のオペランド順序開示を hard difference と
+> 対称化した。問96-101 で全変形/ブーリアン操作の意味論が help に出揃った。
 > テスト数 141→142 + 統合 3。
