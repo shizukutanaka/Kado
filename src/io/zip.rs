@@ -125,4 +125,14 @@ mod tests {
         let total = u16::from_le_bytes(z[pos + 10..pos + 12].try_into().unwrap());
         assert_eq!(total, 3);
     }
+
+    #[test]
+    fn crc32_matches_known_vectors() {
+        // 問108: 3MF (ZIP) エントリの CRC-32。値が誤ると展開ツール/スライサが
+        // アーカイブを破損扱いする。標準チェック値で固定する。
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0x0000_0000);
+        // PNG 側 (render::image) の crc32 と同一アルゴリズムであることの間接確認:
+        // 同じ入力で同じ値になる (実装は重複だが仕様一致)。
+    }
 }

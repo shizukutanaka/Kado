@@ -218,4 +218,30 @@ mod tests {
         let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
         assert_eq!((w, h), (16, 12));
     }
+
+    #[test]
+    fn crc32_matches_known_vectors() {
+        // 問108: PNG チャンクの整合性は CRC-32 (IEEE 802.3) に依存する。値が誤ると
+        // 厳格な PNG リーダがチャンクを拒否する。標準チェック値で固定する。
+        // CRC-32("123456789") = 0xCBF43926 (業界標準のチェック値)。
+        assert_eq!(crc32(b"", b"123456789"), 0xCBF4_3926);
+        // tag+data は連結されるので分割位置に依らず同じ。
+        assert_eq!(crc32(b"1234", b"56789"), 0xCBF4_3926);
+        assert_eq!(crc32(b"123456789", b""), 0xCBF4_3926);
+        // 空入力の CRC は 0。
+        assert_eq!(crc32(b"", b""), 0x0000_0000);
+    }
+
+    #[test]
+    fn adler32_matches_known_vectors() {
+        // 問108: zlib トレーラの Adler-32。値が誤ると展開時に壊れたストリーム扱いになる。
+        // Adler-32("123456789") = 0x091E01DE (combined = (s2<<16)|s1)。
+        let (s1, s2) = adler32(b"123456789");
+        assert_eq!((s1, s2), (478, 2334), "adler32 s1/s2 components");
+        assert_eq!((s2 << 16) | s1, 0x091E_01DE, "adler32 combined value");
+        // 空入力は (s1=1, s2=0) → combined 1。
+        let (e1, e2) = adler32(b"");
+        assert_eq!((e1, e2), (1, 0));
+        assert_eq!((e2 << 16) | e1, 0x0000_0001);
+    }
 }
