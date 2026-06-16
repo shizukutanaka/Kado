@@ -137,7 +137,8 @@ pub fn tool_list() -> Value {
              JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[]}]}. \
              All issue codes: EMPTY_MESH (no geometry), NON_MANIFOLD (self-intersecting faces), \
-             OPEN_MESH (boundary edges, unprintable), MULTIPLE_BODIES (separate shells), \
+             OPEN_MESH (boundary edges, unprintable), NEGATIVE_VOLUME (inverted/inside-out mesh), \
+             MULTIPLE_BODIES (separate shells), \
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
              SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units). \
              Overhang is measured against build_dir (default +Z). \
@@ -684,6 +685,7 @@ Branch on issue.code to categorize results:
   EMPTY_MESH        — no triangles (script may be outside bounding box)
   NON_MANIFOLD      — self-intersecting faces (boolean degeneracy)
   OPEN_MESH         — boundary edges present (shape not watertight; cannot print)
+  NEGATIVE_VOLUME   — signed volume < 0 (mesh inverted/inside-out; check orientation)
   MULTIPLE_BODIES   — disconnected shells (may need to merge or orient separately)
   THIN_WALL         — local wall < min_wall_mm (SDF-ray probe)
   OVERHANG          — surface > max_overhang_deg from horizontal (support required)
@@ -977,6 +979,36 @@ mod tests {
             text.contains("scene updated"),
             "session must still be marked as updated: {text}"
         );
+    }
+
+    #[test]
+    fn issue_codes_are_fully_documented() {
+        // 問103: validator が emit しうる全 issue code (ALL_ISSUE_CODES, 単一の真実源) は、
+        // MCP の help と validate スキーマ説明の双方に記載されていなければならない。
+        // NEGATIVE_VOLUME がスキーマの "All issue codes:" から漏れていた退行を防ぎ、
+        // 将来コード追加時の文書ドリフトを検知する (問79 の完全版)。
+        let help = KADOSCENE_HELP;
+        // validate スキーマ説明を取得。
+        let tools = tool_list();
+        let validate_desc = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("validate"))
+            .and_then(|t| t.get("description"))
+            .and_then(|d| d.as_str())
+            .expect("validate tool must have a description");
+
+        for code in crate::verify::ALL_ISSUE_CODES {
+            assert!(
+                help.contains(code),
+                "issue code '{code}' must be documented in KADOSCENE_HELP (問103)"
+            );
+            assert!(
+                validate_desc.contains(code),
+                "issue code '{code}' must be listed in the validate tool schema (問103)"
+            );
+        }
     }
 
     #[test]

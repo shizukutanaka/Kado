@@ -1928,4 +1928,35 @@ b の領域 0.5 は削除) が回帰ガード済み。
 > コードが正しいこと (上向き面除外) と、worst-angle が方向性を分離できない数学的理由を
 > 確認した。副産物として、より確実に守るべき構造不変条件 (広告ツール↔実装の整合) を
 > 回帰テスト化した。誤った前提のテストは破棄し、検証可能な不変条件のみを固定する。
+
+## 問103 — NEGATIVE_VOLUME が validate スキーマ/help の issue code リストから欠落
+
+**問**: validate スキーマ説明は「All issue codes:」と謳いつつ 7 個しか列挙せず、
+validator が実際に emit する `NEGATIVE_VOLUME` (裏返しメッシュ) が**漏れていた**。
+help の issue-codes 節からも欠落。AI が NEGATIVE_VOLUME を受け取ってもどちらの
+リファレンスにも無く意味を解釈できない (問79「issue code 完全性」が実は不完全だった)。
+emit 側 (check.rs) と文書側 (tools.rs) の真実源が分離していたため気付かれなかった。
+
+**修正**:
+1. check.rs に `pub const ALL_ISSUE_CODES: &[&str]` (全 8 コードの単一の真実源) を追加。
+2. validate スキーマ説明に NEGATIVE_VOLUME を追加 (「All issue codes」を真に完全化)。
+3. help issue-codes 節に NEGATIVE_VOLUME 行を追加。
+4. 文書ドリフトを検知する回帰テストを追加 (問102 と同じ「リスト↔文書」整合)。
+
+検証テスト追加 (テスト 159→160):
+- `issue_codes_are_fully_documented`:
+  `ALL_ISSUE_CODES` の全コードが KADOSCENE_HELP と validate スキーマ説明の双方に
+  含まれることを確認。将来コード追加時に文書更新漏れを CI が検知する。
+
+変更ファイル: `src/verify/check.rs` (ALL_ISSUE_CODES const), `src/verify/mod.rs` (re-export),
+`src/mcp/tools.rs` (スキーマ+help に NEGATIVE_VOLUME, 新テスト)。
+
+## 反映サマリ v63
+| 問 | 実装 |
+|----|------|
+| 103 | NEGATIVE_VOLUME を文書化 + 全 issue code の単一真実源 (ALL_ISSUE_CODES) と文書整合の回帰ガード |
+
+> 総括: v63 は emit 側と文書側で分離していた issue code の真実源を一本化し、
+> 漏れていた NEGATIVE_VOLUME を文書化した。問102 (ツール) に続き、問103 (issue code) でも
+> 「実装が広告するものは全て文書化される」という整合性を回帰テストで保証する。
 > テスト数 141→142 + 統合 3。

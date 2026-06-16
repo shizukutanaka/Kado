@@ -7,6 +7,22 @@ use crate::core::{Sdf, Vec3};
 use crate::extract::Mesh;
 use crate::mcp::json::{self, Value};
 
+/// validator が emit しうる全 issue code の正準リスト (問103: 単一の真実源)。
+///
+/// 新しい issue code を追加するときは必ずここにも追加すること。
+/// `issue_codes_are_fully_documented` テストが、この全コードが MCP の help と
+/// validate スキーマの双方に記載されていることを強制する (文書ドリフト防止)。
+pub const ALL_ISSUE_CODES: &[&str] = &[
+    "EMPTY_MESH",
+    "OPEN_MESH",
+    "NON_MANIFOLD",
+    "NEGATIVE_VOLUME",
+    "MULTIPLE_BODIES",
+    "THIN_WALL",
+    "SUSPICIOUS_SCALE",
+    "OVERHANG",
+];
+
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]
