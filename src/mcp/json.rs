@@ -91,7 +91,15 @@ impl fmt::Display for Value {
             Value::Null => f.write_str("null"),
             Value::Bool(b) => f.write_str(if *b { "true" } else { "false" }),
             Value::Number(n) => {
-                if n.fract() == 0.0 && n.abs() < 1e15 {
+                // 問117: 非有限値 (NaN/±Inf) は JSON に表現できない。Rust の Display は
+                // "NaN"/"inf"/"-inf" を吐くが、これは**不正な JSON** であり、MCP 応答を
+                // 受け取る AI クライアントのパーサを壊す (本パーサ自身も問20 で拒否する)。
+                // パーサ側 (入力) は問20 で遮断済みだが、出力側 (内部計算の伝播) は無防備
+                // だった。serde_json と同じく null に落とし、応答が常に valid JSON である
+                // ことを保証する (決定性のある安全側の縮退)。
+                if !n.is_finite() {
+                    f.write_str("null")
+                } else if n.fract() == 0.0 && n.abs() < 1e15 {
                     write!(f, "{}", *n as i64)
                 } else {
                     write!(f, "{n}")
@@ -553,5 +561,35 @@ mod tests {
             !serialized.chars().any(|c| c == '\t' || c == '\r'),
             "serialized output must not contain raw control chars"
         );
+    }
+
+    #[test]
+    fn nonfinite_numbers_serialize_as_valid_json_null() {
+        // 問117: パーサは問20 で非有限を拒否するが、シリアライザは無防備だった。
+        // 内部計算 (体積・寸法・角度等) が NaN/±Inf を生み Value::Number に入ると、
+        // Display は "NaN"/"inf"/"-inf" を吐く — これは**不正な JSON** であり、
+        // MCP 応答を受け取る AI クライアントのパーサを壊す。null に落として
+        // 応答が常に valid JSON であることを保証する。
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let serialized = Value::Number(bad).to_string();
+            assert_eq!(
+                serialized, "null",
+                "non-finite {bad} must serialize as null, got {serialized}"
+            );
+            // 出力が valid JSON として再パースできること (= クライアントが壊れない)。
+            assert!(
+                parse(&serialized).is_ok(),
+                "non-finite serialization must be valid JSON"
+            );
+        }
+
+        // 非有限が混入したオブジェクト全体も valid JSON のままであること。
+        let v = obj([("vol", n(f64::NAN)), ("dim", n(f64::INFINITY)), ("ok", n(1.5))]);
+        let serialized = v.to_string();
+        let reparsed = parse(&serialized).expect("object with non-finite must stay valid JSON");
+        // 有限値は保持され、非有限は null になる。
+        assert_eq!(reparsed.get("ok").and_then(|x| x.as_f64()), Some(1.5));
+        assert!(reparsed.get("vol").map(|x| x.is_null()).unwrap_or(false));
+        assert!(reparsed.get("dim").map(|x| x.is_null()).unwrap_or(false));
     }
 }
