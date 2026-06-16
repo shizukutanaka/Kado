@@ -115,6 +115,11 @@ pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
 
 /// 1四面体を処理し、0/1/2 枚の三角形を `soup` に追加する。
 /// 内部判定は `val < 0` (SDFは内部負)。
+///
+/// 問116: 内/外の角インデックス収集を `Vec` から固定長スタック配列に変更し、
+/// ホットパス (res^3 セル × 6 四面体 = 数百万回呼ばれる) のヒープ確保を排除する。
+/// 収集順 (0..4 昇順) は元の `filter().collect()` と完全一致するため、edge_vertex の
+/// 評価順・三角形の巻き順が不変 → 出力メッシュはバイト同一 (問5 決定性契約)。
 fn emit_tet(sdf: &Sdf, corners: &[Corner; 8], tet: [usize; 4], soup: &mut Vec<[Vec3; 3]>) {
     let c = [
         corners[tet[0]],
@@ -122,36 +127,49 @@ fn emit_tet(sdf: &Sdf, corners: &[Corner; 8], tet: [usize; 4], soup: &mut Vec<[V
         corners[tet[2]],
         corners[tet[3]],
     ];
-    let inside: Vec<usize> = (0..4).filter(|&n| c[n].val < 0.0).collect();
+    // 内 (val<0) と外 (val>=0) の角を昇順で固定長配列に振り分ける。
+    // 旧 (0..4).filter(...).collect() と同じ昇順なので決定性は不変。
+    let mut inside = [0usize; 4];
+    let mut n_in = 0usize;
+    let mut outside = [0usize; 4];
+    let mut n_out = 0usize;
+    for n in 0..4 {
+        if c[n].val < 0.0 {
+            inside[n_in] = n;
+            n_in += 1;
+        } else {
+            outside[n_out] = n;
+            n_out += 1;
+        }
+    }
 
-    match inside.len() {
+    match n_in {
         0 | 4 => {}
         1 => {
             let i = inside[0];
-            let o: Vec<usize> = (0..4).filter(|&n| n != i).collect();
+            // 外3点 = outside[0..3] (昇順) = 旧 (0..4).filter(|n| n != i) と同順。
             push_tri(
                 sdf,
                 soup,
-                edge_vertex(&c[i], &c[o[0]]),
-                edge_vertex(&c[i], &c[o[1]]),
-                edge_vertex(&c[i], &c[o[2]]),
+                edge_vertex(&c[i], &c[outside[0]]),
+                edge_vertex(&c[i], &c[outside[1]]),
+                edge_vertex(&c[i], &c[outside[2]]),
             );
         }
         3 => {
-            let o = (0..4).find(|&n| c[n].val >= 0.0).unwrap();
-            let ins: Vec<usize> = (0..4).filter(|&n| n != o).collect();
+            let o = outside[0];
+            // 内3点 = inside[0..3] (昇順) = 旧 (0..4).filter(|n| n != o) と同順。
             push_tri(
                 sdf,
                 soup,
-                edge_vertex(&c[o], &c[ins[0]]),
-                edge_vertex(&c[o], &c[ins[1]]),
-                edge_vertex(&c[o], &c[ins[2]]),
+                edge_vertex(&c[o], &c[inside[0]]),
+                edge_vertex(&c[o], &c[inside[1]]),
+                edge_vertex(&c[o], &c[inside[2]]),
             );
         }
         2 => {
-            let out: Vec<usize> = (0..4).filter(|&n| c[n].val >= 0.0).collect();
             let (i0, i1) = (inside[0], inside[1]);
-            let (o0, o1) = (out[0], out[1]);
+            let (o0, o1) = (outside[0], outside[1]);
             // 四辺形 (内2点×外2点) を2三角形に分割。
             let a = edge_vertex(&c[i0], &c[o0]);
             let b = edge_vertex(&c[i0], &c[o1]);
@@ -466,5 +484,34 @@ mod tests {
             m.signed_volume() > 0.0,
             "smooth_union volume must be positive (correct winding)"
         );
+    }
+
+    #[test]
+    fn extraction_digest_is_byte_stable_golden() {
+        // 問116: emit_tet のアロケーション除去リファクタが出力を**バイト単位で**
+        // 変えていないことを golden ダイジェストで固定する。決定性契約 (問5) では
+        // 「同一バイナリ・同一arch・同一スクリプト・同一解像度 → バイト同一」を保証する。
+        // 内部最適化 (Vec→スタック配列) はこの契約に観測可能な影響を与えてはならない。
+        // この値はリファクタ前の実装で測定したもの。変更があれば即座に検出される。
+        let s = Sdf::sphere(1.0);
+        let m = polygonize(&s, Vec3::splat(-1.5), Vec3::splat(1.5), 16);
+        assert_eq!(
+            m.digest(),
+            0x13a3_7711_0ebc_a030,
+            "sphere extraction digest must remain byte-stable across internal refactors"
+        );
+        assert_eq!(m.vertices.len(), 1586, "sphere vertex count must be stable");
+        assert_eq!(m.triangles.len(), 3168, "sphere triangle count must be stable");
+
+        // 全4ケース (内0/1/2/3) を踏む穴あき形状でも固定する。
+        let diff = Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0));
+        let md = polygonize(&diff, Vec3::splat(-1.5), Vec3::splat(1.5), 20);
+        assert_eq!(
+            md.digest(),
+            0xabb6_848b_19e4_319a,
+            "boolean-difference extraction digest must remain byte-stable"
+        );
+        assert_eq!(md.vertices.len(), 3036, "diff vertex count must be stable");
+        assert_eq!(md.triangles.len(), 6072, "diff triangle count must be stable");
     }
 }
