@@ -14,11 +14,16 @@ const VERSION: u16 = 20; // 2.0
 pub fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut offsets = Vec::with_capacity(entries.len());
+    // 問120: CRC を第1パスでキャッシュし、第2パス (中央ディレクトリ) で再利用する。
+    // 旧実装は各エントリで crc32 を2回呼んでいた。大きな 3MF では無駄な倍計算になる上、
+    // ローカルヘッダと中央ディレクトリの CRC を別ループで独立計算すると将来の変更で
+    // 不一致が生じやすい。一か所で計算して共有することで一貫性を構造的に保証する。
+    let crcs: Vec<u32> = entries.iter().map(|(_, data)| crc32(data)).collect();
 
     // ── ローカルファイルヘッダ + データ ──
-    for (name, data) in entries {
+    for (i, (name, data)) in entries.iter().enumerate() {
         offsets.push(out.len() as u32);
-        let crc = crc32(data);
+        let crc = crcs[i];
         out.extend_from_slice(&SIG_LOCAL.to_le_bytes());
         out.extend_from_slice(&VERSION.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes()); // 汎用フラグ
@@ -38,7 +43,7 @@ pub fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let cd_start = out.len() as u32;
     let mut central = Vec::new();
     for (i, (name, data)) in entries.iter().enumerate() {
-        let crc = crc32(data);
+        let crc = crcs[i]; // キャッシュ済み (ローカルヘッダと同値を保証)
         central.extend_from_slice(&SIG_CENTRAL.to_le_bytes());
         central.extend_from_slice(&VERSION.to_le_bytes()); // version made by
         central.extend_from_slice(&VERSION.to_le_bytes()); // version needed
@@ -134,5 +139,45 @@ mod tests {
         assert_eq!(crc32(b""), 0x0000_0000);
         // PNG 側 (render::image) の crc32 と同一アルゴリズムであることの間接確認:
         // 同じ入力で同じ値になる (実装は重複だが仕様一致)。
+    }
+
+    #[test]
+    fn local_header_and_central_directory_crc_are_identical() {
+        // 問120: ローカルヘッダと中央ディレクトリの CRC フィールドは一致しなければ
+        // ZIP として無効になりスライサ等が展開を拒否する。CRC 計算をキャッシュして
+        // 共有したことで構造的に一致が保証されるが、実際のバイト列で確認する。
+        //
+        // ZIP 構造 (STORED, 2 エントリ):
+        //   [LFH][data][LFH][data] [CD1][CD2] [EOCD]
+        // LFH の CRC オフセット: 署名4+version2+flag2+method2+time2+date2 = +14
+        // CD の CRC オフセット:  署名4+ver2+ver2+flag2+method2+time2+date2 = +16
+        let entries: &[(&str, &[u8])] = &[
+            ("a.xml", b"<hello/>"),
+            ("b.bin", b"\x00\x01\x02\x03\xff"),
+        ];
+        let z = build_zip(entries);
+
+        // エントリ 0 のローカルヘッダ先頭 = 0。
+        let lfh0_crc = u32::from_le_bytes(z[14..18].try_into().unwrap());
+        // エントリ 1 のローカルヘッダ先頭 = LFH0(30 + name0.len() + data0.len())。
+        let lfh0_size = 30 + 5 + 8; // name "a.xml"=5, data=8
+        let lfh1_crc = u32::from_le_bytes(z[lfh0_size + 14..lfh0_size + 18].try_into().unwrap());
+
+        // 中央ディレクトリは EOCD から遡る。
+        let eocd_pos = z.windows(4).rposition(|w| w == [0x50, 0x4B, 0x05, 0x06]).unwrap();
+        let cd_start = u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
+
+        // CD エントリ 0 (先頭)。
+        let cd0_crc = u32::from_le_bytes(z[cd_start + 16..cd_start + 20].try_into().unwrap());
+        // CD エントリ 1 (46 バイト後 + name0.len() = 5)。
+        let cd0_size = 46 + 5; // name "a.xml"=5
+        let cd1_crc = u32::from_le_bytes(z[cd_start + cd0_size + 16..cd_start + cd0_size + 20].try_into().unwrap());
+
+        assert_eq!(lfh0_crc, cd0_crc, "entry 0: local header CRC must match central directory CRC");
+        assert_eq!(lfh1_crc, cd1_crc, "entry 1: local header CRC must match central directory CRC");
+
+        // CRCs は独立に計算した正解と一致する。
+        assert_eq!(lfh0_crc, crc32(b"<hello/>"));
+        assert_eq!(lfh1_crc, crc32(b"\x00\x01\x02\x03\xff"));
     }
 }
