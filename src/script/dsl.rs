@@ -433,6 +433,86 @@ mod tests {
     }
 
     #[test]
+    fn all_ops_parse_identically_in_dsl_and_json() {
+        // 問104: JSON 評価器とテキスト DSL は同一の op 集合を扱い、各 op で同一の場を
+        // 生まなければならない。片方にしか無い op があると、AI が一方の記法で書いた
+        // ときだけ "unknown" になる隠れた非対称が生じる。全 25 op の DSL↔JSON 等価性を
+        // 固定し、将来 op を片側だけに追加する退行を検知する。
+        // プリミティブ (8)
+        assert_same("sphere(1.0)", r#"{"op":"sphere","r":1.0}"#);
+        assert_same("cuboid(0.8)", r#"{"op":"cuboid","x":0.8,"y":0.8,"z":0.8}"#);
+        assert_same("cylinder(0.5, 1.0)", r#"{"op":"cylinder","r":0.5,"h":1.0}"#);
+        assert_same("torus(1.0, 0.25)", r#"{"op":"torus","major":1.0,"minor":0.25}"#);
+        assert_same("cone(0.5, 1.0)", r#"{"op":"cone","r":0.5,"h":1.0}"#);
+        assert_same("capsule(0.5, 0.3)", r#"{"op":"capsule","h":0.5,"r":0.3}"#);
+        assert_same(
+            "rounded_box(0.8, 0.1)",
+            r#"{"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}"#,
+        );
+        assert_same("ellipsoid(2, 1, 0.5)", r#"{"op":"ellipsoid","x":2,"y":1,"z":0.5}"#);
+
+        // ブーリアン (6): a,b はそれぞれ離れた球で領域差が出るようにする。
+        let a = r#"{"op":"sphere","r":1}"#;
+        let b = r#"{"op":"translate","x":0.5,"y":0,"z":0,"shape":{"op":"sphere","r":1}}"#;
+        let da = "sphere(1)";
+        let db = "translate(0.5, 0, 0, sphere(1))";
+        assert_same(&format!("union({da}, {db})"), &format!(r#"{{"op":"union","a":{a},"b":{b}}}"#));
+        assert_same(
+            &format!("intersection({da}, {db})"),
+            &format!(r#"{{"op":"intersection","a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("difference({da}, {db})"),
+            &format!(r#"{{"op":"difference","a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("smooth_union({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"smooth_union","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("smooth_intersection({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"smooth_intersection","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("smooth_difference({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"smooth_difference","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+
+        // 変形 (11)
+        assert_same(
+            "translate(1, 0.5, -0.5, sphere(1))",
+            r#"{"op":"translate","x":1,"y":0.5,"z":-0.5,"shape":{"op":"sphere","r":1}}"#,
+        );
+        assert_same("scale(2, sphere(1))", r#"{"op":"scale","s":2,"shape":{"op":"sphere","r":1}}"#);
+        assert_same(
+            "offset(0.1, sphere(1))",
+            r#"{"op":"offset","amount":0.1,"shape":{"op":"sphere","r":1}}"#,
+        );
+        assert_same(
+            "shell(0.1, sphere(1))",
+            r#"{"op":"shell","thickness":0.1,"shape":{"op":"sphere","r":1}}"#,
+        );
+        assert_same(
+            "repeat(2, 2, 2, sphere(0.3))",
+            r#"{"op":"repeat","x":2,"y":2,"z":2,"shape":{"op":"sphere","r":0.3}}"#,
+        );
+        for axis in ["x", "y", "z"] {
+            assert_same(
+                &format!("mirror_{axis}(translate(1,0,0, sphere(0.3)))"),
+                &format!(
+                    r#"{{"op":"mirror_{axis}","shape":{{"op":"translate","x":1,"y":0,"z":0,"shape":{{"op":"sphere","r":0.3}}}}}}"#
+                ),
+            );
+            assert_same(
+                &format!("rotate_{axis}(45, cuboid(1, 0.5, 0.3))"),
+                &format!(
+                    r#"{{"op":"rotate_{axis}","angle":45,"shape":{{"op":"cuboid","x":1,"y":0.5,"z":0.3}}}}"#
+                ),
+            );
+        }
+    }
+
+    #[test]
     fn negative_and_decimal_numbers_parse() {
         assert_same(
             "translate(-1.5, 0, 0, sphere(0.5))",
