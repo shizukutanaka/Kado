@@ -459,6 +459,63 @@ mod tests {
     }
 
     #[test]
+    fn failed_run_script_preserves_undo_state_and_scene() {
+        // 問121: run_script が eval 失敗で早期 return するとき、undo 履歴と現在シーンを
+        // 破壊してはならない。もし prev_scene の保存が eval 成功の**前**に行われると
+        // (もっともらしいリファクタ事故)、失敗した run_script が undo 履歴を現在シーンで
+        // 上書きし、直前の成功した変更を取り消せなくなる。この不変条件を固定する。
+        //
+        // シナリオ:
+        //   1. run_script(A=sphere r=3) 成功 → scene=A, undo履歴=default
+        //   2. run_script(invalid) 失敗 → scene は A のまま, undo履歴も default のまま
+        //   3. undo → A ではなく default (Aの前) に戻る
+        let mut s = tools::Session::new();
+        let initial_val = eval_at(&mut s, 0.0, 0.0, 0.0);
+
+        // 1. 有効なスクリプト A を適用。
+        let run_a = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(r#"{"op":"sphere","r":3.0}"#))])),
+        ]);
+        handle(&mut s, &req("tools/call", 30, Some(run_a))).unwrap();
+        let after_a = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!((after_a - (-3.0)).abs() < 1e-9, "scene A (sphere r=3) applied: {after_a}");
+
+        // 2. 不正なスクリプトを適用 → 失敗するはず。
+        let run_bad = json::obj([
+            ("name", json::s("run_script")),
+            ("arguments", json::obj([("script", json::s(r#"{"op":"not_a_real_op"}"#))])),
+        ]);
+        let bad_resp = handle(&mut s, &req("tools/call", 31, Some(run_bad))).unwrap();
+        assert_eq!(
+            bad_resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(true)),
+            "invalid script must error"
+        );
+        // 失敗後もシーンは A のまま (破壊されない)。
+        let after_bad = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!(
+            (after_bad - (-3.0)).abs() < 1e-9,
+            "failed run_script must not change the scene: expected A (-3.0), got {after_bad}"
+        );
+
+        // 3. undo → A の前 (default) に戻る。失敗した run が undo 履歴を壊していれば
+        //    ここで A (-3.0) のままになり、このアサートが落ちる。
+        let undo = json::obj([("name", json::s("undo_script")), ("arguments", json::obj([]))]);
+        let undo_resp = handle(&mut s, &req("tools/call", 32, Some(undo))).unwrap();
+        assert_eq!(
+            undo_resp.get("result").and_then(|r| r.get("isError")),
+            Some(&json::b(false)),
+            "undo must succeed (history preserved through the failed run)"
+        );
+        let after_undo = eval_at(&mut s, 0.0, 0.0, 0.0);
+        assert!(
+            (after_undo - initial_val).abs() < 1e-9,
+            "undo must restore to the state before A (default), not to A: expected {initial_val}, got {after_undo}"
+        );
+    }
+
+    #[test]
     fn run_script_surfaces_multiple_bodies_warning() {
         // 問81: MULTIPLE_BODIES は Warning なので is_ok()=true だが、
         // run_script がサイレントに通過させると AI が切断ボディに気づかない。
