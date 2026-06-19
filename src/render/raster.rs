@@ -391,4 +391,83 @@ mod tests {
             );
         }
     }
+
+    // ── 投影数値の正しさ (問123) ──────────────────────────────────────────────
+
+    /// テスト用: build_matrices と同じ経路でワールド点をスクリーン座標へ射影する。
+    /// render() の ndc_to_screen と一致させ、パイプライン全体を数値で検証する。
+    fn project_to_screen(cam: &Camera, p: Vec3, w: usize, h: usize) -> (f64, f64, f64) {
+        let (view, proj) = build_matrices(cam, w, h);
+        let c = mat4_mul_vec4(&proj, mat4_mul_vec4(&view, [p.x, p.y, p.z, 1.0]));
+        let (ndc_x, ndc_y) = (c[0] / c[3], c[1] / c[3]);
+        let sx = (ndc_x + 1.0) * 0.5 * w as f64;
+        let sy = (1.0 - ndc_y) * 0.5 * h as f64;
+        (sx, sy, c[3]) // c[3] = clip w (>0 なら前方)
+    }
+
+    #[test]
+    fn camera_target_projects_to_screen_center() {
+        // 問123: 「非ブランク・決定的」だけでは投影の正しさは保証されない。
+        // 転置ミス・符号反転でも安定した誤画像が出る。パイプラインの数学的核心を固定する:
+        // カメラ注視点 (target) はちょうどスクリーン中央へ投影されなければならない。
+        // (look_at が target を視線軸へ、perspective が軸を NDC 原点へ写すため)
+        let cam = Camera {
+            eye: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::new(0.0, 0.0, 0.0),
+            up: Vec3::new(0.0, 1.0, 0.0),
+            fov_y: std::f64::consts::FRAC_PI_4,
+            bg: [0, 0, 0],
+            light_dir: Vec3::new(0.0, 0.0, 1.0),
+            diffuse: [200, 200, 200],
+            ambient: 0.2,
+        };
+        let (w, h) = (200, 100);
+        let (sx, sy, clip_w) = project_to_screen(&cam, cam.target, w, h);
+        assert!(clip_w > 0.0, "target must be in front of camera (clip w>0): {clip_w}");
+        assert!((sx - w as f64 / 2.0).abs() < 1e-9, "target screen-x must be center {}, got {sx}", w / 2);
+        assert!((sy - h as f64 / 2.0).abs() < 1e-9, "target screen-y must be center {}, got {sy}", h / 2);
+    }
+
+    #[test]
+    fn point_above_target_projects_above_center() {
+        // 問123: up=(0,1,0) のとき、target の真上 (+Y) の点はスクリーン中央より上
+        // (= スクリーン y が小さい、原点左上ゆえ) に投影される。これが up 方向と
+        // y 反転の両方を検証する。符号が反転していればこのテストが落ちる。
+        let cam = Camera {
+            eye: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::ZERO,
+            up: Vec3::new(0.0, 1.0, 0.0),
+            fov_y: std::f64::consts::FRAC_PI_4,
+            bg: [0, 0, 0],
+            light_dir: Vec3::new(0.0, 0.0, 1.0),
+            diffuse: [200, 200, 200],
+            ambient: 0.2,
+        };
+        let (w, h) = (100, 100);
+        let (_, center_y, _) = project_to_screen(&cam, cam.target, w, h);
+        let (_, above_y, clip_w) = project_to_screen(&cam, Vec3::new(0.0, 1.0, 0.0), w, h);
+        assert!(clip_w > 0.0, "point must be in front");
+        assert!(
+            above_y < center_y,
+            "a point above the target must project above center (smaller screen-y): above={above_y} center={center_y}"
+        );
+    }
+
+    #[test]
+    fn look_at_basis_is_orthonormal() {
+        // 問123: look_at が生成するビュー行列の上 3×3 (回転部) は正規直交基底でなければ
+        // ならない。さもなくば剛体でない変換になり形状が歪む。各行の長さ=1、相互直交を確認。
+        let cam_eye = Vec3::new(3.0, -2.0, 4.0);
+        let cam_target = Vec3::new(0.5, 0.5, 0.0);
+        let view = look_at(cam_eye, cam_target, Vec3::new(0.0, 0.0, 1.0));
+        // row0=r, row1=u, row2=-f (各先頭3成分)。
+        let row = |i: usize| Vec3::new(view[i * 4], view[i * 4 + 1], view[i * 4 + 2]);
+        let (r, u, nf) = (row(0), row(1), row(2));
+        for (name, v) in [("r", r), ("u", u), ("-f", nf)] {
+            assert!((v.length() - 1.0).abs() < 1e-12, "{name} must be unit length, got {}", v.length());
+        }
+        assert!(r.dot(u).abs() < 1e-12, "r ⊥ u: {}", r.dot(u));
+        assert!(r.dot(nf).abs() < 1e-12, "r ⊥ f: {}", r.dot(nf));
+        assert!(u.dot(nf).abs() < 1e-12, "u ⊥ f: {}", u.dot(nf));
+    }
 }

@@ -11,7 +11,7 @@
 
 use kado::core::{Sdf, Vec3};
 use kado::extract::polygonize;
-use kado::io::{gltf, html, stl, threemf};
+use kado::io::ExportFormat;
 use kado::mcp::server::run_stdio;
 use kado::render::{draw_axes, render, Camera};
 use kado::script::eval_any;
@@ -55,18 +55,10 @@ fn main() {
                 eprintln!("mesh is empty — bounding box may not contain the shape");
                 std::process::exit(1);
             }
-            // 拡張子で形式を選択: .glb→GLB, .3mf→3MF, .html→HTMLビューア, 他→STL (問54/55/57)。
+            // 拡張子で形式を選択 (問124: MCP と共有する単一の真実源 io::ExportFormat)。
             let path = std::path::Path::new(&out);
-            let lower = out.to_lowercase();
-            let write_res = if lower.ends_with(".glb") {
-                gltf::write_glb(&mesh, path)
-            } else if lower.ends_with(".3mf") {
-                threemf::write_3mf(&mesh, path)
-            } else if lower.ends_with(".html") || lower.ends_with(".htm") {
-                html::write_html(&mesh, path)
-            } else {
-                stl::write_binary(&mesh, path)
-            };
+            let format = ExportFormat::from_path(&out);
+            let write_res = format.write(&mesh, path);
             match write_res {
                 Ok(()) => println!(
                     "exported {} ({} triangles, manifold={})",

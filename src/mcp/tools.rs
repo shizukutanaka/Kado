@@ -2,7 +2,7 @@
 
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
-use crate::io::{gltf, html, stl, threemf};
+use crate::io::ExportFormat;
 use crate::mcp::json::{self, Value};
 use crate::render::{draw_axes, render, Camera};
 use crate::script::eval_any;
@@ -385,17 +385,10 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             "mesh is empty — scene may be outside the bounding box; nothing exported",
         );
     }
-    // 拡張子で形式を選択: .glb→GLB, .3mf→3MF, .html→HTMLビューア, 他→STL (問54/55/57)。
-    let lower = path.to_lowercase();
-    let (fmt, write_res) = if lower.ends_with(".glb") {
-        ("GLB", gltf::write_glb(&mesh, &safe))
-    } else if lower.ends_with(".3mf") {
-        ("3MF", threemf::write_3mf(&mesh, &safe))
-    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
-        ("HTML", html::write_html(&mesh, &safe))
-    } else {
-        ("STL", stl::write_binary(&mesh, &safe))
-    };
+    // 拡張子で形式を選択 (問124: CLI と共有する単一の真実源 io::ExportFormat)。
+    let format = ExportFormat::from_path(path);
+    let fmt = format.label();
+    let write_res = format.write(&mesh, &safe);
     match write_res {
         Ok(()) => {
             // 問72: 相対パスだけでは MCP サーバーの CWD が不明な AI はファイルの場所を
