@@ -33,16 +33,12 @@ pub fn run_stdio() -> ! {
     // セッション状態 (正本シーン)。run_script で更新され他ツールが参照する。
     let mut session = tools::Session::new();
 
-    loop {
-        match read_message(&mut reader) {
-            Ok(msg) => {
-                if let Some(resp) = handle(&mut session, &msg) {
-                    if write_message(&mut writer, &resp).is_err() {
-                        break;
-                    }
-                }
+    // read_message が Err (stdin EOF または不正フレーム) を返すまで処理を続ける。
+    while let Ok(msg) = read_message(&mut reader) {
+        if let Some(resp) = handle(&mut session, &msg) {
+            if write_message(&mut writer, &resp).is_err() {
+                break;
             }
-            Err(_) => break, // stdin EOF または不正フレーム
         }
     }
     std::process::exit(0)

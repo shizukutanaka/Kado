@@ -127,11 +127,11 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
 
     // JSON チャンクは 4 バイト境界へスペース (0x20) パディング。
     let mut json_bytes = doc.to_string().into_bytes();
-    while json_bytes.len() % 4 != 0 {
+    while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
     // BIN チャンクは 4 バイト境界へゼロパディング (f32×3/u32 なので通常は整列済み)。
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
 

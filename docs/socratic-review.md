@@ -2572,3 +2572,44 @@ screenshot の KPI は「AI が向き・形状を視認する」(問66 グノモ
 > (問124: CLI と MCP の独立した拡張子判定) という 2 つの異なる弱点を解消した。問123 は
 > 振る舞いテストが見逃す数値的正しさを、問124 は問120 と同じ重複削減の哲学を適用した。
 > テスト数 200→207 + 統合 3。
+
+## 問125 — 品質を掲げるのに lint 未強制で警告が無音蓄積、CI も無い
+
+**問**: Kado は「依存ゼロ・決定的・セキュリティ重視」を掲げるが、`cargo clippy` を
+かけると 12 件 (lib 8 + テスト 4) の警告が出る。CI も存在しない。「高品質」を標榜しながら
+lint を機械的に強制しないのは、主張と実態の乖離ではないか。警告は無音で蓄積し続ける。
+そして最も重要な問い: これらを修正して**バイト単位の決定性契約**を壊さないか。
+
+**調査結果 (全 12 件は出力不変で修正可能)**: 全て読みやすさ/慣用句の問題で、計算値には
+触れない。MSRV 1.94 は `is_multiple_of`(1.87)・`div_ceil`(1.73) を支持。
+- lib: index ループ→enumerate (問116 抽出コード)・`%4!=0`→`is_multiple_of`・
+  `loop+match`→`while let`・base64 容量 `(n+2)/3`→`div_ceil`・冗長 `as u32` キャスト×2・
+  doc リスト整形・恒等 map 削除。
+- test: `c != &cam.bg`→`c != cam.bg` ×3・複雑型に `type MeshFactory` 別名。
+
+**対処**: 全 12 件を解消。抽出コード変更後も `extraction_digest_is_byte_stable_golden`
+(問116) が通り、出力がバイト不変であることを証明。
+
+検証: `cargo clippy --all-targets -- -D warnings` が exit 0、全 207 テスト緑、
+golden ダイジェスト不変。
+
+**CI による構造的強制 (保留)**: 本来は `.github/workflows/ci.yml` を新設し
+`cargo test` と `cargo clippy --all-targets -- -D warnings` を CI で強制したい
+(問120/124 の「逸脱を構造的に不可能にする」哲学)。だが現在の GitHub App には
+`workflows` 権限が無く、ワークフローファイルを push できない。BACKLOG とし、
+権限付与後に追加する。それまでは push 前のローカル `cargo clippy --all-targets -- -D warnings`
+を運用ルールとする。(fmt 未整形も別 BACKLOG)
+
+変更ファイル: `src/extract/marching_tetrahedra.rs`, `src/io/gltf.rs`, `src/mcp/server.rs`,
+`src/mcp/tools.rs`, `src/render/image.rs`, `src/render/raster.rs`, `src/script/mod.rs`,
+`src/verify/check.rs` (lint 修正)。
+
+## 反映サマリ v80
+| 問 | 実装 |
+|----|------|
+| 125 | clippy 警告 12 件を出力不変で解消 (CI 強制は workflows 権限不足で BACKLOG) |
+
+> 総括: v80 は「主張と実態の乖離」(品質を掲げるが lint 未強制) の半分を埋めた。警告 12 件を
+> 解消し、抽出コードの変更は golden ダイジェストでバイト不変を証明。CI による再発防止は
+> App の workflows 権限不足で push できず BACKLOG とした。
+> テスト数 207 + 統合 3 (新規テストなし; lint 修正)。

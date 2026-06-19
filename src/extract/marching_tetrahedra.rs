@@ -133,8 +133,8 @@ fn emit_tet(sdf: &Sdf, corners: &[Corner; 8], tet: [usize; 4], soup: &mut Vec<[V
     let mut n_in = 0usize;
     let mut outside = [0usize; 4];
     let mut n_out = 0usize;
-    for n in 0..4 {
-        if c[n].val < 0.0 {
+    for (n, corner) in c.iter().enumerate() {
+        if corner.val < 0.0 {
             inside[n_in] = n;
             n_in += 1;
         } else {

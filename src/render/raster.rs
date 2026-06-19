@@ -312,7 +312,7 @@ mod tests {
         let (_, cam) = &presets[0]; // front
         let img = render(&mesh, cam, 64, 64);
         // 少なくとも1画素がメッシュ色 (背景色以外) であること。
-        let has_foreground = img.pixels.chunks(3).any(|c| c != &cam.bg);
+        let has_foreground = img.pixels.chunks(3).any(|c| c != cam.bg);
         assert!(has_foreground, "rendered image is entirely background");
     }
 
@@ -340,7 +340,7 @@ mod tests {
         let b = render(&mesh, cam, 64, 64).downsample(2);
         assert_eq!((a.width, a.height), (32, 32), "downsample halves dimensions");
         assert_eq!(a.pixels, b.pixels, "SSAA path must be deterministic");
-        let has_fg = a.pixels.chunks(3).any(|c| c != &cam.bg);
+        let has_fg = a.pixels.chunks(3).any(|c| c != cam.bg);
         assert!(has_fg, "SSAA image must contain foreground");
     }
 
@@ -384,7 +384,7 @@ mod tests {
         for name in &["top", "bottom"] {
             let (_, cam) = presets.iter().find(|(n, _)| n == name).unwrap();
             let img = render(&mesh, cam, 32, 32);
-            let has_foreground = img.pixels.chunks(3).any(|c| c != &cam.bg);
+            let has_foreground = img.pixels.chunks(3).any(|c| c != cam.bg);
             assert!(
                 has_foreground,
                 "{name} view must render non-blank (degenerate look_at if up ∥ forward)"

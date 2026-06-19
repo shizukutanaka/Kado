@@ -136,7 +136,7 @@ fn zlib_store(data: &[u8]) -> Vec<u8> {
 
     // Adler-32 checksum (zlib trailer)
     let (s1, s2) = adler32(data);
-    let adler = ((s2 as u32) << 16) | (s1 as u32);
+    let adler = (s2 << 16) | s1;
     out.extend_from_slice(&adler.to_be_bytes());
     out
 }

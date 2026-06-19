@@ -102,10 +102,7 @@ impl Report {
             .iter()
             .filter(|e| e.severity == Severity::Warning)
             .count();
-        let (lo, hi) = self
-            .bbox
-            .map(|(a, b)| (a, b))
-            .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+        let (lo, hi) = self.bbox.unwrap_or((Vec3::ZERO, Vec3::ZERO));
         // 寸法を明示する (問62: 単位はミリメートル, 1 unit = 1 mm)。
         let d = hi - lo;
         // 体積は閉じたメッシュでのみ有効 (問65)。
@@ -816,7 +813,8 @@ mod tests {
         use crate::mcp::json::parse;
 
         // 多様な issue を誘発する形状/パラメータの電池。
-        let shapes_params: &[(&str, Box<dyn Fn() -> crate::extract::Mesh>)] = &[
+        type MeshFactory = Box<dyn Fn() -> crate::extract::Mesh>;
+        let shapes_params: &[(&str, MeshFactory)] = &[
             // EMPTY_MESH: 非重複 smooth_intersection
             ("empty", Box::new(|| {
                 let a = Sdf::sphere(1.0);
