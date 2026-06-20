@@ -564,4 +564,32 @@ mod tests {
         }
         assert!(eval_dsl(&s).is_err(), "over-deep DSL must be rejected");
     }
+
+    #[test]
+    fn bare_numeric_top_level_is_rejected() {
+        // 問151: DSL の parse_expr は数値も有効構文として受け入れる (引数文脈のため)。
+        // しかしトップレベルの裸の数値 "1.5" は eval_value で "missing op field" になる。
+        // AI エージェントが "1.5" や "-3.14" を形状式として送った場合に
+        // 明確なエラーが返ることを固定する。
+        assert!(eval_dsl("1.5").is_err(), "bare positive number must be rejected");
+        assert!(eval_dsl("0").is_err(), "bare zero must be rejected");
+        assert!(eval_dsl("-3.14").is_err(), "bare negative number must be rejected");
+    }
+
+    #[test]
+    fn unknown_operator_rejected_both_at_top_and_nested() {
+        // 問155: 未知の演算子はトップレベルだけでなく入れ子でも拒否される。
+        // 既存テストは `wobble(1)` (トップレベル) のみ確認。
+        // `union(wobble(1), sphere(1))` のように有効な呼び出しの引数に
+        // 未知演算子が含まれる場合もエラーが伝播することを固定する。
+        assert!(eval_dsl("sphire(1)").is_err(), "typo at top level must be rejected");
+        assert!(
+            eval_dsl("union(sphire(1), sphere(1))").is_err(),
+            "typo nested in union must be rejected"
+        );
+        assert!(
+            eval_dsl("translate(0,0,0, wobble(1))").is_err(),
+            "unknown op nested in translate must be rejected"
+        );
+    }
 }

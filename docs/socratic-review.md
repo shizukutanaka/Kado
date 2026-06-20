@@ -3035,3 +3035,68 @@ lo.x > hi.x の反転ボックスを返す。`sampling_box()` の正規化が反
 > 問150 は TETS 分割の必要条件 (体積 = 1) を一行計算で確認する最小テスト。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 228 ユニット + 統合 3 = 231 合計。
+
+---
+
+## 問151 — DSL 裸の数値がトップレベルで拒否されることのテストが欠如
+
+**問**: `parse_dsl("1.5")` は DSL パーサが数値を引数文脈で受け入れるため
+`Ok(Value::Number(1.5))` を返す。その後 `eval_value` が "missing op field" でエラーを返す。
+この連携した拒否動作のテストが存在しなかった。
+AI エージェントや生成スクリプトが `"1.5"` を形状式として送った場合、
+意味のあるエラーが返ることが保証されていなかった。
+
+**実装 (dsl.rs)**:
+- `bare_numeric_top_level_is_rejected`:
+  `eval_dsl("1.5")`, `eval_dsl("0")`, `eval_dsl("-3.14")` がエラーを返すことを確認。
+
+## 問153 — 回転の往復恒等が Z 軸のみテストで X・Y 軸が未確認
+
+**問**: `rotation_composition_is_additive_roundtrip_and_order_dependent` (問110) は
+`rotate_z(θ).rotate_z(-θ)` の往復恒等のみ確認している。
+X・Y 軸は `rotate_point` 内で異なる行列行 (axis=0: Y-Z 回転行列、axis=1: X-Z 回転行列)
+を使うため独立したテストが必要。
+
+**実装 (sdf.rs)**:
+- `rotation_roundtrip_holds_for_x_and_y_axes`:
+  `rotate_x(θ).rotate_x(-θ)` と `rotate_y(θ).rotate_y(-θ)` が非対称直方体形状で
+  恒等変換になることを非自明な角度 (0.7 rad) でグリッドテスト。
+
+## 問154 — Repeat snap の半周期境界での丸め動作が未テスト
+
+**問**: `snap()` は `(v/period).round().clamp(-n, n)` を使う。Rust の `f64::round()` は
+「ゼロから遠い方向」に丸める (round-half-away-from-zero)。`period=2.0, v=1.0` では
+`0.5.round() = 1.0` → 隣接セル (x=2.0) に snap される。
+この挙動がバンカー丸め (round-half-to-even) と異なることと、その結果が
+整合的であることが未固定だった。
+
+**実装 (sdf.rs)**:
+- `repeat_snap_at_half_period_maps_to_neighbor_cell`:
+  `period=2.0` で中間点 `x=1.0` が外部 (両球から距離 0.7)、
+  `x=-1.0` も同じ距離であることを確認。隣接セルの球 (x=2.0) は内部であることも確認。
+
+## 問155 — 未知演算子が入れ子でも拒否されることのテストが欠如
+
+**問**: `malformed_dsl_is_rejected` テストは `wobble(1)` (トップレベル) のみ確認。
+`union(wobble(1), sphere(1))` や `translate(0,0,0, sphire(1))` のように
+有効な関数呼び出しの引数に未知演算子が含まれる場合のエラー伝播が未テストだった。
+
+**実装 (dsl.rs)**:
+- `unknown_operator_rejected_both_at_top_and_nested`:
+  `sphire(1)` (タイポ)、`union(sphire(1), sphere(1))`、
+  `translate(0,0,0, wobble(1))` がすべてエラーを返すことを確認。
+
+## 反映サマリ v87
+| 問 | 実装 |
+|----|------|
+| 151 | DSL 裸数値のトップレベル拒否テスト (dsl.rs) |
+| 153 | rotate_x/rotate_y の往復恒等グリッドテスト (sdf.rs) |
+| 154 | repeat snap 半周期境界の丸め動作固定 (sdf.rs) |
+| 155 | 未知演算子の入れ子拒否テスト (dsl.rs) |
+
+> 総括: v87 は「正しい動作だがテストがないため退行が無音」パターンをさらに埋めた。
+> rotate_x/y の往復恒等 (問153) は Z 軸が問110 でテスト済みのため見落とされがちな盲点。
+> repeat snap (問154) は Rust の丸め動作 (round-half-away-from-zero) という言語依存仕様を固定。
+> DSL の入れ子拒否 (問155) は AI エージェントがタイポで生成した入れ子式のエラー経路。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 232 ユニット + 統合 3 = 235 合計。

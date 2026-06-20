@@ -1270,6 +1270,53 @@ mod tests {
     }
 
     #[test]
+    fn rotation_roundtrip_holds_for_x_and_y_axes() {
+        // 問153: rotate_z の往復恒等は問110 でテスト済み。X・Y 軸は異なる行列を使うため
+        // 独立して確認する。rotate_x(θ).rotate_x(-θ) および rotate_y(θ).rotate_y(-θ) が
+        // 恒等変換になることを非対称形状で固定する。
+        let child = Sdf::cuboid(Vec3::new(1.0, 0.5, 0.3));
+        let angle = 0.7_f64; // 任意の非自明な角度
+        for &p in &grid() {
+            // X 軸往復。
+            let rx = child.clone().rotate_x(angle).rotate_x(-angle);
+            assert!(
+                (rx.eval(p) - child.eval(p)).abs() < 1e-9,
+                "rotate_x roundtrip must be identity at {p:?}"
+            );
+            // Y 軸往復。
+            let ry = child.clone().rotate_y(angle).rotate_y(-angle);
+            assert!(
+                (ry.eval(p) - child.eval(p)).abs() < 1e-9,
+                "rotate_y roundtrip must be identity at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_snap_at_half_period_maps_to_neighbor_cell() {
+        // 問154: Rust の `f64::round()` は「半分は0から遠い方向」に丸める
+        // (round-half-away-from-zero)。period=2.0 でちょうど中間 x=1.0 は
+        // `(1.0/2.0).round() = 0.5.round() = 1.0` → 隣接セル (x=2.0) に snap する。
+        // この動作がバンカー丸めとは異なることを固定する (退行で変化したら即検出)。
+        let s = Sdf::sphere(0.3).repeat_n(Vec3::new(2.0, 0.0, 0.0), [1, 0, 0]);
+        // x=1.0 は中心球 (x=0) と隣接球 (x=2) の中間。snap→隣接セル (x=2) に吸い寄せられ
+        // 距離 = 1.0 - 0.3 = 0.7 > 0 (外部)。もし中心セルに snap されても同じ距離になるが
+        // 「どちらに snap されたか」を確認するため境界外 x=2.5 (隣接セル内) も確認。
+        let at_mid = s.eval(Vec3::new(1.0, 0.0, 0.0));
+        let at_neighbor = s.eval(Vec3::new(2.0, 0.0, 0.0));
+        // 隣接セル中心は球内部 (負)。
+        assert!(at_neighbor < 0.0, "x=2 (copy center) must be inside sphere: {at_neighbor}");
+        // x=1.0 は両球から距離 0.7 → 外部。
+        assert!(at_mid > 0.0, "midpoint x=1.0 must be outside both spheres: {at_mid}");
+        // 両端が同距離なことの確認 (snap どちらでも同値)。
+        let at_neg_mid = s.eval(Vec3::new(-1.0, 0.0, 0.0));
+        assert!(
+            (at_mid - at_neg_mid).abs() < 1e-12,
+            "midpoints at ±period/2 must be equidistant from nearest sphere"
+        );
+    }
+
+    #[test]
     fn scale_negative_factor_sampling_box_is_normalized() {
         // 問149: eval.rs は s<=0 を拒否するが、Sdf:: API を直接呼ぶと
         // aabb() が反転した (lo > hi) ボックスを返す。sampling_box() の正規化が
