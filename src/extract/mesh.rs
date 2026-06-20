@@ -191,6 +191,20 @@ mod tests {
     use crate::extract::polygonize;
 
     #[test]
+    fn from_soup_with_empty_input_returns_empty_mesh() {
+        // 問141: from_soup(&[]) は空の Mesh を返す (パニックしない)。
+        // body_components/signed_volume/bounds など全ての下流関数がこの状態を受け入れる。
+        let m = Mesh::from_soup(&[]);
+        assert!(m.vertices.is_empty(), "empty soup must yield empty vertex list");
+        assert!(m.triangles.is_empty(), "empty soup must yield empty triangle list");
+        // 下流関数が empty mesh を正しく処理する。
+        assert_eq!(m.body_components(), (0, 0), "empty mesh has no bodies or cavities");
+        assert_eq!(m.signed_volume(), 0.0, "empty mesh has zero volume");
+        assert!(m.bounds().is_none(), "empty mesh has no bounds");
+        assert!(m.is_edge_manifold(), "empty mesh is trivially manifold (no edges)");
+    }
+
+    #[test]
     fn digest_is_deterministic_and_geometry_sensitive() {
         // 問61: 同一メッシュは同一ダイジェスト、異なる形状は (ほぼ確実に) 異なる。
         let a = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 20);

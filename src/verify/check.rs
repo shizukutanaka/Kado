@@ -881,6 +881,28 @@ mod tests {
     }
 
     #[test]
+    fn zero_build_dir_silently_skips_overhang_check_without_crash() {
+        // 問143: build_dir = Vec3::ZERO は bd_len ≤ 1e-12 により OVERHANG 検査が
+        // スキップされる (doc: "零ベクトルならスキップ")。
+        // テストがなかったためパニックしないこと・OVERHANG が出ないことを固定する。
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 16);
+        // max_overhang_deg > 0 だが build_dir = ZERO → スキップ。
+        let r = validate_with_field(&mesh, None, 0.0, 45.0, Vec3::ZERO);
+        assert!(
+            !r.issues.iter().any(|e| e.code == "OVERHANG"),
+            "zero build_dir must skip overhang check without producing OVERHANG issue"
+        );
+        // very small (非ゼロ) build_dir も同様。
+        let r2 = validate_with_field(&mesh, None, 0.0, 45.0, Vec3::new(0.0, 0.0, 1e-14));
+        assert!(
+            !r2.issues.iter().any(|e| e.code == "OVERHANG"),
+            "sub-threshold build_dir must also skip overhang check"
+        );
+    }
+
+    #[test]
     fn validate_is_consistent_with_validate_with_field_default_args() {
         // 問138: `validate(mesh, w, o)` は `validate_with_field(mesh, None, w, o, Vec3(0,0,1))`
         // の薄いラッパーである。両経路が同一の Report を生成することをテストで固定する。

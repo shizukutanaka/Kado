@@ -2839,3 +2839,72 @@ RoundedBox はフィレット分の縮小、Ellipsoid は多軸スケール) 電
 > validate 整合性 (問138) は暗黙のデフォルト依存に対する退行ガード。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 218 ユニット + 統合 3 = 221 合計。
+
+---
+
+## 問140 — encode_glb(空メッシュ) の正常系テストが欠如
+
+**問**: `encode_glb` には空メッシュへの安全ガード (min/max → [0,0,0]) があり
+コメントにも言及されているが、この経路を実際に通すテストが存在しなかった。
+非空メッシュのテストのみが4件あり、頂点数0・三角形数0の場合に
+GLBヘッダが正常か、JSONがパース可能か、accessor count が 0 になるかが未検証。
+
+**実装 (gltf.rs)**:
+- `empty_mesh_produces_valid_parseable_glb`:
+  `Mesh::default()` → GLB magic/version 正常、JSON chunk が parse 可能、
+  accessor 数 = 2、両 accessor の count = 0 を確認。
+  `encode_glb` の空ガード (lines 50-53) を初めてカバーするテスト。
+
+## 問141 — from_soup(&[]) の戻り値と下流関数の動作が未テスト
+
+**問**: `Mesh::from_soup` はドキュメントに「空スープ → 空メッシュ」とあるが
+その経路のユニットテストが存在しなかった。また `body_components`・`signed_volume`・
+`bounds`・`is_edge_manifold` が empty mesh を受け取ったとき
+それぞれどう振る舞うかも暗黙の前提として残っていた。
+
+**実装 (mesh.rs)**:
+- `from_soup_with_empty_input_returns_empty_mesh`:
+  `from_soup(&[])` → vertices/triangles が空、`body_components() == (0,0)`、
+  `signed_volume() == 0.0`、`bounds() == None`、`is_edge_manifold() == true`
+  (辺なし = trivially manifold) をすべて確認。
+
+## 問142 — sampling_box 電池に Mirror が欠如
+
+**問**: sampling_box 電池 (問136 で 13 形状に拡大) は
+Cone/RoundedBox/Ellipsoid は含むが `mirror_x/y/z` が存在しなかった。
+Mirror は内部で Translate+Sdf::Mirror の合成だが `aabb()` 実装も独立しており
+未確認だった。
+
+**実装 (sdf.rs)**:
+- sampling_box_encloses_aabb 電池を14形状に拡大:
+  `Sdf::sphere(0.5).translate(Vec3::new(1.5, 0.0, 0.0)).mirror_x()` を追加。
+  Mirror後のAABBが sampling_box によって完全に内包されることを確認。
+
+## 問143 — Vec3::ZERO build_dir で overhang チェックが黙ってスキップされることが未テスト
+
+**問**: `validate_with_field` は `build_dir.length() < 1e-12` の場合
+オーバーハングチェックをスキップするが、このサイレント挙動を確認するテストが
+存在しなかった。ゼロベクトルが誤って build_dir に渡されたとき、
+OVERHANG issue が誤って報告されないことが保証されていなかった。
+
+**実装 (check.rs)**:
+- `zero_build_dir_silently_skips_overhang_check_without_crash`:
+  `build_dir = Vec3::ZERO` および `Vec3::new(0,0,1e-14)` で
+  validate_with_field を呼び出し、`OVERHANG` issue が出ないこと、
+  かつパニックしないことを確認。
+
+## 反映サマリ v84
+| 問 | 実装 |
+|----|------|
+| 140 | encode_glb 空メッシュテスト: GLBヘッダ・JSON・accessor count を確認 (gltf.rs) |
+| 141 | from_soup 空入力テスト: 全下流関数の空メッシュ挙動を固定 (mesh.rs) |
+| 142 | sampling_box 電池に Mirror を追加し 14 形状に拡大 (sdf.rs) |
+| 143 | zero/極小 build_dir で OVERHANG がスキップされることを確認 (check.rs) |
+
+> 総括: v84 は「ガードコードは書いたがテストは書かなかった」パターンを埋めた。
+> encode_glb の空メッシュガード (問140)・from_soup の空入力 (問141) は
+> 実装時にコメントで言及されながら検証されていなかった典型例。
+> Mirror (問142) は電池の系統的な漏れ、build_dir=0 (問143) はサイレント
+> 挙動の退行ガード。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 221 ユニット + 統合 3 = 224 合計。

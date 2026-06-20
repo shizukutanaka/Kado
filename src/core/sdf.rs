@@ -1197,6 +1197,8 @@ mod tests {
             Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0)),
             Sdf::sphere(1.0).shell(0.25),
             Sdf::sphere(0.5).repeat_n(Vec3::splat(2.0), [1, 1, 1]),
+            // 問142: Mirror は電池から漏れていた。mirror_box は反射軸で対称ボックスを作る。
+            Sdf::sphere(0.5).translate(Vec3::new(1.5, 0.0, 0.0)).mirror_x(),
         ];
         for (k, s) in shapes.iter().enumerate() {
             let (alo, ahi) = s.aabb();

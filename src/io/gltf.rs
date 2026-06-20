@@ -216,4 +216,27 @@ mod tests {
         let m = sphere_mesh();
         assert_eq!(encode_glb(&m), encode_glb(&m));
     }
+
+    #[test]
+    fn empty_mesh_produces_valid_parseable_glb() {
+        // 問140: 空メッシュの encode_glb がパニックせず、有効な GLB / JSON を返す。
+        // encode_glb の empty guard (lines 50-53) は min/max を [0,0,0] に正規化するが
+        // この経路のテストがなかった。
+        let empty = Mesh::default();
+        let bytes = encode_glb(&empty);
+        // GLB magic/version ヘッダ。
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), MAGIC_GLTF);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2);
+        // JSON チャンクが valid (panic せず parse できる)。
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let doc = parse(json_str).expect("empty mesh GLB JSON chunk must be valid JSON");
+        // 両 accessor の count が 0。
+        let accessors = doc.get("accessors").and_then(|a| a.as_array()).expect("must have accessors");
+        assert_eq!(accessors.len(), 2, "must have exactly 2 accessors (POSITION, INDEX)");
+        for (k, acc) in accessors.iter().enumerate() {
+            let count = acc.get("count").and_then(|c| c.as_f64()).unwrap_or(-1.0) as i64;
+            assert_eq!(count, 0, "accessor {k} count must be 0 for empty mesh");
+        }
+    }
 }
