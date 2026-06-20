@@ -1423,4 +1423,75 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn shell_zero_thickness_equals_absolute_value_field() {
+        // 問176: thickness=0 のとき d.max(-(d+0)) = d.max(-d) = |d|。
+        // Shell(shape, 0) は完全に面圧縮された表面 (絶対値場) になる。
+        // 既存テストはすべて thickness > 0 のみ確認。
+        let sphere = Sdf::sphere(1.0);
+        let shell0 = sphere.clone().shell(0.0);
+        for r in [0.0_f64, 0.5, 1.0, 2.0, -0.5] {
+            let p = Vec3::new(r, 0.0, 0.0);
+            let d = sphere.eval(p);
+            let expected = d.abs();
+            let got = shell0.eval(p);
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "shell(0.0).eval at r={r}: expected |d|={expected} got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_zero_factor_eval_produces_nan_not_panic() {
+        // 問177: Sdf::scale(0.0) は eval.rs が s<=0 を拒否するため通常使用には現れないが、
+        // Sdf::Scale を直接構築した場合のコード挙動を文書化する。
+        // p / 0.0 → Inf/NaN コンポーネント → child.eval(NaN) → NaN → 0.0 * NaN = NaN。
+        // 「パニックしない」かつ「NaN を返す」ことを固定し、将来のリグレッションを防ぐ。
+        let s = Sdf::sphere(1.0).scale(0.0);
+        let d = s.eval(Vec3::new(0.5, 0.0, 0.0));
+        // パニックなしを確認 (上の行が到達できれば OK)。NaN であることも固定。
+        assert!(d.is_nan(), "scale(0.0).eval must be NaN (not panic), got {d}");
+        // aabb は 0 * child_bound = 0 → lo=hi=0 (有限)。
+        let (lo, hi) = s.aabb();
+        assert!(lo.x.is_finite() && hi.x.is_finite(), "scale(0.0).aabb must be finite (all-zero)");
+    }
+
+    #[test]
+    fn capsule_radius_exceeds_half_height_degenerates_to_sphere_like() {
+        // 問178: radius > half_height のとき、軸方向クランプ範囲 [-hh, hh] が
+        // 半径より短くなり、上下半球が重なる形状になる。
+        // capsule(half_height, radius) の引数順に注意 (問178 で判明)。
+        // half_height=0.1, radius=1.0 → 丸みの勝ったカプセル。
+        let c = Sdf::capsule(0.1, 1.0); // half_height=0.1, radius=1.0
+        // 中心: pz_clamped=0, length(0,0,0)=0 → d = 0 - 1.0 = -1.0。
+        assert!((c.eval(Vec3::ZERO) - (-1.0)).abs() < 1e-12, "center must be at d=-1.0");
+        // 軸端 (0,0,0.1) から radial 方向 (1.0, 0, 0.1):
+        // pz_clamped=0.1, offset=(1.0, 0, 0) → length=1.0 → d = 1.0 - 1.0 = 0。
+        assert!(c.eval(Vec3::new(1.0, 0.0, 0.1)).abs() < 1e-12, "end-cap surface at (1,0,0.1)");
+        // 遠点は外部 (有限)。
+        let d_far = c.eval(Vec3::new(5.0, 0.0, 0.0));
+        assert!(d_far.is_finite() && d_far > 0.0, "far exterior must be positive finite: {d_far}");
+        // 連続性: 中心 → 軸端 の中間点も評価できる。
+        for z in [0.0_f64, 0.05, 0.1, 0.2] {
+            let d = c.eval(Vec3::new(0.0, 0.0, z));
+            assert!(d.is_finite(), "eval at z={z} must be finite: {d}");
+        }
+    }
+
+    #[test]
+    fn offset_negative_extreme_scale_ratio_aabb_is_finite_and_normalized() {
+        // 問182: Sphere(1e-10).offset(-1.0) で child の大きさ << offset 量。
+        // AABB 正規化 lo.min(hi)/lo.max(hi) を経た後、lo<=hi かつ有限であることを確認。
+        // offset_negative_aabb_tightens は Sphere(1.0).offset(-0.4) のみ。
+        let extreme = Sdf::sphere(1e-10).offset(-1.0);
+        let (lo, hi) = extreme.aabb();
+        assert!(lo.x.is_finite(), "lo.x must be finite: {}", lo.x);
+        assert!(hi.x.is_finite(), "hi.x must be finite: {}", hi.x);
+        assert!(lo.x <= hi.x, "aabb must be normalized (lo <= hi): lo={} hi={}", lo.x, hi.x);
+        // eval も NaN/Inf を生じない。
+        let d = extreme.eval(Vec3::ZERO);
+        assert!(d.is_finite(), "eval at origin must be finite: {d}");
+    }
 }

@@ -304,4 +304,24 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn body_components_is_deterministic_under_repeated_calls() {
+        // 問179: body_components は Union-Find 後の HashMap 集計を使う。
+        // HashMap の反復順序は呼び出しごとに異なりうるが、**カウント** (bodies, cavities) は
+        // 不変であることを複数回呼び出しで確認する。問5 の決定性の保証をテストで固定。
+        let a = Sdf::sphere(0.5).translate(Vec3::new(-1.5, 0.0, 0.0));
+        let b = Sdf::sphere(0.5).translate(Vec3::new(1.5, 0.0, 0.0));
+        let model = a.union(b);
+        let (lo, hi) = model.sampling_box();
+        let m = polygonize(&model, lo, hi, 32);
+        let first = m.body_components();
+        for i in 1..=4 {
+            let again = m.body_components();
+            assert_eq!(
+                first, again,
+                "body_components call {i} must equal first call: {first:?} vs {again:?}"
+            );
+        }
+    }
 }

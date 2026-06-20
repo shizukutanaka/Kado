@@ -3322,3 +3322,71 @@ MCP フレームが空ボディを送った場合に黙って null 等に化け�
 > 他は JSON/MCP/DSL の error path・境界条件の網羅。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 247 ユニット + 統合 3 = 250 合計。
+
+## 問176 — Shell(thickness=0) が絶対値場に縮退することを未確認
+
+**問**: Shell の数式 `d.max(-(d + thickness))` は thickness=0 で `d.max(-d) = |d|` になるが、
+この縮退ケースに対するテストが存在しなかった。既存テストは thickness=0.1/0.25/0.3 のみ。
+
+**実装 (sdf.rs)**:
+- `shell_zero_thickness_equals_absolute_value_field`:
+  sphere(1.0).shell(0.0).eval(p) == |sphere(1.0).eval(p)| を 5 プローブ点で確認。
+
+## 問177 — Scale(0.0) が NaN を返すことを未文書化
+
+**問**: Sdf::scale(0.0) は eval.rs が s<=0 を拒否するため通常は現れないが、
+Sdf:: API を直接呼ぶと `0.0 * child.eval(p / 0.0)` = `0.0 * NaN` = NaN になる。
+この挙動 (パニックしないが NaN) が未文書化・未固定だった。
+
+**実装 (sdf.rs)**:
+- `scale_zero_factor_eval_produces_nan_not_panic`:
+  scale(0.0).eval がパニックせず NaN を返すこと、aabb は有限 (全ゼロ) であることを確認。
+
+## 問178 — Capsule(half_height < radius) の縮退動作が未確認
+
+**問**: capsule(half_height, radius) で half_height < radius の場合、両半球が重なる
+縮退形状になる。既存テストはすべて half_height >= radius のみ。
+加えて引数順 (half_height, radius) が直感と逆で混乱を招くことも発見。
+
+**実装 (sdf.rs)**:
+- `capsule_radius_exceeds_half_height_degenerates_to_sphere_like`:
+  capsule(0.1, 1.0) で中心 d=-1.0、端面 d=0、遠点 d>0、
+  全点 finite を確認。引数順に注釈追加。
+
+## 問179 — body_components の決定性を反復呼び出しで未確認
+
+**問**: body_components は Union-Find 後に HashMap に体積を集計するが、
+HashMap の反復順序は標準保証されない。カウント結果が呼び出しごとに
+同一であるという「問5 決定性」の主張をテストで確認していなかった。
+
+**実装 (mesh.rs)**:
+- `body_components_is_deterministic_under_repeated_calls`:
+  2 球モデルで body_components を 5 回呼び出し、すべての結果が一致することを確認。
+
+## 問182 — Offset(−大量, 微小 child) の AABB 数値安定性が未確認
+
+**問**: offset_negative_aabb_tightens は Sphere(1.0).offset(-0.4) のみ。
+Sphere(1e-10).offset(-1.0) のような child << offset 量 では
+lo ≈ −1.0 + 1e-10 ≈ −1.0 と hi ≈ 1e-10 の精度損失が起きうる。
+正規化後も lo<=hi かつ finite が保証されるか未確認。
+
+**実装 (sdf.rs)**:
+- `offset_negative_extreme_scale_ratio_aabb_is_finite_and_normalized`:
+  Sphere(1e-10).offset(-1.0) の aabb が finite かつ lo<=hi、
+  eval(Vec3::ZERO) が finite であることを確認。
+
+## 反映サマリ v91
+| 問 | 実装 |
+|----|------|
+| 176 | Shell(0) = |d| 絶対値場縮退 (sdf.rs) |
+| 177 | Scale(0) NaN 挙動を文書化・固定 (sdf.rs) |
+| 178 | Capsule half_height<radius 縮退 + 引数順発見 (sdf.rs) |
+| 179 | body_components 反復決定性 (mesh.rs) |
+| 182 | Offset 極端スケール比の AABB 安定性 (sdf.rs) |
+
+> 総括: v91 は SDF プリミティブの縮退ケース (thickness=0, factor=0, hh<r) と
+> body_components の反復決定性を固定した。Scale(0.0) の NaN 挙動は
+> eval.rs がすでに防いでいるが Sdf:: API 直呼び時の挙動を文書化。
+> Capsule の引数順 (half_height, radius) も同時に明確化。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 252 ユニット + 統合 3 = 255 合計。
