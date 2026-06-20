@@ -1413,4 +1413,35 @@ mod tests {
             "max-size canvas must cap samples to 1"
         );
     }
+
+    #[test]
+    fn arg_samples_actually_reduces_when_dimension_limits_it() {
+        // 問160: arg_samples_invariant は「積が MAX_IMAGE_DIM 以内」の不変条件を確認するが、
+        // 「クランプが実際に減少を生じさせた」ことは未確認。
+        // 不変条件テストは外側の arg_dim ガードにも依存するため、
+        // arg_samples の min(cap_w) 節が削除されても不変条件テストは通過しうる。
+        // ここでは戻り値の具体値を固定してクランプ削除を即検出する。
+        let req4 = json::obj([("samples", json::n(4.0))]);
+
+        // width=2048, height=2048, requested=4 →
+        // cap_w = 4096/2048 = 2, cap_h = 4096/2048 = 2 → result = min(4,2,2) = 2。
+        assert_eq!(
+            arg_samples(&req4, 2048, 2048),
+            2,
+            "samples must reduce from 4 to 2 when 2048×2048 canvas"
+        );
+        // 非対称: width=512, height=4096 →
+        // cap_w = 4096/512 = 8, cap_h = 4096/4096 = 1 → result = min(4,8,1) = 1。
+        assert_eq!(
+            arg_samples(&req4, 512, MAX_IMAGE_DIM),
+            1,
+            "height=MAX_IMAGE_DIM must force samples to 1"
+        );
+        // 十分小さい寸法: 1024×1024 → cap=4 → クランプ不発で 4 のまま。
+        assert_eq!(
+            arg_samples(&req4, 1024, 1024),
+            4,
+            "samples must remain 4 when 1024×1024 allows it"
+        );
+    }
 }

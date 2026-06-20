@@ -62,6 +62,7 @@ impl KadoError {
 // ── 検証レポート ──────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct Report {
     /// 符号付き体積 (mm³ または 任意単位)。
     pub volume: f64,
@@ -956,6 +957,34 @@ mod tests {
         assert!(
             report.issues.iter().any(|e| e.code == "EMPTY_MESH"),
             "empty mesh must produce an EMPTY_MESH issue"
+        );
+    }
+
+    #[test]
+    fn volume_reliable_conjunction_requires_both_conditions() {
+        // 問159: volume_reliable() = is_manifold && triangle_count > 0。
+        // 両条件は独立した論理積なので、片方だけ真の場合に false を返すことを
+        // Report を直接構築して固定する (validate() は常に両者を整合させるため、
+        // この単体テストなしではガードの片側削除が無音で通る)。
+        let base = Report {
+            volume: 1.0,
+            bbox: Some((Vec3::ZERO, Vec3::splat(1.0))),
+            triangle_count: 100,
+            is_manifold: true,
+            digest: 42,
+            issues: vec![],
+        };
+        // 正常系: 両条件 true → reliable。
+        assert!(base.volume_reliable(), "both conditions true → reliable");
+        // is_manifold だけ true, triangle_count=0 → unreliable (triangle_count > 0 ガード)。
+        assert!(
+            !Report { triangle_count: 0, ..base.clone() }.volume_reliable(),
+            "triangle_count=0 with is_manifold=true must be unreliable"
+        );
+        // triangle_count > 0 だけ true, is_manifold=false → unreliable。
+        assert!(
+            !Report { is_manifold: false, ..base }.volume_reliable(),
+            "non-manifold with triangle_count>0 must be unreliable"
         );
     }
 }

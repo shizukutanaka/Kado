@@ -612,6 +612,26 @@ mod tests {
     }
 
     #[test]
+    fn ellipsoid_extreme_asymmetry_is_finite_and_correct_sign() {
+        // 問157: 極端な縦横比 (1000:1) では IQ 近似の中間値が f64 精度で劣化しうる。
+        // `k1 = length²(p/r²) / r` が非常に小さな値になり underflow や NaN を
+        // 引き起こす可能性がある。符号が厳密なことと有限値であることを固定する。
+        let e = Sdf::ellipsoid(Vec3::new(1000.0, 0.001, 0.5));
+        // 中心: 最小半径 0.001 → 距離 ≈ -0.001。
+        let d_center = e.eval(Vec3::ZERO);
+        assert!(d_center < 0.0, "center must be inside: {d_center}");
+        assert!(d_center.is_finite(), "center distance must be finite: {d_center}");
+        // X 軸上の表面 (x=1000): 距離 ≈ 0。
+        let d_xsurf = e.eval(Vec3::new(1000.0, 0.0, 0.0));
+        assert!(d_xsurf.is_finite(), "x-surface distance must be finite: {d_xsurf}");
+        assert!(d_xsurf.abs() < 0.1, "x-surface must be near 0: {d_xsurf}");
+        // X 軸内部 (x=500): 楕円式 (500/1000)²=0.25 < 1 → 内部 (負)。
+        let d_inside = e.eval(Vec3::new(500.0, 0.0, 0.0));
+        assert!(d_inside < 0.0, "x=500 must be inside: {d_inside}");
+        assert!(d_inside.is_finite(), "interior distance must be finite: {d_inside}");
+    }
+
+    #[test]
     fn offset_inflates_sphere() {
         let s = Sdf::sphere(1.0).offset(0.5);
         let direct = Sdf::sphere(1.5);

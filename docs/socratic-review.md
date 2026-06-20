@@ -3100,3 +3100,69 @@ X・Y 軸は `rotate_point` 内で異なる行列行 (axis=0: Y-Z 回転行列�
 > DSL の入れ子拒否 (問155) は AI エージェントがタイポで生成した入れ子式のエラー経路。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 232 ユニット + 統合 3 = 235 合計。
+
+---
+
+## 問156 — cross(v, kv) 平行ベクトルがゼロになることのテストが欠如
+
+**問**: `cross_self_is_zero` は `v × v = 0` のみ確認。`v × (kv)` (k ≠ 1) は
+別の計算経路を通るが未テスト。`stl.rs` の `face_normal` は外積でゼロを検出し
+退化三角形を判定するため、この性質の退行テストが重要。
+
+**実装 (math.rs)**:
+- `cross_collinear_vectors_yield_zero`:
+  `v × 2v`、`v × (-v)`、`v × 0.001v` がいずれも `Vec3::ZERO` になることを確認。
+
+## 問157 — ellipsoid の極端な縦横比 (1000:1) での近似が NaN にならないことが未テスト
+
+**問**: IQ 近似式は `k1 = length²(p/r²) / r` という値を使い、縦横比が大きいと
+`k1` が f64 精度で極小になりうる。`k1 → 0` 時に `k0*(k0-1)/k1` が Inf になる
+可能性があるが、符号が厳密であるという保証のみでこの経路が未検証だった。
+
+**実装 (sdf.rs)**:
+- `ellipsoid_extreme_asymmetry_is_finite_and_correct_sign`:
+  `radii = (1000.0, 0.001, 0.5)` で中心・X軸表面・X軸内部の評価が
+  すべて有限値かつ正しい符号を持つことを確認。
+
+## 問159 — volume_reliable() の論理積ガードが片側独立にテストされていない
+
+**問**: `volume_reliable() = is_manifold && triangle_count > 0` の両条件は
+`validate()` が常に整合的に計算するため、片方が誤って true になっても
+既存テストは検知できない。`Report` を直接構築してガードの各辺を独立に固定する
+テストが欠如していた。
+
+**副次的変更**: `Report` 構造体に `#[derive(Clone)]` を追加 (テスト用直接構築のため)。
+
+**実装 (check.rs)**:
+- `volume_reliable_conjunction_requires_both_conditions`:
+  `{ triangle_count: 0, is_manifold: true }` → false、
+  `{ triangle_count: 100, is_manifold: false }` → false、
+  `{ triangle_count: 100, is_manifold: true }` → true を各々確認。
+
+## 問160 — arg_samples の実際の削減量が未固定 (不変条件テストは削減を検証しない)
+
+**問**: `arg_samples_invariant` は `width*samples ≤ MAX_IMAGE_DIM` を確認するが、
+「samples が実際に削減された」かどうかを確認しない。`min(cap_w)` 節を削除しても
+外側の `arg_dim` ガードが成立する限り不変条件テストは通過しうる。
+
+**実装 (tools.rs)**:
+- `arg_samples_actually_reduces_when_dimension_limits_it`:
+  `width=2048, samples_requested=4` → `samples=2` (削減確認)、
+  `width=512, height=MAX_IMAGE_DIM, requested=4` → `samples=1`、
+  `width=1024, requested=4` → `samples=4` (削減なし) を具体値でテスト。
+
+## 反映サマリ v88
+| 問 | 実装 |
+|----|------|
+| 156 | cross(v, kv) 平行ゼロテスト (math.rs) |
+| 157 | ellipsoid 極端縦横比の NaN 非発生確認 (sdf.rs) |
+| 159 | volume_reliable() 論理積ガードを片側独立テスト + Report に Clone 追加 (check.rs) |
+| 160 | arg_samples 実削減量を具体値で固定 (tools.rs) |
+
+> 総括: v88 は「不変条件テストが論理の片側しか確認しない」パターンを埋めた。
+> volume_reliable の論理積 (問159) は validate() が整合性を保証するため
+> 独立テストがないと半側削除が無音になる典型例。
+> arg_samples 削減 (問160) は外側ガードが代替するため偽陰性を生む微妙な構造。
+> ellipsoid 極端縦横比 (問157) は IQ 近似の精度境界への探索的テスト。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 236 ユニット + 統合 3 = 239 合計。

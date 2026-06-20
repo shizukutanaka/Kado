@@ -291,5 +291,18 @@ mod tests {
         assert_eq!(clamp(0.0, 0.0, 1.0), 0.0, "at lo");
         assert_eq!(clamp(1.0, 0.0, 1.0), 1.0, "at hi");
     }
+
+    #[test]
+    fn cross_collinear_vectors_yield_zero() {
+        // 問156: cross_self_is_zero は v×v のみ確認。v×(kv) (k≠1) も平行なのでゼロになる。
+        // stl.rs の face_normal がこの性質で退化三角形を検出するため固定する。
+        let v = Vec3::new(3.0, 4.0, 0.0);
+        // 正方向スケール。
+        assert_eq!(v.cross(v * 2.0), Vec3::ZERO, "v × 2v must be zero");
+        // 負方向スケール (逆平行)。
+        assert_eq!(v.cross(v * -1.0), Vec3::ZERO, "v × -v must be zero");
+        // 任意の非ゼロスケール。
+        assert_eq!(v.cross(v * 0.001), Vec3::ZERO, "v × 0.001v must be zero");
+    }
 }
 
