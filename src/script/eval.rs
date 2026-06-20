@@ -812,4 +812,45 @@ mod tests {
         let pos_u = format!(r#"{{"op":"smooth_union","k":0.2,"a":{a},"b":{b}}}"#);
         assert!(eval_scene(&pos_u).is_ok(), "smooth_union positive k must succeed");
     }
+
+    #[test]
+    fn cone_negative_radius_or_height_is_rejected() {
+        // 問191: zero_or_negative_primitive_dimensions_are_rejected は cone r=0/h=0 を確認するが
+        // 負値 (r<0, h<0) は別のコードパス (f <= 0.0 の負側) を通る。
+        // req_positive_f64 の f<=0.0 ガードが負値でも発動することを固定する。
+        assert!(
+            eval_scene(r#"{"op":"cone","r":-1.0,"h":1.0}"#).is_err(),
+            "cone r<0 must be rejected by req_positive_f64"
+        );
+        assert!(
+            eval_scene(r#"{"op":"cone","r":1.0,"h":-1.0}"#).is_err(),
+            "cone h<0 must be rejected by req_positive_f64"
+        );
+        assert!(
+            eval_scene(r#"{"op":"cone","r":-0.001,"h":-0.001}"#).is_err(),
+            "cone r<0 h<0 must be rejected"
+        );
+        // 回帰: 正値は有効。
+        assert!(
+            eval_scene(r#"{"op":"cone","r":1.0,"h":2.0}"#).is_ok(),
+            "cone with positive r and h must succeed"
+        );
+    }
+
+    #[test]
+    fn offset_negative_amount_shrinks_sphere_correctly() {
+        // 問190: offset は req_f64 (not req_positive_f64) を使い、負値を意図的に許可する。
+        // 正値は shape を膨張、負値は収縮する。どちらも valid。
+        // eval.rs の文書コメント (line 621: "inflates/deflates") を固定する。
+        let inflated = eval_scene(r#"{"op":"offset","amount":0.5,"shape":{"op":"sphere","r":1.0}}"#)
+            .expect("positive offset must succeed");
+        let deflated = eval_scene(r#"{"op":"offset","amount":-0.5,"shape":{"op":"sphere","r":1.0}}"#)
+            .expect("negative offset must succeed (deflation)");
+        let p = crate::core::Vec3::new(1.5, 0.0, 0.0);
+        // 元の sphere(1.0) で x=1.5 は外部 (d=0.5)。
+        // offset(+0.5): d = 0.5 - 0.5 = 0.0 (表面になる)。
+        assert!(inflated.eval(p).abs() < 1e-12, "offset(+0.5) must bring x=1.5 to surface, got {}", inflated.eval(p));
+        // offset(-0.5): d = 0.5 - (-0.5) = 1.0 (さらに外側)。
+        assert!((deflated.eval(p) - 1.0).abs() < 1e-12, "offset(-0.5) must push x=1.5 further out, got {}", deflated.eval(p));
+    }
 }

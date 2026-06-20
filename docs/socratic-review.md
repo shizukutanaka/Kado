@@ -3458,3 +3458,72 @@ ParentDir と解釈されず脱出しない。この platform 契約 (バック�
 > 問189 は Unix でバックスラッシュが literal = 脱出不能であることを platform 契約として固定。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 257 ユニット + 統合 3 = 260 合計。
+
+## 問191 — cone の負値パラメータが未確認
+
+**問**: `zero_or_negative_primitive_dimensions_are_rejected` は cone r=0/h=0 を確認するが、
+r<0/h<0 (req_positive_f64 の `f<=0` の負側) は未確認。
+同じ関数 (sphere は r<0 まで確認) なのに cone は境界 =0 のみという非対称テストがあった。
+
+**実装 (eval.rs)**:
+- `cone_negative_radius_or_height_is_rejected`:
+  r=-1.0/h=-1.0/両方負値が拒否され、r>0/h>0 は通ることを確認。
+
+## 問190 — offset の負値が意図的に許可される契約を明文化
+
+**問**: offset は req_f64 (正値制限なし) を使い、負値 (収縮) を意図的に許可する。
+eval.rs の "inflates/deflates" コメントと整合するが、テストで固定していなかった。
+(agent が 問190 として「未検証」と指摘したが、実際は意図的設計 → 文書化で対応)
+
+**実装 (eval.rs)**:
+- `offset_negative_amount_shrinks_sphere_correctly`:
+  offset(+0.5) が x=1.5 を表面に引き込み、offset(-0.5) がさらに遠ざけることを
+  数値 (d=0, d=1.0) で確認。
+
+## 問193 — sdf_gradient の単体テストが存在しなかった
+
+**問**: sdf_gradient は check.rs で使われる重要な関数だが専用テストがなかった。
+min_wall_probe は gl<1e-12 をフィルタするが、勾配値の正しさ自体は未確認。
+
+**実装 (check.rs)**:
+- `sdf_gradient_points_outward_on_sphere_surface`:
+  球面上 (1,0,0) で勾配が有限・非ゼロ・x 方向 99% 以上を確認。
+  中央差分の実装詳細 (長さ ≈ 2h) もコメントで文書化。
+
+## 問194 — min_wall_probe の縮退境界ガードが未確認
+
+**問**: `if diag <= 0.0 || v == 0 { return None; }` (line 427) の早期リターンパスが
+既存テスト (probe_measures_shell_thickness 等) では通っていない。
+ゼロ対角 (lo=hi) と空メッシュの両方で None を確認していなかった。
+
+**実装 (check.rs)**:
+- `min_wall_probe_degenerate_bbox_returns_none`:
+  lo=hi=Vec3::ZERO → None、空メッシュ → None を確認。
+
+## 問195 — DSL rounded_box の中間アリティエラーが未確認
+
+**問**: rounded_box は 2 または 4 引数有効、それ以外は "expects 2 or 4 args, got N"。
+`function_call_with_zero_arguments_is_rejected` は 0 引数を確認するが、
+1 引数・3 引数の中間アリティエラーは未確認。ellipsoid も類似 (1 or 3) だが問195 は
+rounded_box の多アリティ分岐を対象とする。
+
+**実装 (dsl.rs)**:
+- `rounded_box_wrong_arity_gives_clear_error`:
+  `rounded_box(0.5)` → "got 1"、`rounded_box(1,0.8,0.6)` → "got 3"、
+  正常 2/4 引数は通ることを確認。
+
+## 反映サマリ v93
+| 問 | 実装 |
+|----|------|
+| 190 | offset 負値許可の契約を数値で明文化 (eval.rs) |
+| 191 | cone 負値パラメータの拒否 (eval.rs) |
+| 193 | sdf_gradient の単体テスト・勾配方向確認 (check.rs) |
+| 194 | min_wall_probe 縮退境界 (diag=0, v=0) の早期リターン (check.rs) |
+| 195 | DSL rounded_box 中間アリティ (1, 3 引数) エラー (dsl.rs) |
+
+> 総括: v93 は eval.rs/dsl.rs の演算子パラメータ検証とcheck.rs の内部関数を固定した。
+> 問191 は零値と負値で同一ガード (f<=0.0) を使うが零値しかテストしていない非対称性。
+> 問190 は逆に「許可されている」ことがテストされていなかった意図的設計の文書化。
+> 問193/194 は check.rs の内部実装 (sdf_gradient, 早期リターン) の直接テスト。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 262 ユニット + 統合 3 = 265 合計。

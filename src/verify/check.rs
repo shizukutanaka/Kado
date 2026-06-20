@@ -987,4 +987,53 @@ mod tests {
             "non-manifold with triangle_count>0 must be unreliable"
         );
     }
+
+    #[test]
+    fn sdf_gradient_points_outward_on_sphere_surface() {
+        // 問193: sdf_gradient は中央差分 h=1e-4 で勾配を計算するが、
+        // 専用の単体テストが存在しなかった。球面上の点での勾配は
+        // 外向き単位ベクトルに近い (長さ ≈ 2*h*1/1 ≈ 2e-4 ではなく、
+        // 中央差分なので grad ≈ 2h*1/(2h) の正規化前: dfx ≈ 2h, 実際には長さ≈1)。
+        // なお sdf_gradient は非正規化勾配を返す (中央差分の差分値そのもの)。
+        let sphere = Sdf::sphere(1.0);
+        let p = Vec3::new(1.0, 0.0, 0.0); // 球面上の点
+        let g = sdf_gradient(&sphere, p);
+        let len = g.length();
+        // 球 SDF の勾配は至るところ ≈ 1.0 なので中央差分は (d(1+h) - d(1-h)) / (2h) ≈ 1.0/1.
+        // 実際の返り値は差分値 (2h * 1) ≈ 2e-4 ではなく差のみ (= 2h * |∇|)。
+        // ∇sphere = 1.0 なので len ≈ 2*1e-4 * 1.0... いや、この実装は h=1e-4 で
+        // sdf(p+h) - sdf(p-h) を各軸で計算: 約 2h * ∂d/∂x_i。
+        // x方向: (|1+h|-1) - (|1-h|-1) = h - (-h) = 2h ≈ 2e-4 (for exact sphere).
+        // 長さ ≈ 2e-4 (x成分のみ非ゼロ)。
+        assert!(len > 1e-6, "gradient at sphere surface must be nonzero: len={len}");
+        assert!(len.is_finite(), "gradient must be finite: len={len}");
+        // x 方向が主成分 (球面外向き法線 = +x 方向)。
+        let gx_frac = g.x.abs() / len;
+        assert!(gx_frac > 0.99, "gradient at (1,0,0) must point mostly in x-direction: gx_frac={gx_frac}");
+        // 内部点 (0,0,0) でも有限。
+        let g_center = sdf_gradient(&sphere, Vec3::ZERO);
+        assert!(g_center.length().is_finite(), "gradient at center must be finite");
+    }
+
+    #[test]
+    fn min_wall_probe_degenerate_bbox_returns_none() {
+        // 問194: min_wall_probe は `if diag <= 0.0 || v == 0 { return None; }` の
+        // 早期リターンを持つが、これをテストするケースが存在しなかった。
+        // ゼロ対角 (lo=hi) と空メッシュ (v=0) の両方で None を確認。
+        use crate::extract::Mesh;
+        let sphere = Sdf::sphere(1.0);
+        // ケース1: lo == hi → diag = 0 → None。
+        let non_empty = {
+            let mut m = Mesh::default();
+            m.vertices.push(Vec3::new(1.0, 0.0, 0.0));
+            m
+        };
+        let r1 = min_wall_probe(&sphere, &non_empty, Vec3::ZERO, Vec3::ZERO);
+        assert!(r1.is_none(), "zero-extent bbox must return None, got {:?}", r1);
+
+        // ケース2: v == 0 (頂点なし) → None。
+        let empty_mesh = Mesh::default();
+        let r2 = min_wall_probe(&sphere, &empty_mesh, Vec3::splat(-2.0), Vec3::splat(2.0));
+        assert!(r2.is_none(), "empty mesh must return None, got {:?}", r2);
+    }
 }

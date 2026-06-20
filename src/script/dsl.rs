@@ -608,4 +608,25 @@ mod tests {
         assert!(eval_dsl("union()").is_err(), "union() must be rejected");
         assert!(eval_dsl("translate()").is_err(), "translate() must be rejected");
     }
+
+    #[test]
+    fn rounded_box_wrong_arity_gives_clear_error() {
+        // 問195: rounded_box は 2 (uniform+r) または 4 (x,y,z,r) 引数のみ有効。
+        // 1 引数や 3 引数は "expects 2 or 4 args, got N" エラーになる。
+        // function_call_with_zero_arguments_is_rejected は 0 引数のみ確認しており
+        // 中間アリティの多アリティ演算子 (rounded_box) の拒否は未固定だった。
+        let err1 = eval_dsl("rounded_box(0.5)").expect_err("1-arg rounded_box must be rejected");
+        assert!(
+            err1.to_string().contains("got 1"),
+            "1-arg error must mention 'got 1': {err1}"
+        );
+        let err3 = eval_dsl("rounded_box(1.0, 0.8, 0.6)").expect_err("3-arg rounded_box must be rejected");
+        assert!(
+            err3.to_string().contains("got 3"),
+            "3-arg error must mention 'got 3': {err3}"
+        );
+        // 有効なアリティは通る (回帰防止)。
+        assert!(eval_dsl("rounded_box(1.0, 0.1)").is_ok(), "2-arg rounded_box must succeed");
+        assert!(eval_dsl("rounded_box(1.0, 0.8, 0.6, 0.1)").is_ok(), "4-arg rounded_box must succeed");
+    }
 }
