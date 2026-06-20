@@ -486,6 +486,41 @@ mod tests {
     }
 
     #[test]
+    fn node_budget_is_shared_and_enforced_for_wide_trees() {
+        // 問146: MAX_NODES=50,000 はノード数で DoS を止める。
+        // eval_scene では MAX_SOURCE_BYTES が先に発動するため、Value 木を
+        // プログラムで生成して eval_value を直接呼ぶことで MAX_NODES を確認する。
+        //
+        // budget は `&mut Budget` (共有) なのでサブツリー全体の合計がカウントされる。
+        // depth=17 の完全二分木は 2^17-1=131,071 ノードを持ち MAX_NODES を超える。
+        use crate::mcp::json::{self, Value};
+        fn balanced_union(depth: usize) -> Value {
+            if depth == 0 {
+                return json::obj([("op", json::s("sphere")), ("r", json::n(0.5))]);
+            }
+            json::obj([
+                ("op", json::s("union")),
+                ("a", balanced_union(depth - 1)),
+                ("b", balanced_union(depth - 1)),
+            ])
+        }
+        // 深さ17 (131,071 ノード) → MAX_NODES 超過で拒否されること。
+        let big_tree = balanced_union(17);
+        let r = eval_value(&big_tree);
+        assert!(r.is_err(), "wide tree exceeding MAX_NODES must be rejected");
+        assert!(
+            r.unwrap_err().message.contains("too large"),
+            "error must mention 'too large'"
+        );
+        // 深さ14 (16,383 ノード) → MAX_NODES 以内で受理されること。
+        let small_tree = balanced_union(14);
+        assert!(
+            eval_value(&small_tree).is_ok(),
+            "tree within MAX_NODES must be accepted"
+        );
+    }
+
+    #[test]
     fn zero_or_negative_scale_is_rejected() {
         // 問20: s<=0 は距離場を破壊するため拒否 (無音の不正メッシュを防ぐ)。
         let z = r#"{"op":"scale","s":0.0,"shape":{"op":"sphere","r":1.0}}"#;

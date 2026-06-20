@@ -592,4 +592,54 @@ mod tests {
         assert!(reparsed.get("vol").map(|x| x.is_null()).unwrap_or(false));
         assert!(reparsed.get("dim").map(|x| x.is_null()).unwrap_or(false));
     }
+
+    #[test]
+    fn trailing_comma_is_rejected() {
+        // 問144: JSON 仕様は配列・オブジェクトの末尾カンマを禁止する。
+        // 現パーサはカンマ後に再度 parse_value() を呼ぶ仕組み上自然に拒否するが、
+        // この動作が退行で壊れないことを明示的に固定する。
+        assert!(parse("[1,2,]").is_err(), "trailing comma in array must be rejected");
+        assert!(parse(r#"{"a":1,}"#).is_err(), "trailing comma in object must be rejected");
+        // 正常系 (末尾カンマなし) は通る。
+        assert!(parse("[1,2]").is_ok());
+        assert!(parse(r#"{"a":1}"#).is_ok());
+    }
+
+    #[test]
+    fn duplicate_object_keys_last_wins() {
+        // 問145: JSON オブジェクトに重複キーが含まれる場合、BTreeMap::insert により
+        // 後の値が前の値を無音で上書きする (last-wins)。
+        // MCP リクエストに重複フィールドが混入した際の動作を明示的に固定する。
+        let v = parse(r#"{"a":1,"b":2,"a":99}"#).expect("must parse");
+        // 後の "a":99 が前の "a":1 を上書きしていること。
+        assert_eq!(
+            v.get("a").and_then(|x| x.as_f64()),
+            Some(99.0),
+            "duplicate key must keep last value"
+        );
+        assert_eq!(v.get("b").and_then(|x| x.as_f64()), Some(2.0));
+    }
+
+    #[test]
+    fn unicode_surrogate_escape_becomes_replacement_char() {
+        // 問147: \uXXXX エスケープで UTF-16 サロゲートコードポイント (U+D800-U+DFFF) を
+        // 渡すと char::from_u32 が None を返し U+FFFD (置換文字) に変換される。
+        // RFC 8259 はサロゲートを許容するが char としては無効なため置換が安全側。
+        // この動作がパニックせず定義済みであることを固定する。
+        let lone = parse(r#""\uD800""#).expect("must not panic on lone surrogate");
+        assert_eq!(
+            lone.as_str(),
+            Some("\u{FFFD}"),
+            "lone surrogate must become replacement char"
+        );
+        // UTF-16 サロゲートペア符号化: 😀 は U+1F600 (😀) の UTF-16 表現。
+        // 各 \uXXXX は独立処理され結合されず、2つの U+FFFD になる。
+        // (実際の 😀 をリテラルで入れると UTF-8 経路になるため \u エスケープで入力する)
+        let pair = parse("\"\\uD83D\\uDE00\"").expect("must not panic on surrogate pair");
+        assert_eq!(
+            pair.as_str(),
+            Some("\u{FFFD}\u{FFFD}"),
+            "surrogate pair must become two replacement chars (not combined emoji)"
+        );
+    }
 }

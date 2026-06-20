@@ -2908,3 +2908,71 @@ OVERHANG issue が誤って報告されないことが保証されていなか�
 > 挙動の退行ガード。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 221 ユニット + 統合 3 = 224 合計。
+
+---
+
+## 問144 — JSON パーサが末尾カンマを拒否することがテストで固定されていない
+
+**問**: JSON 仕様 (RFC 8259) は `[1,2,]` や `{"a":1,}` のような末尾カンマを禁止するが、
+パーサはカンマ後に `parse_value()` を再呼び出しする構造上、`]`/`}` を
+`parse_value_inner` 内で "unexpected byte" として自然に拒否する。
+この動作はテストがなく、リファクタリングで無音に許容されるようになっても検知できない。
+
+**実装 (json.rs)**:
+- `trailing_comma_is_rejected`:
+  `[1,2,]` および `{"a":1,}` がどちらもエラーを返すことを固定。
+  正常系 (`[1,2]`, `{"a":1}`) は通ることも確認。
+
+## 問145 — JSON オブジェクトの重複キーが last-wins になることが未テスト
+
+**問**: `parse(r#"{"a":1,"a":2}"#)` は BTreeMap::insert の動作により
+後の値 ("a":2) が前の値 ("a":1) を無音で上書きする。
+MCP リクエストに重複フィールドが混入した場合 (例: 二重パラメータインジェクション)
+どの値が使われるかが未固定。
+
+**実装 (json.rs)**:
+- `duplicate_object_keys_last_wins`:
+  `{"a":1,"b":2,"a":99}` を parse すると "a"=99 (後の値) になることを確認。
+  セキュリティ動作 (last-wins) を明示的に文書化・固定。
+
+## 問146 — MAX_NODES ノード数上限が eval_scene では SOURCE 上限に隠れて未テスト
+
+**問**: `eval_scene` は `MAX_SOURCE_BYTES` (1 MiB) を先にチェックするため、
+50,000 ノードに必要な JSON ソース (各ノード ≥ 20 バイト → ≥ 1 MB) では
+SOURCE 上限が先に発動し MAX_NODES に到達しない。
+よって `MAX_NODES` 強制コードは `eval_scene` 経路では事実上デッドコードだった。
+
+**実装 (eval.rs)**:
+- `node_budget_is_shared_and_enforced_for_wide_trees`:
+  `eval_value` で深さ17の完全二分木 (131,071 ノード) を Value として渡し
+  "too large" エラーが返ることを確認。深さ14 (16,383 ノード) は受理されることも確認。
+  `budget: &mut Budget` が全再帰呼び出しで共有されることを実証。
+
+## 問147 — \uXXXX サロゲートコードポイントが U+FFFD に変換されることが未テスト
+
+**問**: `parse_string` の `\uXXXX` 処理は `char::from_u32(cp).unwrap_or('\u{FFFD}')` を使う。
+UTF-16 サロゲート (U+D800-U+DFFF) は `char::from_u32` が None を返すため
+置換文字 U+FFFD に変換される。この動作 (パニックしない・定義済みの縮退) が未テスト。
+MCP クライアントが `😀` 形式でサロゲートペアを送った場合の動作が不明だった。
+
+**実装 (json.rs)**:
+- `unicode_surrogate_escape_becomes_replacement_char`:
+  `"\uD800"` (孤立サロゲート) → `"\u{FFFD}"` を確認。
+  `"😀"` (サロゲートペア, 😀) → `"\u{FFFD}\u{FFFD}"` (2つの置換文字) を確認。
+  パニックしないこと・定義済みの縮退であることを固定。
+
+## 反映サマリ v85
+| 問 | 実装 |
+|----|------|
+| 144 | JSON 末尾カンマ拒否テスト (json.rs) |
+| 145 | JSON 重複キー last-wins 固定 (json.rs) |
+| 146 | eval_value 経由で MAX_NODES を実際にテスト (eval.rs) |
+| 147 | \uXXXX サロゲート → U+FFFD 変換テスト (json.rs) |
+
+> 総括: v85 は「動作は正しいがテストがなく退行が検知不能」パターンを埋めた。
+> MAX_NODES (問146) は eval_scene 経路では SOURCE 上限に隠れており、
+> eval_value を直接呼ぶことで初めて実証できた実質的なデッドコード発見。
+> サロゲートエスケープ (問147) はパニック経路ではないが RFC 8259 準拠の
+> 定義済み縮退として明示することで将来の回帰を防ぐ。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 225 ユニット + 統合 3 = 228 合計。
