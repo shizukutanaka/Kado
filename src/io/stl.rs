@@ -70,4 +70,35 @@ mod tests {
         let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 16);
         assert_eq!(encode_binary(&m), encode_binary(&m));
     }
+
+    #[test]
+    fn face_normal_is_unit_for_valid_triangle_and_zero_for_degenerate() {
+        // 問133: face_normal は有効三角形で単位長法線、退化三角形で Vec3::ZERO を返す。
+        // STL 仕様では法線はオプション/参考値だが 0 を書いてもパーサは受け入れる。
+        // from_soup は重複インデックスを除去するが、共線頂点 (面積ゼロ) は除去しないため
+        // face_normal の ZERO パスは実際に到達可能 (例: 手動で構築した Mesh)。
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(1.0, 0.0, 0.0);
+        let c = Vec3::new(0.0, 1.0, 0.0);
+        let n = face_normal(a, b, c);
+        assert!(
+            (n.length() - 1.0).abs() < 1e-12,
+            "valid triangle must produce unit-length normal, got length={}",
+            n.length()
+        );
+        // XY平面の三角形の法線は +Z 方向。
+        assert!((n.z - 1.0).abs() < 1e-12, "XY-plane triangle normal must be +Z, got {n:?}");
+
+        // 退化: a, b, c が共線 → 面積 0 → 法線ゼロ。
+        let degen = face_normal(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        assert_eq!(degen, Vec3::ZERO, "collinear triangle must produce zero normal");
+
+        // 一致: 3 点が同じ → 面積 0 → 法線ゼロ。
+        let coinc = face_normal(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        assert_eq!(coinc, Vec3::ZERO, "coincident triangle must produce zero normal");
+    }
 }

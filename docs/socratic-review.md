@@ -2695,3 +2695,84 @@ XML テキストとして無効な浮動小数点表現になる。DSL/JSON の 
 > 3MF の非有限座標サニタイズ (問128)、空メッシュの体積信頼判定 (問130)。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数 211 ユニット + 統合 3 = 214 合計。
+
+---
+
+## 問131 — arg_samples の `dim * samples ≤ MAX_IMAGE_DIM` 不変条件が未テスト
+
+**問**: `arg_samples` はコメントで `dim * samples ≤ MAX_IMAGE_DIM` を保証すると謳うが、
+この不変条件を検証するテストがなかった。隣の `arg_dim` は `image_dims_are_clamped`
+テストで上下限を固定されているのに対し、`arg_samples` の cap 計算
+`(MAX_IMAGE_DIM / width.max(1)).max(1)` は一切テストされていなかった。
+`render(…, width*samples, height*samples)` が `MAX_IMAGE_DIM^2 ≈ 16M px ≈ 48 MiB` を
+超えるバッファを確保しないことを保証するのはこの計算のみ。
+
+**仮定の見直し**: 「arg_dim がテストされているから arg_samples も安全」は誤り。
+二つの引数解析器は独立した関数であり、一方のテストが他方の正しさを証明しない。
+
+**実装 (tools.rs)**:
+- `arg_samples_invariant_dim_times_samples_fits_max_image_dim`:
+  デフォルト・各軸最大寸法・両軸最大寸法の組み合わせで
+  `width * result ≤ MAX_IMAGE_DIM && height * result ≤ MAX_IMAGE_DIM` を確認。
+  MAX_IMAGE_DIM × MAX_IMAGE_DIM では samples=4 要求が 1 にキャップされることを確認。
+
+## 問132 — HTML ビューアが空メッシュで WebGL 視錐台を正しく退化させないことが未確認
+
+**問**: `encode_html` は `mesh.bounds()` が `None` (空メッシュ) のとき
+`(lo, hi) = (Vec3::ZERO, Vec3::ZERO)` にフォールバックし `radius = max(0, 1e-3) = 1e-3`
+を使う。WebGL の `persp()` は near = `MESH.radius * 0.05` を使うため、radius=0 だと
+near=0 → 投影行列が数値崩壊する。1e-3 最小余白が唯一の防護線だが、テストがなかった。
+
+**仮定の見直し**: 「通常用途で空メッシュのビューアを開くことはない」は正しくない。
+検証失敗後の空メッシュを誤って HTML に書き出した場合にビューアが表示できないのは
+ユーザーエクスペリエンスの問題になる。
+
+**実装 (html.rs)**:
+- `empty_mesh_produces_valid_html_with_nonzero_radius`:
+  空メッシュでプレースホルダがすべて置換され、`radius:0.0010` (1e-3) と
+  `center:[0.0000,0.0000,0.0000]` が埋め込まれることを確認。
+
+## 問133 — STL `face_normal` の退化三角形処理がテストなし
+
+**問**: `face_normal(a, b, c)` は法線の長さが 0.0 のとき `Vec3::ZERO` を返す。
+`from_soup` は重複インデックスを除去するが **共線頂点** (面積ゼロ) は除去しない。
+つまり `face_normal` の ZERO パスは Mesh を直接構築した場合に到達可能だが、
+この挙動を確認するテストが存在しなかった。
+
+**仮定の見直し**: 「from_soup が退化三角形を取り除く」は重複インデックスに限った話。
+共線三角形はインデックスが相異なるため除去されず、STL に 0 ノーマルとして書き出される。
+STL 仕様では 0 ノーマルは許容されるが、実装者が変えようとした際に回帰テストがない。
+
+**実装 (stl.rs)**:
+- `face_normal_is_unit_for_valid_triangle_and_zero_for_degenerate`:
+  XY平面の三角形が +Z 単位法線を返すこと、共線三角形と一致点三角形が
+  `Vec3::ZERO` を返すことを確認。
+
+## 問135 — smooth_union はブレンド域外で hard_union と厳密一致することが未確認
+
+**問**: `smooth_union(a, b, k)` の実装は `|da - db| > k` のとき `h` が [0,1] に
+クランプされ `k * h * (1-h) = 0` になる (h=0 または h=1)。よって smooth = hard が
+**数値誤差ゼロで厳密**に成立するはず。既存テストは `k→0` の収束と
+soft ≤ hard の大小関係を確認したが、「ブレンド域外での厳密一致」は未確認だった。
+
+**仮定の見直し**: 「k→0 テストがあれば十分」は誤り。k→0 は全域での近似収束であり、
+特定の k (例 k=0.3) においてブレンド域外が厳密ゼロ差になることは異なる主張。
+
+**実装 (sdf.rs)**:
+- `smooth_union_exactly_equals_hard_outside_blend_zone`:
+  中心間距離 5 の非重複球 (k=0.3) で `|da-db| > k` の代表点を選び、
+  `soft.eval(p) == hard.eval(p)` が 1e-14 以内で成立することを確認。
+
+## 反映サマリ v82
+| 問 | 実装 |
+|----|------|
+| 131 | arg_samples 不変条件テスト: dim×samples ≤ MAX_IMAGE_DIM (tools.rs) |
+| 132 | 空メッシュ HTML の radius=1e-3 フォールバック確認 (html.rs) |
+| 133 | STL face_normal 退化三角形 Vec3::ZERO テスト (stl.rs) |
+| 135 | smooth_union ブレンド域外での hard との厳密一致テスト (sdf.rs) |
+
+> 総括: v82 は「コメントで主張されるが証拠のない不変条件」4件を固定した。
+> arg_samples のメモリ上限 (問131)、HTML ビューア空メッシュ安全性 (問132)、
+> STL 退化法線処理 (問133)、smooth_union の blend 領域外収束 (問135)。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 215 ユニット + 統合 3 = 218 合計。

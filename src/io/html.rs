@@ -190,4 +190,27 @@ mod tests {
             assert!(!html.contains(ph), "placeholder {ph} must be replaced");
         }
     }
+
+    #[test]
+    fn empty_mesh_produces_valid_html_with_nonzero_radius() {
+        // 問132: 空メッシュ (bounds が None) で encode_html がパニックせず、
+        // WebGL の persp() の near 平面が 0 にならないよう radius ≥ 1e-3 を保証する。
+        // near = MESH.radius * 0.05 が 0 だと投影行列の (2,3) 要素が 0 になり
+        // 全 z 座標が NaN/Inf になる (数値崩壊)。
+        let html = encode_html(&Mesh::default());
+        // すべてのプレースホルダが置換されている。
+        for ph in ["/*POSITIONS*/", "/*INDICES*/", "/*CENTER*/", "/*RADIUS*/"] {
+            assert!(!html.contains(ph), "placeholder {ph} must be replaced even for empty mesh");
+        }
+        // radius は 1e-3 フォールバック (4桁固定精度: "0.0010")。0 ではない。
+        assert!(
+            html.contains("radius:0.0010"),
+            "empty mesh must embed fallback radius 1e-3 (0.0010), not zero"
+        );
+        // center はゼロ原点 (空 bounds のフォールバック)。
+        assert!(
+            html.contains("center:[0.0000,0.0000,0.0000]"),
+            "empty mesh center must fall back to origin"
+        );
+    }
 }

@@ -893,6 +893,40 @@ mod tests {
     }
 
     #[test]
+    fn smooth_union_exactly_equals_hard_outside_blend_zone() {
+        // 問135: |da - db| > k の点では h が [0,1] にクランプされ、
+        // k * h * (1-h) 項が消える。よって smooth_union = hard_union が厳密に成立する。
+        // 「blend 領域以外では hard と同じ」という保証を数値テストで固定する。
+        let k = 0.3;
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(5.0, 0.0, 0.0)); // 中心間 5, 非重複
+        let hard = a.clone().union(b.clone());
+        let soft = a.clone().smooth_union(b.clone(), k);
+        // blend は 2 球表面が距離 k 以内に近づく領域にのみ生じる。
+        // 両球表面が k=0.3 より離れている点では soft == hard が厳密 (数値誤差ゼロ)。
+        let test_points = [
+            Vec3::new(0.0, 3.0, 0.0),  // 球A上方, 球Bまで 5 以上
+            Vec3::new(5.0, 3.0, 0.0),  // 球B上方, 球Aまで 5 以上
+            Vec3::new(-3.0, 0.0, 0.0), // 両球から遠い
+            Vec3::new(8.0, 0.0, 0.0),  // 両球から遠い
+            Vec3::new(0.0, 0.0, 2.0),  // 球A上方 (z軸)
+        ];
+        for p in test_points {
+            let da = a.eval(p);
+            let db = b.eval(p);
+            // |da - db| > k ならば blend は生じない。
+            if (da - db).abs() > k {
+                let diff = (soft.eval(p) - hard.eval(p)).abs();
+                assert!(
+                    diff < 1e-14,
+                    "at {p:?}: |da-db|={:.3} > k={k}: smooth must equal hard (diff={diff})",
+                    (da - db).abs()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn smooth_difference_is_upper_bound_of_hard_difference() {
         // smooth_difference(a, b, k) >= difference(a, b) everywhere (blend region extends).
         let a = Sdf::sphere(1.0);

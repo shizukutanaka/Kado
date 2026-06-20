@@ -1288,4 +1288,49 @@ mod tests {
             "sphere eval must be exact for a primitive: expected 1.0, got {d}"
         );
     }
+
+    #[test]
+    fn arg_samples_invariant_dim_times_samples_fits_max_image_dim() {
+        // 問131: `dim * samples ≤ MAX_IMAGE_DIM` の不変条件が成り立つことをテスト。
+        // arg_dim は [1, MAX_IMAGE_DIM] にクランプされるが、arg_samples のキャップ戦略に
+        // 専用テストがなかった。img 生成時は width*samples × height*samples のバッファを
+        // 確保するため、両軸とも MAX_IMAGE_DIM を超えてはならない。
+        let no_req = json::obj([]);
+        let max_req = json::obj([("samples", json::n(4.0))]);
+
+        // デフォルト: samples=2
+        assert_eq!(arg_samples(&no_req, 512, 512), 2, "default samples must be 2");
+
+        // 代表的な大寸法での不変条件確認。
+        for (w, h) in [
+            (1, 1),
+            (1024, 768),
+            (2048, 1),
+            (1, 2048),
+            (MAX_IMAGE_DIM, 1),
+            (1, MAX_IMAGE_DIM),
+            (MAX_IMAGE_DIM, MAX_IMAGE_DIM),
+        ] {
+            let s = arg_samples(&max_req, w, h);
+            assert!(
+                w * s <= MAX_IMAGE_DIM,
+                "width * samples must not exceed MAX_IMAGE_DIM: {w}*{s}={}>{}",
+                w * s,
+                MAX_IMAGE_DIM
+            );
+            assert!(
+                h * s <= MAX_IMAGE_DIM,
+                "height * samples must not exceed MAX_IMAGE_DIM: {h}*{s}={}>{}",
+                h * s,
+                MAX_IMAGE_DIM
+            );
+        }
+
+        // MAX_IMAGE_DIM×MAX_IMAGE_DIM では samples=4 が要求されても 1 にキャップされる。
+        assert_eq!(
+            arg_samples(&max_req, MAX_IMAGE_DIM, MAX_IMAGE_DIM),
+            1,
+            "max-size canvas must cap samples to 1"
+        );
+    }
 }
