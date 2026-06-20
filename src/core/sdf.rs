@@ -1240,4 +1240,46 @@ mod tests {
             mesh.triangles.len()
         );
     }
+
+    #[test]
+    fn aabb_exact_values_for_primitives() {
+        // 問148: 各プリミティブの aabb() が期待する数値を返すことを固定する。
+        // 退行で AABB が縮小すると polygonize が表面を欠損し、サイレントに不完全なメッシュを生む。
+        const EPS: f64 = 1e-12;
+
+        // Sphere(r=1.5): 全軸 ±1.5。
+        let (lo, hi) = Sdf::sphere(1.5).aabb();
+        assert!((lo.x + 1.5).abs() < EPS && (hi.x - 1.5).abs() < EPS, "sphere aabb x");
+        assert!((lo.z + 1.5).abs() < EPS && (hi.z - 1.5).abs() < EPS, "sphere aabb z");
+
+        // Cylinder(r=0.5, half_height=2.0): XY は ±0.5、Z は ±2.0。
+        // API: cylinder(radius, half_height) — 第2引数は高さの「半分」。
+        let (lo, hi) = Sdf::cylinder(0.5, 2.0).aabb();
+        assert!((lo.x + 0.5).abs() < EPS && (hi.x - 0.5).abs() < EPS, "cylinder aabb x");
+        assert!((lo.z + 2.0).abs() < EPS && (hi.z - 2.0).abs() < EPS, "cylinder aabb z");
+
+        // Torus(major=2.0, minor=0.5): XY は ±2.5、Z は ±0.5。
+        let (lo, hi) = Sdf::torus(2.0, 0.5).aabb();
+        assert!((lo.x + 2.5).abs() < EPS && (hi.x - 2.5).abs() < EPS, "torus aabb x");
+        assert!((lo.z + 0.5).abs() < EPS && (hi.z - 0.5).abs() < EPS, "torus aabb z");
+
+        // Cone(r=1.0, h=2.0): XY は ±1.0 (底面)、Z は [-2.0, 0.0] (頂点=z=0, 底面=z=-2)。
+        let (lo, hi) = Sdf::cone(1.0, 2.0).aabb();
+        assert!((lo.x + 1.0).abs() < EPS && (hi.x - 1.0).abs() < EPS, "cone aabb x");
+        assert!((lo.z + 2.0).abs() < EPS && hi.z.abs() < EPS, "cone aabb z");
+    }
+
+    #[test]
+    fn scale_negative_factor_sampling_box_is_normalized() {
+        // 問149: eval.rs は s<=0 を拒否するが、Sdf:: API を直接呼ぶと
+        // aabb() が反転した (lo > hi) ボックスを返す。sampling_box() の正規化が
+        // これを安全に扱い lo <= hi の範囲を返すことを固定する。
+        // (polygonize が負ステップで壊れないための防護線)
+        let s = Sdf::sphere(1.0).scale(-2.0);
+        let (lo, hi) = s.sampling_box();
+        // 反転後も sampling_box が lo <= hi を保証する。
+        assert!(lo.x <= hi.x, "sampling_box x must be non-inverted after scale(-1)");
+        assert!(lo.y <= hi.y, "sampling_box y must be non-inverted after scale(-1)");
+        assert!(lo.z <= hi.z, "sampling_box z must be non-inverted after scale(-1)");
+    }
 }

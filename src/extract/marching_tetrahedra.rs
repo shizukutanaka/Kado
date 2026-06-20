@@ -514,4 +514,27 @@ mod tests {
         assert_eq!(md.vertices.len(), 3036, "diff vertex count must be stable");
         assert_eq!(md.triangles.len(), 6072, "diff triangle count must be stable");
     }
+
+    #[test]
+    fn tets_volumes_sum_to_unit_cube_volume() {
+        // 問150: TETS は単位立方体の6四面体分割。隙間なく充填することの必要条件として
+        // 各四面体の符号付き体積の和が 1 (単位立方体体積) になることを確認する。
+        // 重複や欠損があれば和が 1 を外れる。
+        //
+        // 四面体 (a,b,c,d) の符号付き体積 = (b-a)·((c-a)×(d-a)) / 6。
+        let cube_f = CUBE.map(|v| {
+            crate::core::Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
+        });
+        let total_vol: f64 = TETS.iter().map(|tet| {
+            let [a, b, c, d] = [cube_f[tet[0]], cube_f[tet[1]], cube_f[tet[2]], cube_f[tet[3]]];
+            let ab = b - a;
+            let ac = c - a;
+            let ad = d - a;
+            ab.dot(ac.cross(ad)) / 6.0
+        }).sum();
+        assert!(
+            (total_vol.abs() - 1.0).abs() < 1e-12,
+            "6 tetrahedra must fill unit cube exactly: sum of volumes = {total_vol}"
+        );
+    }
 }

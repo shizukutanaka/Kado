@@ -2976,3 +2976,62 @@ MCP クライアントが `😀` 形式でサロゲートペアを送った場�
 > 定義済み縮退として明示することで将来の回帰を防ぐ。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 225 ユニット + 統合 3 = 228 合計。
+
+---
+
+## 問148 — プリミティブ aabb() の数値が未テスト (退行で縮小しても無検知)
+
+**問**: `aabb()` の各プリミティブ実装は数値コメントを持つが、実際に期待値を返すかを
+確認するテストが存在しなかった。退行で Cylinder の `half_height` → `height` 混同や
+Torus の `major+minor` → `major-minor` 取り違えが起きても、AABB が縮小するだけで
+サイレントに不完全なメッシュが出力される。
+また `cylinder(radius, half_height)` の第2引数が `height` ではなく `half_height` で
+あることも、テストがないと利用者に伝わらない。
+
+**発見 (副次的)**: テスト作成中に `cylinder(0.5, 2.0)` の Z AABB が ±1.0 ではなく
+±2.0 であることを確認し、API ドキュメントの誤解を防ぐコメントを追加した。
+
+**実装 (sdf.rs)**:
+- `aabb_exact_values_for_primitives`:
+  Sphere(1.5)/Cylinder(0.5, 2.0)/Torus(2.0, 0.5)/Cone(1.0, 2.0) の
+  aabb() 返り値が期待数値 (±radius, ±half_height 等) と一致することを固定。
+
+## 問149 — scale(-1) を直接構築すると aabb() が反転するが sampling_box() の正規化が未テスト
+
+**問**: `eval.rs` は `s <= 0` を拒否するが、`Sdf::sphere(1.0).scale(-2.0)` と
+直接構築できる (eval 層をバイパス)。この場合 `aabb()` は `(lo * -2, hi * -2)` で
+lo.x > hi.x の反転ボックスを返す。`sampling_box()` の正規化が反転後も
+`lo <= hi` を保証することの明示テストが欠如していた。
+
+**実装 (sdf.rs)**:
+- `scale_negative_factor_sampling_box_is_normalized`:
+  `Sdf::sphere(1.0).scale(-2.0)` の `sampling_box()` が全軸 `lo <= hi` を
+  返すことを確認。polygonize が負ステップで壊れないための防護線を固定。
+
+## 問150 — TETS 6 四面体が単位立方体を充填することの数学的検証が未テスト
+
+**問**: `TETS: [[usize; 4]; 6]` は「0-6 対角を共有する6四面体分割。
+立方体を隙間なく充填する」とコメントされているが、この性質を検証するテストが
+存在しなかった。TETS を誤って変更しても watertight テストでしか検知できず、
+どの四面体が問題かを特定できない。
+
+**実装 (marching_tetrahedra.rs)**:
+- `tets_volumes_sum_to_unit_cube_volume`:
+  各四面体の符号付き体積 = `(b-a)·((c-a)×(d-a)) / 6` を計算し、
+  6 四面体の合計が 1.0 (単位立方体体積) と一致することを確認。
+  体積和が 1 でなければ隙間か重複のいずれかが存在する。
+
+## 反映サマリ v86
+| 問 | 実装 |
+|----|------|
+| 148 | primitive aabb() 数値固定テスト: cylinder half_height バグを副次的に発見 (sdf.rs) |
+| 149 | scale(-1) 直接構築後の sampling_box 正規化を固定 (sdf.rs) |
+| 150 | TETS 体積和 = 1 の数学的検証テスト (marching_tetrahedra.rs) |
+
+> 問151 (read_message SIZE 境界テスト) は既に問118 の実装時に追加済みであることを確認。
+> 総括: v86 は「コメントに書いてあるが検証されていない数学的性質」パターンを埋めた。
+> 問148 はテスト作成中に cylinder API の誤解 (height vs half_height) を副次的に発見。
+> 問149 は eval.js バリデーションをバイパスした Sdf 直接構築に対するロバスト性を確認。
+> 問150 は TETS 分割の必要条件 (体積 = 1) を一行計算で確認する最小テスト。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 228 ユニット + 統合 3 = 231 合計。
