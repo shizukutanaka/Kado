@@ -2776,3 +2776,66 @@ soft ≤ hard の大小関係を確認したが、「ブレンド域外での厳
 > STL 退化法線処理 (問133)、smooth_union の blend 領域外収束 (問135)。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 215 ユニット + 統合 3 = 218 合計。
+
+---
+
+## 問136 — sampling_box 電池に Cone/RoundedBox/Ellipsoid が欠如
+
+**問**: `sampling_box_encloses_aabb_for_representative_shapes` (問115) は10形状を
+テストするが Cone/RoundedBox/Ellipsoid の 3 プリミティブが含まれていなかった。
+これら 3 つは AABB 計算に特有のロジックを持ち (Cone は頂点 z=0 ・底面 z=-h、
+RoundedBox はフィレット分の縮小、Ellipsoid は多軸スケール) 電池からの漏れは
+退行を無音化する。
+
+**実装 (sdf.rs)**:
+- `sampling_box_encloses_aabb_for_representative_shapes` に Cone/RoundedBox/Ellipsoid を追加し 13 形状電池に拡大。
+
+## 問137 — undo_script ツールのユニットテストが皆無
+
+**問**: `undo_script` は単一段undo(single-level)を実装しており、
+ツール説明にも「no previous script → error」「undo already applied → error」
+と記載されているが、実際の `call_tool("undo_script", …)` を呼ぶ
+ユニットテストが 1 件も存在しなかった。
+問121 (`failed_run_script_preserves_undo_state_and_scene`) は
+`prev_scene` フィールドを直接検査するだけで、undo ツール経路は未カバー。
+
+**実装 (tools.rs)**:
+- `undo_script_restores_scene_then_exhausts_single_level`:
+  (1) undo before run_script → error、(2) run_script → undo (シーン復元・"undo ok")、
+  (3) 2回目 undo → "nothing to undo" error を確認。
+- `undo_script_after_failed_run_does_not_corrupt_undo_state`:
+  eval_any Err 時は early return で prev_scene が更新されない (失敗 run_script は
+  undo 状態を変えない) ことを undo 呼び出しで実証。
+
+## 問138 — validate と validate_with_field(None, ...) の整合性が未テスト
+
+**問**: `validate(mesh, w, o)` は `validate_with_field(mesh, None, w, o, Vec3(0,0,1))`
+の 1 行ラッパー。build_dir のデフォルトが誤って変更されても
+既存テストは検知しない (両関数は独立して使われているが相互比較テストがなかった)。
+
+**実装 (check.rs)**:
+- `validate_is_consistent_with_validate_with_field_default_args`:
+  同一メッシュ・同一パラメータで両経路の triangle_count/is_manifold/digest/issues
+  が全て一致することをテスト。
+
+## 問139 — sandbox が空白のみのパスを拒否するテストが欠如
+
+**問**: `sandbox_write_path` は `requested.trim().is_empty()` で空白のみのパスを拒否するが、
+既存テストは `""` (空文字) のみ確認し `"   "` や `"\t\n"` を確認していなかった。
+
+**実装 (tools.rs)**:
+- 既存 `sandbox_rejects_traversal_and_absolute` に `"   "` と `"\t\n"` を追加。
+
+## 反映サマリ v83
+| 問 | 実装 |
+|----|------|
+| 136 | sampling_box 電池に Cone/RoundedBox/Ellipsoid を追加し 13 形状に拡大 (sdf.rs) |
+| 137 | undo_script 2テスト: 正常undo・失敗後undo の両パスを実証 (tools.rs) |
+| 138 | validate == validate_with_field(None,...) の整合性回帰テスト (check.rs) |
+| 139 | sandbox 空白パス拒否テスト追加 (tools.rs) |
+
+> 総括: v83 は「ツールとして実装されているが直接テストされていない経路」を埋めた。
+> undo_script (問137) は実装から漏れていた最も重要なテストギャップ。
+> validate 整合性 (問138) は暗黙のデフォルト依存に対する退行ガード。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 218 ユニット + 統合 3 = 221 合計。

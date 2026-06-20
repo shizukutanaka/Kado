@@ -881,6 +881,36 @@ mod tests {
     }
 
     #[test]
+    fn validate_is_consistent_with_validate_with_field_default_args() {
+        // 問138: `validate(mesh, w, o)` は `validate_with_field(mesh, None, w, o, Vec3(0,0,1))`
+        // の薄いラッパーである。両経路が同一の Report を生成することをテストで固定する。
+        // ラッパーが誤って異なる build_dir や sdf を渡した場合、この回帰テストが検知する。
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 24);
+
+        let r_short = validate(&mesh, 0.5, 45.0);
+        let r_long = validate_with_field(&mesh, None, 0.5, 45.0, Vec3::new(0.0, 0.0, 1.0));
+
+        // 基本指標: 全て同一でなければならない。
+        assert_eq!(r_short.triangle_count, r_long.triangle_count, "triangle_count must match");
+        assert_eq!(r_short.is_manifold, r_long.is_manifold, "is_manifold must match");
+        assert_eq!(r_short.digest, r_long.digest, "digest must match");
+        // issues の数と code も同一。
+        assert_eq!(
+            r_short.issues.len(),
+            r_long.issues.len(),
+            "issue count must match: short={:?} long={:?}",
+            r_short.issues.iter().map(|e| &e.code).collect::<Vec<_>>(),
+            r_long.issues.iter().map(|e| &e.code).collect::<Vec<_>>()
+        );
+        for (a, b) in r_short.issues.iter().zip(r_long.issues.iter()) {
+            assert_eq!(a.code, b.code, "issue codes must match");
+            assert_eq!(a.severity, b.severity, "issue severities must match");
+        }
+    }
+
+    #[test]
     fn empty_mesh_volume_is_never_reliable() {
         // 問130: 空メッシュ (三角形ゼロ) は is_manifold=true になりうるが、
         // volume_reliable() は false を返さなければならない。

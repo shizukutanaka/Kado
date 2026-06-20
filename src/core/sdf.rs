@@ -1182,12 +1182,16 @@ mod tests {
         // aabb_encloses_surface_samples (問14) は1つの複合ツリーでこれを確認するが、
         // 全形状電池で invariant が成り立つことは未確認だった。
         // primitive/変換/ブーリアン/複合 を網羅する代表電池で固定する。
+        // 問136: Cone/RoundedBox/Ellipsoid が電池から漏れていたため追加。
         let shapes: &[Sdf] = &[
             Sdf::sphere(1.0),
             Sdf::cuboid(Vec3::new(1.0, 0.8, 0.5)),
             Sdf::cylinder(0.5, 1.5),
             Sdf::capsule(0.4, 1.2),
             Sdf::torus(0.8, 0.2),
+            Sdf::cone(0.5, 1.0),
+            Sdf::rounded_box(Vec3::new(0.8, 0.6, 0.4), 0.1),
+            Sdf::ellipsoid(Vec3::new(1.2, 0.8, 0.5)),
             Sdf::sphere(1.0).translate(Vec3::new(0.5, -0.3, 0.2)),
             Sdf::sphere(0.6).union(Sdf::cuboid(Vec3::splat(0.5))),
             Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0)),

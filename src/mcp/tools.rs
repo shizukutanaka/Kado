@@ -824,6 +824,10 @@ mod tests {
         assert!(sandbox_write_path("/etc/passwd").is_err());
         assert!(sandbox_write_path("/tmp/x.stl").is_err());
         assert!(sandbox_write_path("").is_err());
+        // 問139: 空文字列は拒否されるが、空白のみも拒否されなければならない。
+        // trim() → empty() で検査するため "   " も Err になる。
+        assert!(sandbox_write_path("   ").is_err(), "whitespace-only path must be rejected");
+        assert!(sandbox_write_path("\t\n").is_err(), "whitespace-only path must be rejected");
     }
 
     #[test]
@@ -1286,6 +1290,82 @@ mod tests {
         assert!(
             (d - 1.0).abs() < 1e-9,
             "sphere eval must be exact for a primitive: expected 1.0, got {d}"
+        );
+    }
+
+    #[test]
+    fn undo_script_restores_scene_then_exhausts_single_level() {
+        // 問137: undo_script は1段戻りのみ対応し、2回目の呼び出しはエラーを返す。
+        // undo が全く呼び出されていない状態 (初期) もエラー。
+        // MCP ツールとして実装されているが、専用ユニットテストが存在しなかった。
+        let mut s = Session::new();
+
+        // (1) run_script 前の undo → エラー。
+        let r = call_tool(&mut s, "undo_script", &json::obj([]));
+        assert!(r.is_error, "undo before any run_script must return error");
+
+        // (2) run_script で sphere に変更。
+        let sphere_script = json::obj([("script", json::s(r#"{"op":"sphere","r":2.0}"#))]);
+        let r = call_tool(&mut s, "run_script", &sphere_script);
+        assert!(!r.is_error, "run_script must succeed");
+        // シーンが sphere(r=2) に変わっている: 原点の SDF 値 ≈ -2。
+        let d_after = s.scene.eval(Vec3::ZERO);
+        assert!((d_after - (-2.0)).abs() < 1e-9, "scene must be sphere(r=2)");
+
+        // (3) undo → デフォルトシーンに戻る。
+        let r = call_tool(&mut s, "undo_script", &json::obj([]));
+        assert!(!r.is_error, "first undo must succeed");
+        // デフォルトシーンのf(0)は sphere-cuboid smooth_union で負 (内部)。
+        let d_restored = s.scene.eval(Vec3::ZERO);
+        assert!(d_restored < 0.0, "undo must restore a scene with negative SDF at origin");
+        // undo 応答に "undo ok" が含まれる。
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(text.contains("undo ok"), "undo response must say 'undo ok': {text}");
+
+        // (4) 2回目の undo → エラー (single-level)。
+        let r = call_tool(&mut s, "undo_script", &json::obj([]));
+        assert!(r.is_error, "second undo must return error (single-level undo exhausted)");
+        let err = r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            err.contains("nothing to undo"),
+            "double undo error must say 'nothing to undo': {err}"
+        );
+    }
+
+    #[test]
+    fn undo_script_after_failed_run_does_not_corrupt_undo_state() {
+        // 問137b: 失敗した run_script は undo 状態を変えない。
+        // 実装: eval_any が Err なら early return するため prev_scene は更新されない。
+        // よって undo_script は失敗した run_script の「前」ではなく、
+        // その前の成功した run_script の前の状態に戻る。
+        let mut s = Session::new();
+
+        // (1) デフォルトシーンの SDF を記録 (sphere-cuboid smooth_union)。
+        let d_default = s.scene.eval(Vec3::ZERO);
+
+        // (2) sphere(r=1.5) に変更。prev_scene = default_scene。
+        let sphere_script = json::obj([("script", json::s(r#"{"op":"sphere","r":1.5}"#))]);
+        call_tool(&mut s, "run_script", &sphere_script);
+
+        // (3) 失敗する run_script。early return により prev_scene = default_scene のまま。
+        let bad = json::obj([("script", json::s("nonexistent_fn()"))]);
+        let r = call_tool(&mut s, "run_script", &bad);
+        assert!(
+            r.is_error,
+            "bad script must return is_error=true, got text: {}",
+            r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("(no text)")
+        );
+        // scene は sphere のまま変わっていない。
+        let d_sphere = s.scene.eval(Vec3::ZERO);
+        assert!((d_sphere - (-1.5)).abs() < 1e-9, "failed script must not change scene");
+
+        // (4) undo → default_scene に戻る (prev_scene は sphere 前のものが残っている)。
+        let r = call_tool(&mut s, "undo_script", &json::obj([]));
+        assert!(!r.is_error, "undo after failed run_script must succeed");
+        let d_after_undo = s.scene.eval(Vec3::ZERO);
+        assert!(
+            (d_after_undo - d_default).abs() < 1e-9,
+            "undo must restore to pre-sphere (default) state: expected {d_default} got {d_after_undo}"
         );
     }
 
