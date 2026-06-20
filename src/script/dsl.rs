@@ -592,4 +592,20 @@ mod tests {
             "unknown op nested in translate must be rejected"
         );
     }
+
+    #[test]
+    fn function_call_with_zero_arguments_is_rejected() {
+        // 問175: 既知の演算子でも引数 0 個の呼び出し sphere() は
+        // want(n) ガードで "expects N argument(s), got 0" になり拒否される。
+        // AI が引数を忘れた呼び出しを送っても黙って既定値で評価しないことを固定。
+        let err = eval_dsl("sphere()").expect_err("sphere() with no args must be rejected");
+        assert!(
+            err.to_string().contains("got 0"),
+            "zero-arg error must report 'got 0', message: {err}"
+        );
+        // 他の固定アリティ演算子も同様に拒否される。
+        assert!(eval_dsl("cuboid()").is_err(), "cuboid() must be rejected");
+        assert!(eval_dsl("union()").is_err(), "union() must be rejected");
+        assert!(eval_dsl("translate()").is_err(), "translate() must be rejected");
+    }
 }

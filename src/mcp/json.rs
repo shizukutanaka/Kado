@@ -323,7 +323,18 @@ impl<'a> Parser<'a> {
                                 .map_err(|_| format!("bad \\u escape: {hex}"))?;
                             s.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
                         }
-                        other => s.push(other.unwrap_or(b'?') as char),
+                        // 問167: 未知のエスケープは厳密に拒否する。以前は
+                        // `s.push(other.unwrap_or(b'?') as char)` だったが advance を
+                        // 呼ばないため、次ループで同じ文字が `Some(c)` 経由で再 push され
+                        // `\q` → "qq" のように文字が二重化するバグがあった。
+                        // malformed literal / bad \u escape と同様にエラーとする。
+                        Some(c) => {
+                            return Err(format!(
+                                "invalid escape \\{} at pos {}",
+                                c as char, self.pos
+                            ));
+                        }
+                        None => return Err("unterminated string: trailing backslash".into()),
                     }
                 }
                 Some(c) => {
@@ -517,6 +528,58 @@ mod tests {
         assert_eq!(
             parse("[true,null,false]").unwrap(),
             arr([Value::Bool(true), Value::Null, Value::Bool(false)])
+        );
+    }
+
+    #[test]
+    fn empty_and_whitespace_only_input_is_rejected() {
+        // 問166: 空文字列・空白のみの入力は値が存在しないので
+        // parse_value_inner の peek が None になり "unexpected" エラーになる。
+        // MCP フレームが空ボディを送っても黙って null 等に化けないことを固定。
+        assert!(parse("").is_err(), "empty input must be rejected");
+        assert!(parse("   ").is_err(), "whitespace-only input must be rejected");
+        assert!(parse("\n\t ").is_err(), "whitespace-only input must be rejected");
+        // エラーメッセージが pos 起点を含むこと (デバッグ可能性)。
+        assert!(
+            parse("").unwrap_err().contains("unexpected"),
+            "empty input error must mention 'unexpected', got: {}",
+            parse("").unwrap_err()
+        );
+    }
+
+    #[test]
+    fn array_with_leading_or_middle_comma_is_rejected() {
+        // 問168: trailing_comma_is_rejected は [1,2,] のみ確認。
+        // 先頭コンマ [,1] や中間コンマ [1,,2] も値欠落として拒否されることを固定。
+        // parse_value が ',' を unexpected として弾く経路。
+        assert!(parse("[,1]").is_err(), "leading comma must be rejected");
+        assert!(parse("[1,,2]").is_err(), "middle double-comma must be rejected");
+        assert!(parse("[ , ]").is_err(), "comma-only array must be rejected");
+        // 回帰: 正常な配列は通る。
+        assert_eq!(parse("[1,2]").unwrap(), arr([Value::Number(1.0), Value::Number(2.0)]));
+    }
+
+    #[test]
+    fn invalid_escape_is_rejected_not_silently_doubled() {
+        // 問167: 未知エスケープ \q は以前 `other` 分岐で advance せずに push され、
+        // 次ループで同じ文字が再 push されて "aqqb" のように二重化していた (バグ)。
+        // 修正後は malformed literal 等と同様に厳密にエラーとなる。
+        let err = parse(r#""a\qb""#).unwrap_err();
+        assert!(
+            err.contains("invalid escape"),
+            "unknown escape \\q must be rejected, got: {err}"
+        );
+        // 有効なエスケープは引き続き正しく機能する (回帰防止)。
+        assert_eq!(parse(r#""a\nb""#).unwrap().as_str(), Some("a\nb"), "\\n must still work");
+        assert_eq!(parse(r#""a\\b""#).unwrap().as_str(), Some("a\\b"), "\\\\ must still work");
+        assert_eq!(parse(r#""a\"b""#).unwrap().as_str(), Some("a\"b"), "\\\" must still work");
+
+        // バックスラッシュ直後が EOF の場合も明確にエラー (黙って壊れた値を返さない)。
+        let backslash_eof = "\"a\\"; // 開きクオート + a + バックスラッシュ + EOF
+        let err2 = parse(backslash_eof).unwrap_err();
+        assert!(
+            err2.contains("trailing backslash") || err2.contains("unterminated"),
+            "backslash at EOF must error, got: {err2}"
         );
     }
 

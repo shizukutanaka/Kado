@@ -846,4 +846,32 @@ mod tests {
         let msg = read_message(&mut cursor_good).expect("normal frame must parse");
         assert_eq!(msg.get("method").and_then(|m| m.as_str()), Some("ping"));
     }
+
+    #[test]
+    fn missing_or_non_numeric_content_length_is_rejected_identically() {
+        // 問171/172: Content-Length が無い、または非数値の場合、どちらも
+        // "missing Content-Length" として拒否される。非数値は parse().ok() が
+        // None になり content_length が未設定のまま = 欠落と同じ扱いになる。
+        // (オーバーフローや巨大確保の前に弾かれる)。
+
+        // (1) ヘッダ自体が無い (別ヘッダのみ)。
+        let no_cl = "Other-Header: value\r\n\r\n";
+        let mut cursor = std::io::Cursor::new(no_cl.as_bytes().to_vec());
+        let err = read_message(&mut cursor).expect_err("missing Content-Length must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("missing Content-Length"),
+            "missing header error must say so, got: {err}"
+        );
+
+        // (2) Content-Length が非数値 → parse().ok() = None → 欠落と同一エラー。
+        let bad_cl = "Content-Length: notanumber\r\n\r\n";
+        let mut cursor2 = std::io::Cursor::new(bad_cl.as_bytes().to_vec());
+        let err2 = read_message(&mut cursor2).expect_err("non-numeric Content-Length must be rejected");
+        assert_eq!(err2.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err2.to_string().contains("missing Content-Length"),
+            "non-numeric value is treated as missing, got: {err2}"
+        );
+    }
 }

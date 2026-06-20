@@ -718,6 +718,30 @@ mod tests {
     }
 
     #[test]
+    fn repeat_with_explicit_zero_counts_degenerates_to_single_shape() {
+        // 問174: 明示的に nx=ny=nz=0 を与え period を正にした場合、
+        // 検証 (line 300 の cnt>0.0 ガード) は cnt=0 なので通過し、エラーにならない。
+        // snap() は n==0 で軸を無効化するため、全軸 count=0 は繰り返しなしの
+        // 単一形状に縮退する。この「明示ゼロ = 無効化」契約を固定する。
+        let zero_all = r#"{"op":"repeat","x":2.0,"nx":0,"y":2.0,"ny":0,"z":2.0,"nz":0,
+                           "shape":{"op":"sphere","r":0.3}}"#;
+        let sdf = eval_scene(zero_all).expect("explicit zero counts must not error");
+        // 結果は素の sphere(0.3) と同じ距離場 (繰り返しが無効化されている)。
+        let bare = Sdf::sphere(0.3);
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(2.0, 0.0, 0.0), // 繰り返しがあれば d<0、なければ d>0。
+            Vec3::new(1.0, 1.0, 1.0),
+        ] {
+            assert_eq!(
+                sdf.eval(p),
+                bare.eval(p),
+                "all-zero-count repeat must equal bare sphere at {p:?}"
+            );
+        }
+    }
+
+    #[test]
     fn torus_minor_ge_major_is_rejected() {
         // 問77: minor >= major → 自己交差 (horn/spindle torus) → 非多様体メッシュ → 印刷不可。
         // 数学的 ring torus の要件 (minor < major) をスクリプト評価段階で強制する。

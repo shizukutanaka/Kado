@@ -3235,3 +3235,90 @@ len が 1e-150 オーダーの「ほぼ退化」三角形では 1/len が Inf �
 > 既存テストでは検知できない削除に対して盲点になっていた。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 241 ユニット。
+
+## 問166 — 空入力・空白のみ入力の JSON パース
+
+**問**: `malformed_literals_are_rejected` は `nul`/`tru` 等の誤綴りを確認するが、
+完全に空の入力 `parse("")` や空白のみ `parse("   ")` を確認していない。
+MCP フレームが空ボディを送った場合に黙って null 等に化けないか未検証。
+
+**実装 (json.rs)**:
+- `empty_and_whitespace_only_input_is_rejected`:
+  `parse("")`, `parse("   ")`, `parse("\n\t ")` がすべてエラーで
+  メッセージが "unexpected" を含むことを確認。
+
+## 問167 — 未知エスケープが文字を二重化するバグ (実バグ発見・修正)
+
+**問**: `parse_string` の `other` 分岐 (旧 line 326) は
+`s.push(other.unwrap_or(b'?') as char)` で未知エスケープ文字を push するが
+**advance を呼ばない**。次ループで同じ文字が `Some(c)` 経由で再 push され、
+`\q` → "qq" のように文字が二重化していた。`string_escaping` は有効エスケープ
+のみ確認しており、この経路は完全に未検証だった。
+
+**修正 (json.rs)**: `other` 分岐を `Some(c)` / `None` に分割し、
+未知エスケープは `invalid escape \X` エラー、末尾バックスラッシュは
+`unterminated string: trailing backslash` エラーとする (malformed literal 等と
+同様の厳密拒否)。二重化バグを根絶。
+
+**実装 (json.rs)**:
+- `invalid_escape_is_rejected_not_silently_doubled`:
+  `parse(r#""a\qb""#)` がエラー (旧挙動 "aqqb" の回帰防止)、
+  `\n`/`\\`/`\"` は引き続き正常動作、末尾バックスラッシュもエラーを確認。
+
+## 問168 — 配列の先頭・中間コンマ
+
+**問**: `trailing_comma_is_rejected` は `[1,2,]` のみ。先頭コンマ `[,1]` や
+中間二重コンマ `[1,,2]` (値欠落) は未確認。
+
+**実装 (json.rs)**:
+- `array_with_leading_or_middle_comma_is_rejected`:
+  `[,1]`, `[1,,2]`, `[ , ]` がエラー、正常 `[1,2]` は通ることを確認。
+
+## 問171/172 — Content-Length 欠落・非数値は同一に拒否
+
+**問**: `oversized_content_length_is_rejected_before_allocation` は上限超過のみ確認。
+ヘッダ欠落と非数値値 (`Content-Length: notanumber`) は未確認。後者は
+`parse().ok()` が None になり「欠落」と同一経路で拒否される (この同値性も未固定)。
+
+**実装 (server.rs)**:
+- `missing_or_non_numeric_content_length_is_rejected_identically`:
+  別ヘッダのみ / 非数値値の両方が `InvalidData` + "missing Content-Length" で
+  拒否されることを確認。非数値が欠落と同一扱いになる契約を固定。
+
+## 問174 — 明示的ゼロカウントの repeat 縮退
+
+**問**: `repeat_count_without_period_is_rejected` は count>0 & period=0 を確認するが、
+明示的 `nx=ny=nz=0` & period>0 のケースは検証 (cnt>0.0 ガード) を通過し
+エラーにならない。snap() の n==0 で全軸無効化 → 単一形状縮退になる契約が未固定。
+
+**実装 (eval.rs)**:
+- `repeat_with_explicit_zero_counts_degenerates_to_single_shape`:
+  全軸 count=0 & period=2.0 が素の sphere(0.3) と同一距離場になることを
+  3 プローブ点で確認。
+
+## 問175 — 引数 0 個の DSL 関数呼び出し
+
+**問**: `unknown_operator_rejected_*` は未知演算子を確認するが、既知演算子の
+引数 0 個呼び出し `sphere()` は未確認。`want(n)` ガードが "got 0" を返すか未検証。
+
+**実装 (dsl.rs)**:
+- `function_call_with_zero_arguments_is_rejected`:
+  `sphere()` がエラー (メッセージ "got 0")、`cuboid()`/`union()`/`translate()` も
+  拒否されることを確認。
+
+## 反映サマリ v90
+| 問 | 実装 |
+|----|------|
+| 166 | 空入力・空白のみ入力の拒否 (json.rs) |
+| 167 | **実バグ修正**: 未知エスケープの文字二重化を根絶し厳密拒否 (json.rs) |
+| 168 | 配列の先頭・中間コンマ拒否 (json.rs) |
+| 171/172 | Content-Length 欠落・非数値の同一拒否 (server.rs) |
+| 174 | 明示ゼロカウント repeat の単一形状縮退 (eval.rs) |
+| 175 | 引数 0 個の DSL 関数呼び出し拒否 (dsl.rs) |
+
+> 総括: v90 はソクラテス問答が**実バグ**を発見した回。問167 の未知エスケープ
+> 二重化 (`\q` → "qq") は parse_string の `other` 分岐が advance を欠いていたため
+> で、有効エスケープのみテストしていたため完全な盲点だった。厳密拒否へ修正。
+> 他は JSON/MCP/DSL の error path・境界条件の網羅。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 247 ユニット + 統合 3 = 250 合計。
