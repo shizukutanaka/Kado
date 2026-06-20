@@ -3390,3 +3390,71 @@ lo ≈ −1.0 + 1e-10 ≈ −1.0 と hi ≈ 1e-10 の精度損失が起きうる
 > Capsule の引数順 (half_height, radius) も同時に明確化。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 252 ユニット + 統合 3 = 255 合計。
+
+## 問183 — build_dir 短い配列の +Z フォールバックが未確認
+
+**問**: arg_build_dir は 3 要素未満の配列を +Z にフォールバックする (問85 の契約) が、
+この経路をテストで確認していなかった。[1,0] が誤って [1,0,1] に補完されないことを固定。
+
+**実装 (tools.rs)**:
+- `arg_build_dir_short_array_falls_back_to_plus_z_not_partial_fill`:
+  [1,0] と [1] が +Z にフォールバック、正常な [1,0,0] はそのまま使われることを確認。
+
+## 問184 — rotate_box の負角・X/Y 軸の範囲入れ替えが未確認
+
+**問**: rotate_z_90deg_swaps_extents は +90°/z 軸のみ。負角 (-90°) と x/y 軸の
+回転行列の行順 (sin/cos の適用) は別の式を通るため未検証だった。
+
+**実装 (sdf.rs)**:
+- `rotate_box_negative_and_per_axis_swaps_extents_symmetrically`:
+  ±90° z 回転が対称箱で同一 aabb、x 軸回転で y↔z 入れ替え、
+  y 軸回転で x↔z 入れ替えを具体値で確認。
+
+## 問185 — 非重複 Intersection の反転 AABB でも eval が正しい
+
+**問**: 非重複の hard Intersection は aabb が反転 (lo > hi) するが、eval が
+正しく外部値を返すことと sampling_box が正規化することを同時に確認する
+テストがなかった (sampling_box 正規化のみ、または smooth 版のみ)。
+
+**実装 (sdf.rs)**:
+- `intersection_of_nonoverlapping_shapes_inverts_aabb_but_eval_is_exterior`:
+  sphere(1) ∩ sphere(1)@x=10 で aabb 反転 (lo.x>hi.x)、eval(原点)=max(-1,9)=9 (外部)、
+  sampling_box 正規化を確認。
+
+## 問186 — mirror_box の AABB 対称化 vs eval の +x 半分保持規約の乖離
+
+**問**: mirror_box は ext=max(|lo|,|hi|) で aabb を対称化するが、eval は
+child.eval(|x|,..) で **+x 半分を -x へ反射**する規約。完全に -x 側にある形状を
+mirror_x すると aabb は [-3.5,3.5] に広がるが幾何は空 (|x|>=0 が child に届かない)。
+この保守境界 vs 実空集合の乖離が未文書化だった。
+
+**実装 (sdf.rs)**:
+- `mirror_box_symmetrizes_aabb_but_eval_keeps_only_positive_half`:
+  -x 側形状: aabb 対称 [-3.5,3.5] だが eval は全点外部 (空)。
+  対照で +x 側形状は反射コピーが両側に現れることを確認。
+
+## 問189 — Unix でのバックスラッシュパスが literal ファイル名として安全
+
+**問**: sandbox_write_path は Path::components() で判定するが、Unix では '\\' は
+パス区切りでなくファイル名の一文字。"a\\..\\escape.stl" は単一コンポーネントになり
+ParentDir と解釈されず脱出しない。この platform 契約 (バックスラッシュ=安全) が未固定。
+
+**実装 (tools.rs)**:
+- `sandbox_backslash_path_is_literal_filename_on_unix_not_traversal` (#[cfg(unix)]):
+  "a\\..\\escape.stl" が Ok (literal ファイル名)、"a/../escape.stl" は Err (回帰防止)。
+
+## 反映サマリ v92
+| 問 | 実装 |
+|----|------|
+| 183 | build_dir 短配列の +Z フォールバック (tools.rs) |
+| 184 | rotate_box 負角・X/Y 軸の範囲入れ替え (sdf.rs) |
+| 185 | 非重複 Intersection 反転 AABB でも eval 正しい (sdf.rs) |
+| 186 | mirror AABB 対称化 vs eval 半分保持の乖離 (sdf.rs) |
+| 189 | Unix バックスラッシュパスの literal 安全性 (tools.rs) |
+
+> 総括: v92 は変換 (rotate/mirror) の AABB と eval の関係、CSG の反転 AABB、
+> MCP の入力フォールバック・パスサンドボックスを固定した。問186 で mirror の
+> 「aabb は対称化するが eval は +x 半分のみ保持」という規約上の乖離を明文化。
+> 問189 は Unix でバックスラッシュが literal = 脱出不能であることを platform 契約として固定。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 257 ユニット + 統合 3 = 260 合計。

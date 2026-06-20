@@ -831,6 +831,52 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_backslash_path_is_literal_filename_on_unix_not_traversal() {
+        // 問189: Unix では '\\' はパス区切りではなくファイル名の一文字。
+        // "a\\..\\escape.stl" は単一の Normal コンポーネントになり、ParentDir として
+        // 解釈されないため脱出しない (プロジェクト直下に変な名前のファイルができるだけ)。
+        // この「バックスラッシュは literal = 安全」という platform 契約を固定する。
+        #[cfg(unix)]
+        {
+            // 単一の奇妙なファイル名として受理される (脱出なし)。
+            let r = sandbox_write_path("a\\..\\escape.stl");
+            assert!(
+                r.is_ok(),
+                "on Unix backslash is a literal filename char, not traversal"
+            );
+            // 正規のスラッシュ traversal は引き続き拒否される (回帰防止)。
+            assert!(sandbox_write_path("a/../escape.stl").is_err());
+        }
+    }
+
+    #[test]
+    fn arg_build_dir_short_array_falls_back_to_plus_z_not_partial_fill() {
+        // 問183: build_dir が 3 要素未満の配列のとき、欠けた成分を 0 補完して
+        // [1,0] → [1,0,1] のような対角ビルドにせず、+Z デフォルトへフォールバックする。
+        // (問85 の契約をテストで固定。AI が x-build を意図した [1,0] が
+        //  誤って斜めビルド方向で解析される事故を防ぐ)
+        let two = json::obj([("build_dir", json::arr([json::n(1.0), json::n(0.0)]))]);
+        assert_eq!(
+            arg_build_dir(&two),
+            Vec3::new(0.0, 0.0, 1.0),
+            "2-element build_dir must fall back to +Z (not partial-filled to [1,0,1])"
+        );
+        // 1 要素も同様。
+        let one = json::obj([("build_dir", json::arr([json::n(1.0)]))]);
+        assert_eq!(arg_build_dir(&one), Vec3::new(0.0, 0.0, 1.0), "1-element must fall back to +Z");
+        // 完全な 3 要素はそのまま使われる (回帰: 正常経路を壊さない)。
+        let three = json::obj([(
+            "build_dir",
+            json::arr([json::n(1.0), json::n(0.0), json::n(0.0)]),
+        )]);
+        assert_eq!(
+            arg_build_dir(&three),
+            Vec3::new(1.0, 0.0, 0.0),
+            "valid 3-element build_dir must be used verbatim"
+        );
+    }
+
+    #[test]
     fn export_tool_rejects_unsafe_path() {
         // 経路全体: run_script で正本を設定し export が脱出パスを拒否する。
         let mut session = Session::new();

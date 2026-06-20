@@ -829,6 +829,81 @@ mod tests {
     }
 
     #[test]
+    fn rotate_box_negative_and_per_axis_swaps_extents_symmetrically() {
+        // 問184: rotate_z_90deg は +90°/z軸のみ。負角 (-90°) と x/y 軸も
+        // 範囲入れ替えが対称に起きることを確認する。±90° は同じ aabb になるはず
+        // (細長い箱を回すと x/y が入れ替わり、符号対称の箱なので結果は一致)。
+        use std::f64::consts::FRAC_PI_2;
+        let bar = Sdf::cuboid(Vec3::new(2.0, 0.5, 0.5));
+        let pos = bar.clone().rotate_z(FRAC_PI_2).aabb();
+        let neg = bar.clone().rotate_z(-FRAC_PI_2).aabb();
+        // ±90° の z 回転は対称な箱に対して同一 aabb を生む。
+        assert!((pos.0.x - neg.0.x).abs() < 1e-9, "±90° z must give same lo.x");
+        assert!((pos.1.y - neg.1.y).abs() < 1e-9, "±90° z must give same hi.y");
+        assert!((neg.1.y - 2.0).abs() < 1e-9, "neg rotate hi.y must be 2.0, got {}", neg.1.y);
+
+        // x 軸回転 90°: y 半幅 (0.5) と z 半幅 (0.5) が入れ替わる (両方 0.5 なので不変)。
+        // 代わりに y!=z の箱で確認する。
+        let bar_yz = Sdf::cuboid(Vec3::new(0.5, 2.0, 0.3));
+        let rx = bar_yz.clone().rotate_x(FRAC_PI_2).aabb();
+        // x 軸回転で y(2.0)↔z(0.3) 入れ替え → hi.z ≈ 2.0, hi.y ≈ 0.3。
+        assert!((rx.1.z - 2.0).abs() < 1e-9, "rotate_x must move y-extent to z, got hi.z={}", rx.1.z);
+        assert!((rx.1.y - 0.3).abs() < 1e-9, "rotate_x must move z-extent to y, got hi.y={}", rx.1.y);
+
+        // y 軸回転 90°: x(0.5)↔z(0.3) 入れ替え。
+        let ry = bar_yz.clone().rotate_y(FRAC_PI_2).aabb();
+        assert!((ry.1.x - 0.3).abs() < 1e-9, "rotate_y must move z-extent to x, got hi.x={}", ry.1.x);
+        assert!((ry.1.z - 0.5).abs() < 1e-9, "rotate_y must move x-extent to z, got hi.z={}", ry.1.z);
+    }
+
+    #[test]
+    fn intersection_of_nonoverlapping_shapes_inverts_aabb_but_eval_is_exterior() {
+        // 問185: 非重複の hard Intersection は aabb が反転 (lo > hi) しうるが、
+        // eval は正しく外部 (正値) を返し、sampling_box は正規化することを確認。
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
+        let inter = a.intersection(b);
+        // aabb は x 方向で反転する (a の hi.x=1.0 < b の lo.x=9.0 → max(lo)=9, min(hi)=1)。
+        let (lo, hi) = inter.aabb();
+        assert!(lo.x > hi.x, "non-overlap intersection aabb must invert on x: lo.x={} hi.x={}", lo.x, hi.x);
+        // eval は max(da, db)。原点では a 内部(-1.0) だが b 外部(+9.0) → max=+9.0 (外部)。
+        let d = inter.eval(Vec3::ZERO);
+        assert!(d > 0.0, "intersection of disjoint shapes must be exterior at origin: {d}");
+        assert!((d - 9.0).abs() < 1e-9, "eval = max(-1, 9) = 9, got {d}");
+        // sampling_box は正規化される (lo <= hi)。
+        let (slo, shi) = inter.sampling_box();
+        assert!(slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z, "sampling_box must be normalized");
+    }
+
+    #[test]
+    fn mirror_box_symmetrizes_aabb_but_eval_keeps_only_positive_half() {
+        // 問186: mirror_box は ext = max(|lo|, |hi|) で対称化するが、eval は
+        // child.eval(|x|,..) なので **+x 半分を -x へ反射**する規約である。
+        // 完全に -x 側にある形状を mirror_x すると:
+        //  - aabb は対称 [-3.5, 3.5] に広がる (保守的境界)
+        //  - しかし |x|>=0 は child (中心 x=-3) に決して届かないため幾何は空になる
+        // この aabb と eval の乖離 (保守境界 vs 実際の空集合) を固定する。
+        let neg_side = Sdf::sphere(0.5).translate(Vec3::new(-3.0, 0.0, 0.0));
+        let m = neg_side.clone().mirror_x();
+        let (lo, hi) = m.aabb();
+        // aabb: ext = max(|-3.5|, |-2.5|) = 3.5 → [-3.5, 3.5] (対称・保守的)。
+        assert!((lo.x + 3.5).abs() < 1e-9, "mirrored lo.x must be -3.5, got {}", lo.x);
+        assert!((hi.x - 3.5).abs() < 1e-9, "mirrored hi.x must be 3.5, got {}", hi.x);
+        assert!((lo.x + hi.x).abs() < 1e-12, "mirror aabb must be symmetric: lo.x=-hi.x");
+        // eval: child は x=-3 にあり |x|>=0 では届かない → どこも外部 (空集合)。
+        let d_pos = m.eval(Vec3::new(3.0, 0.0, 0.0)); // child.eval(3,..) = |3-(-3)|-0.5 = 5.5
+        let d_neg = m.eval(Vec3::new(-3.0, 0.0, 0.0)); // child.eval(|-3|,..) = 同じ 5.5
+        assert!((d_pos - d_neg).abs() < EPS, "mirror eval must be symmetric: {d_pos} vs {d_neg}");
+        assert!(d_pos > 0.0, "negative-side shape mirrors to empty: must be exterior, got {d_pos}");
+
+        // 対照: +x 側の形状なら反射コピーが -x 側に現れる (規約の正常動作)。
+        let pos_side = Sdf::sphere(0.5).translate(Vec3::new(3.0, 0.0, 0.0));
+        let mp = pos_side.mirror_x();
+        assert!(mp.eval(Vec3::new(3.0, 0.0, 0.0)) < 0.0, "+x copy must exist (inside)");
+        assert!(mp.eval(Vec3::new(-3.0, 0.0, 0.0)) < 0.0, "reflected -x copy must exist (inside)");
+    }
+
+    #[test]
     fn mirror_x_symmetry() {
         let base = Sdf::sphere(0.5).translate(Vec3::new(1.0, 0.0, 0.0));
         let m = base.clone().mirror_x();
