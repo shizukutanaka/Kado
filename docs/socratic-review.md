@@ -2613,3 +2613,85 @@ golden ダイジェスト不変。
 > 解消し、抽出コードの変更は golden ダイジェストでバイト不変を証明。CI による再発防止は
 > App の workflows 権限不足で push できず BACKLOG とした。
 > テスト数 207 + 統合 3 (新規テストなし; lint 修正)。
+
+---
+
+## 問126 — sampling_box の 1e-3 最小余白が未テスト (ゼロ AABB 形状)
+
+**問**: `sampling_box` は `max(0.05*diag, 1e-3)` の余白を加える。AABB が点
+(例: 半径 0 の球) の場合 `diag = 0` となり `m = 1e-3` が唯一の防護線となる。
+この最小値が誤って削除されると `polygonize` がゼロ幅ボックスを受け取り
+ステップ幅 = 0 / ゼロ除算が起きる。だが「1e-3 最小余白が点 AABB に適用される」
+という不変条件を固定するテストが存在しなかった。
+
+**仮定の見直し**: 「sampling_box の非反転テストがあれば十分」は誤り。
+ゼロ幅ボックスは反転しないため反転テストを通過してしまう。
+
+**実装 (sdf.rs)**:
+- `sampling_box_applies_minimum_margin_for_zero_aabb`: `Sdf::Sphere { radius: 0.0 }` で
+  各軸の幅 ≥ 1e-3 を確認し、`polygonize` がパニックなく空メッシュを返すことを検証。
+
+## 問127 — Union-Find が N > 2 の独立成分で正しいことが未確認
+
+**問**: `body_components` の既存テストは 1 ボディ・2 ボディ・1 ボディ+1 空洞の
+3 ケースのみ。Union-Find (経路分割 + 小 root 優先) が N = 3 以上の成分で
+正しく動作するかどうかを固定するテストがなかった。
+
+**仮定の見直し**: 「アルゴリズムが正しいから 2 成分テストで十分」は主張であり証拠ではない。
+N > 2 では Union-Find の経路圧縮がより深い木で動作し、成分ごとの符号付き体積集計も
+3 エントリを持つ HashMap を正確に処理しなければならない。
+
+**実装 (mesh.rs)**:
+- `three_disjoint_solids_are_three_bodies`: 3 つの離れた球の和を res=32 で抽出し
+  `body_components() == (3, 0)` を確認。is_edge_manifold も同時に保証。
+
+## 問128 — 3MF XML 書き出しが非有限座標で "NaN"/"inf" を出力する
+
+**問**: `build_model_xml` は `v.x, v.y, v.z` を Rust の `{}` フォーマットで
+直接 XML に埋め込む。`f64::NAN` や `f64::INFINITY` は "NaN"/"inf" と書き出され、
+XML テキストとして無効な浮動小数点表現になる。DSL/JSON の `eval.rs` がスケール因子
+などを検証するため通常の SDF 抽出では非有限座標は生じないが、Sdf 構造体を直接
+構築した場合 (パブリック API) にはこの保証がない。
+
+**仮定の見直し**: 「出力層は入力が正常なら正常」は入力バリデーションが完全な場合のみ
+成り立つ。公開 API は直接構築を許す以上、出力層にも防御が必要。
+(JSON 数値の NaN→null 変換 (問117) と同じパターン。)
+
+**実装 (threemf.rs)**:
+- `finite_coord(v: f64) -> f64`: 非有限値を 0.0 に正規化するプライベートヘルパを追加。
+- `build_model_xml` の `writeln!` を `finite_coord` 経由に変更。
+- `model_xml_never_contains_nonfinite_number_strings`: 通常メッシュと手動非有限
+  頂点メッシュの両方で "NaN"/"inf" が出力されないこと、かつ非有限座標が 0 に
+  正規化されることを確認。
+
+## 問130 — 空メッシュが「体積信頼可」と誤判定されないことの明示テストが欠如
+
+**問**: `volume_reliable() = is_manifold && triangle_count > 0` の
+`triangle_count > 0` ガードは空メッシュを除外するための唯一の防護線。
+空メッシュは辺がないため `is_manifold = true` になるが、符号付き体積は
+ガウス発散定理を閉曲面に適用するため非空メッシュでのみ意味を持つ。
+このガードが削除されると AI/利用者が空メッシュの体積 0.0 を信頼してしまう。
+だが「空メッシュで volume_reliable = false」を明示するテストが存在しなかった。
+
+**仮定の見直し**: 「is_manifold && tri_count > 0 の impl を読めば分かる」は
+テストではない。実装が変わったとき (例: 条件を `is_manifold` 単体に簡略化)
+サイレントに壊れる。
+
+**実装 (check.rs)**:
+- `empty_mesh_volume_is_never_reliable`: 非重複 SmoothIntersection (問40) で
+  空メッシュを生成し `volume_reliable() == false` と `EMPTY_MESH` issue の
+  両方を確認。
+
+## 反映サマリ v81
+| 問 | 実装 |
+|----|------|
+| 126 | `sampling_box` ゼロ AABB 形状の 1e-3 最小余白不変条件テスト (sdf.rs) |
+| 127 | `body_components` N=3 独立成分テスト — Union-Find 多成分正確性 (mesh.rs) |
+| 128 | 3MF 非有限座標を `finite_coord` で 0 正規化 + テスト (threemf.rs) |
+| 130 | 空メッシュ `volume_reliable=false` 明示テスト (check.rs) |
+
+> 総括: v81 は「未テストの防護線」4 件を固定した。
+> sampling_box の最小余白ガード (問126)、Union-Find の多成分正確性 (問127)、
+> 3MF の非有限座標サニタイズ (問128)、空メッシュの体積信頼判定 (問130)。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数 211 ユニット + 統合 3 = 214 合計。

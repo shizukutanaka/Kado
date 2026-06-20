@@ -1178,4 +1178,26 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn sampling_box_applies_minimum_margin_for_zero_aabb() {
+        // 問126: AABB が点 (diag = 0) の場合、sampling_box は 1e-3 の最小余白を保証する。
+        // この最小値が唯一の防護線: 欠落すると polygonize がゼロ幅のボックスを受け取り
+        // step = 0 / ゼロ除算になる。
+        // 半径0の球 (eval(p)=length(p)≥0) は AABB = (0,0,0)×(0,0,0) → diag=0。
+        let s = Sdf::Sphere { radius: 0.0 };
+        let (lo, hi) = s.sampling_box();
+        let span = hi - lo;
+        assert!(
+            span.x >= 1e-3 && span.y >= 1e-3 && span.z >= 1e-3,
+            "zero-AABB shape must get at least 1e-3 margin per axis, got span={span:?}"
+        );
+        // polygonize はパニックせず空メッシュを返す (全評価点が val≥0 のため)。
+        let mesh = crate::extract::polygonize(&s, lo, hi, 4);
+        assert!(
+            mesh.triangles.is_empty(),
+            "zero-radius sphere must produce empty mesh, got {} triangles",
+            mesh.triangles.len()
+        );
+    }
 }

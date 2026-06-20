@@ -879,4 +879,31 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn empty_mesh_volume_is_never_reliable() {
+        // 問130: 空メッシュ (三角形ゼロ) は is_manifold=true になりうるが、
+        // volume_reliable() は false を返さなければならない。
+        // volume_reliable = is_manifold && triangle_count > 0 の triangle_count > 0
+        // ガードが削除されると空メッシュを「体積信頼可」と誤判定する。
+        // 非重複の SmoothIntersection は空メッシュを生む標準的なパス (問40)。
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
+        let si = a.smooth_intersection(b, 0.3);
+        let (lo, hi) = si.sampling_box();
+        let mesh = polygonize(&si, lo, hi, 8);
+        assert!(
+            mesh.triangles.is_empty(),
+            "precondition: non-overlapping smooth_intersection must yield empty mesh"
+        );
+        let report = validate(&mesh, 0.0, 0.0);
+        assert!(
+            !report.volume_reliable(),
+            "empty mesh must not claim volume is reliable (triangle_count=0 guard must hold)"
+        );
+        assert!(
+            report.issues.iter().any(|e| e.code == "EMPTY_MESH"),
+            "empty mesh must produce an EMPTY_MESH issue"
+        );
+    }
 }

@@ -238,6 +238,28 @@ mod tests {
     }
 
     #[test]
+    fn three_disjoint_solids_are_three_bodies() {
+        // 問127: Union-Find が N > 2 の独立成分を正しく識別する。
+        // 1ボディ・2ボディの既存テストを超え、経路圧縮が多成分でも正しいことを確認する。
+        // (uf_find は経路分割を用いており、成分数が増えるほど圧縮の正確さが重要になる。)
+        let a = Sdf::sphere(0.5).translate(Vec3::new(-3.0, 0.0, 0.0));
+        let b = Sdf::sphere(0.5);
+        let c = Sdf::sphere(0.5).translate(Vec3::new(3.0, 0.0, 0.0));
+        let model = a.union(b).union(c);
+        let (lo, hi) = model.sampling_box();
+        let m = polygonize(&model, lo, hi, 32);
+        assert!(
+            m.is_edge_manifold(),
+            "three disjoint spheres must be individually watertight"
+        );
+        assert_eq!(
+            m.body_components(),
+            (3, 0),
+            "three disjoint spheres are three separate solid bodies"
+        );
+    }
+
+    #[test]
     fn triangle_indices_are_in_bounds_and_nondegenerate() {
         // 問109: 全ての出力経路 (STL/GLB/3MF/HTML/レンダラ/体積/検証) は
         // `mesh.vertices[t[i] as usize]` で頂点を引く。インデックスが範囲外だと全経路が

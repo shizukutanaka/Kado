@@ -39,6 +39,15 @@ pub fn write_3mf(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(path, encode_3mf(mesh))
 }
 
+/// 非有限座標 (NaN/±Inf) を 0.0 に正規化する。
+///
+/// Rust の `{}` は非有限 f64 を "NaN"/"inf" と書き出すが、これは数値テキストとして
+/// 無効な XML になる (問128)。通常の SDF 抽出では非有限座標は生じないが
+/// (eval.rs のパラメータ検証により)、防御的に正規化して XML の有効性を保証する。
+fn finite_coord(v: f64) -> f64 {
+    if v.is_finite() { v } else { 0.0 }
+}
+
 /// `3D/3dmodel.model` の XML 本体を生成する。
 ///
 /// 座標・インデックスのみを書き出すため XML エスケープが必要な文字は混入しない
@@ -55,8 +64,14 @@ fn build_model_xml(mesh: &Mesh) -> String {
          <vertices>\n",
     );
     for v in &mesh.vertices {
-        // f64 の最短往復表現 (決定的, 同一arch内)。
-        let _ = writeln!(s, "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v.x, v.y, v.z);
+        // f64 の最短往復表現 (決定的, 同一arch内)。非有限座標は 0 に正規化する (問128)。
+        let _ = writeln!(
+            s,
+            "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+            finite_coord(v.x),
+            finite_coord(v.y),
+            finite_coord(v.z)
+        );
     }
     s.push_str("</vertices>\n<triangles>\n");
     for t in &mesh.triangles {
@@ -116,5 +131,37 @@ mod tests {
     fn threemf_is_deterministic() {
         let m = sphere_mesh();
         assert_eq!(encode_3mf(&m), encode_3mf(&m));
+    }
+
+    #[test]
+    fn model_xml_never_contains_nonfinite_number_strings() {
+        // 問128: build_model_xml は "NaN" や "inf" を XML に出力しない。
+        // 通常抽出では発生しないが、finite_coord による防御的正規化の不変条件を固定する。
+        // 文字列 "NaN"/"inf"/"Inf" が含まれると 3MF パーサがエラーになる。
+        let xml = build_model_xml(&sphere_mesh());
+        assert!(
+            !xml.contains("NaN") && !xml.contains("inf") && !xml.contains("Inf"),
+            "3MF model XML must not contain non-finite number strings: found in output"
+        );
+        // 非有限座標を直接持つメッシュでも XML は有効なままである。
+        let bad = Mesh {
+            vertices: vec![
+                Vec3::new(f64::NAN, 0.0, 0.0),
+                Vec3::new(f64::INFINITY, 0.0, 0.0),
+                Vec3::new(0.0, f64::NEG_INFINITY, 0.0),
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        // 退化判定 (from_soup) をバイパスして直接生成したメッシュでも XML は安全。
+        let bad_xml = build_model_xml(&bad);
+        assert!(
+            !bad_xml.contains("NaN") && !bad_xml.contains("inf") && !bad_xml.contains("Inf"),
+            "finite_coord must sanitize non-finite vertices in XML output"
+        );
+        // 全頂点が原点に正規化されているはず。
+        assert!(
+            bad_xml.contains("x=\"0\" y=\"0\" z=\"0\""),
+            "non-finite coords must be replaced with 0: {bad_xml}"
+        );
     }
 }
