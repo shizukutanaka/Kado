@@ -218,6 +218,35 @@ mod tests {
     }
 
     #[test]
+    fn glb_accessor_min_max_correct_for_single_triangle() {
+        // 問202: glb_json_describes_mesh_accurately は多頂点 sphere のみ確認。
+        // 単一三角形 (3 頂点) で outlier 頂点を含む場合に
+        // POSITION accessor の min/max が正しく計算されることを確認する。
+        // encode_glb の min/max ループ (lines 30-41) が頂点 1 枚でも正常に動くことを固定。
+        let mesh = crate::extract::Mesh::from_soup(&[[
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 3.0), // outlier
+        ]]);
+        // from_soup は重複除去するので頂点数は 3 になるはず。
+        assert_eq!(mesh.vertices.len(), 3, "single triangle must have 3 vertices");
+        let bytes = encode_glb(&mesh);
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let doc = parse(json_str).expect("single-triangle GLB must be valid JSON");
+        let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
+        let pos_min = accessors[0].get("min").and_then(|a| a.as_array()).unwrap();
+        let pos_max = accessors[0].get("max").and_then(|a| a.as_array()).unwrap();
+        // min は全成分 0、max は outlier 頂点に引っ張られる。
+        assert_eq!(pos_min[0].as_f64(), Some(0.0), "min.x must be 0");
+        assert_eq!(pos_min[1].as_f64(), Some(0.0), "min.y must be 0");
+        assert_eq!(pos_min[2].as_f64(), Some(0.0), "min.z must be 0");
+        assert_eq!(pos_max[0].as_f64(), Some(1.0), "max.x must be 1");
+        assert_eq!(pos_max[1].as_f64(), Some(2.0), "max.y must be 2");
+        assert_eq!(pos_max[2].as_f64(), Some(3.0), "max.z must be 3");
+    }
+
+    #[test]
     fn empty_mesh_produces_valid_parseable_glb() {
         // 問140: 空メッシュの encode_glb がパニックせず、有効な GLB / JSON を返す。
         // encode_glb の empty guard (lines 50-53) は min/max を [0,0,0] に正規化するが

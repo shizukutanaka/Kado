@@ -244,4 +244,24 @@ mod tests {
         assert_eq!((e1, e2), (1, 0));
         assert_eq!((e2 << 16) | e1, 0x0000_0001);
     }
+
+    #[test]
+    fn downsample_factor_four_averages_sixteen_pixels() {
+        // 問197: downsample_averages_blocks は factor=2 のみ確認。
+        // factor=4 では 4×4=16 画素を平均する (n=16 の除算) を確認する。
+        // (factor*factor) の除算が 4 を超えてもオーバーフローしないことも固定。
+        let mut img = Image::new(4, 4, [0, 0, 0]);
+        // 16 画素の R チャンネルを 0, 16, 32, ..., 240 に設定。
+        // 合計 = 16 * (0+1+...+15) = 16 * 120 = 1920; 平均 = 1920/16 = 120。
+        for i in 0..16 {
+            let x = i % 4;
+            let y = i / 4;
+            img.set(x, y, [(i * 16) as u8, 128, 64]);
+        }
+        let ds = img.downsample(4);
+        assert_eq!((ds.width, ds.height), (1, 1), "4×4 → 1×1 output");
+        assert_eq!(ds.pixels[0], 120, "R avg of 0..240 step 16 = 120, got {}", ds.pixels[0]);
+        assert_eq!(ds.pixels[1], 128, "G must be constant 128, got {}", ds.pixels[1]);
+        assert_eq!(ds.pixels[2], 64, "B must be constant 64, got {}", ds.pixels[2]);
+    }
 }

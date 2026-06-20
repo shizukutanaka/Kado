@@ -324,4 +324,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn edge_defects_single_triangle_has_three_boundary_edges() {
+        // 問196: 三角形 1 枚のメッシュは辺が各 1 回しか現れない → boundary=3, nonmanifold=0。
+        // from_soup_with_empty_input は空メッシュのみ、hollow_shell は多三角形のみ確認。
+        // edge_defects は c==1 (境界) と c>2 (非多様体) を分けるが、
+        // 最小ケース (三角形 1 枚) での境界辺カウントが未確認。
+        let tri = Mesh::from_soup(&[[
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ]]);
+        assert_eq!(tri.triangles.len(), 1, "single triangle soup must yield 1 triangle");
+        let (boundary, nonmanifold) = tri.edge_defects();
+        assert_eq!(boundary, 3, "single triangle must have 3 boundary edges, got {boundary}");
+        assert_eq!(nonmanifold, 0, "single triangle has no shared edges → no non-manifold, got {nonmanifold}");
+        // is_edge_manifold は boundary==0 かつ nonmanifold==0 のときのみ true。
+        // 単一三角形は boundary=3 なので is_edge_manifold は false (開境界あり)。
+        assert!(!tri.is_edge_manifold(), "single open triangle must NOT be edge-manifold (has 3 boundary edges)");
+    }
 }

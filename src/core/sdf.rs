@@ -1426,6 +1426,30 @@ mod tests {
     }
 
     #[test]
+    fn sampling_box_with_zero_period_repeat_axis_is_not_inverted() {
+        // 問201: sampling_box_encloses_aabb は repeat_n(splat(2), [1,1,1]) のみ確認。
+        // period.x=0 (x 軸無効) の repeat で aabb が child の AABB のみを返し、
+        // sampling_box がその正規化と 5% マージンを正しく適用することを確認。
+        let sphere = Sdf::sphere(1.0);
+        let rep = sphere.repeat_n(Vec3::new(0.0, 2.0, 2.0), [0, 1, 1]);
+        let (alo, ahi) = rep.aabb();
+        let (slo, shi) = rep.sampling_box();
+        // sampling_box は aabb を包含する。
+        assert!(slo.x <= alo.x, "sampling_box.x.lo must enclose aabb.x.lo: slo.x={} alo.x={}", slo.x, alo.x);
+        assert!(shi.x >= ahi.x, "sampling_box.x.hi must enclose aabb.x.hi: shi.x={} ahi.x={}", shi.x, ahi.x);
+        assert!(slo.y <= alo.y, "sampling_box.y.lo must enclose aabb.y.lo");
+        assert!(shi.y >= ahi.y, "sampling_box.y.hi must enclose aabb.y.hi");
+        // 反転していない (lo <= hi)。
+        assert!(slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+            "sampling_box must not be inverted with zero-period axis");
+        // x 軸の AABB は child 範囲のみ (period.x=0 なのでカウントによる拡張なし)。
+        // sampling_box は全軸一律の diag*5% マージンを加えるため、y/z の拡張の影響を受ける。
+        // (diag はすべての軸を含む全体の対角線なので x も多少大きくなる → 保守的に確認)
+        assert!(shi.x >= 1.0, "x half-extent must cover child sphere radius");
+        assert!(shi.x < 3.0, "x-axis must not excessively expand with period=0: shi.x={}", shi.x);
+    }
+
+    #[test]
     fn scale_factor_one_is_identity() {
         // 問161: scale(1.0) は恒等変換なので child.eval(p) と完全一致しなければならない。
         // uniform_scale_preserves_distance_field は factor=2.0 のみ確認。factor=1.0 で

@@ -1209,6 +1209,31 @@ mod tests {
     }
 
     #[test]
+    fn base64_encode_long_input_uses_valid_alphabet_and_is_deterministic() {
+        // 問200: base64_matches_rfc4648 は最長 8 バイトのみ。1000 バイトのような
+        // 長い入力が複数の chunk(3) を跨いでも有効な Base64 文字のみ出力されることと
+        // 決定的であることを確認する (ADR-003 決定性の保証)。
+        let data: Vec<u8> = (0u8..=255).cycle().take(1000).collect();
+        let b64 = base64_encode(&data);
+        // 長さは 4 の倍数。
+        assert_eq!(b64.len() % 4, 0, "length must be multiple of 4 for 1000-byte input");
+        // 期待長: ceil(1000/3)*4 = 334*4 = 1336。
+        assert_eq!(b64.len(), 1336, "expected length 1336 for 1000 bytes");
+        // すべての文字が Base64 アルファベット内 (A-Z, a-z, 0-9, +, /, =)。
+        for &ch in b64.as_bytes() {
+            assert!(
+                ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == b'+' || ch == b'/' || ch == b'=',
+                "invalid Base64 character: {}", ch as char
+            );
+        }
+        // 末尾のパディング文字 '=' は出力末尾のみに現れる (中間に = はない)。
+        let trimmed = b64.trim_end_matches('=');
+        assert!(!trimmed.contains('='), "padding '=' must only appear at end");
+        // 決定性: 同一入力で同一出力。
+        assert_eq!(base64_encode(&data), b64, "base64 must be deterministic");
+    }
+
+    #[test]
     fn default_scene_is_structurally_sound_for_first_impression() {
         // 問111: AI が接続直後 (run_script 前) に validate を呼ぶとデフォルトシーンを
         // 検証する。「デフォルトは健全なデモ」という前提を固定し、将来 default_scene を

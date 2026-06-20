@@ -3527,3 +3527,72 @@ rounded_box の多アリティ分岐を対象とする。
 > 問193/194 は check.rs の内部実装 (sdf_gradient, 早期リターン) の直接テスト。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 262 ユニット + 統合 3 = 265 合計。
+
+## 問196 — 単一三角形の edge_defects が未確認
+
+**問**: edge_defects の c==1 (境界辺) 分岐は多三角形メッシュのみ確認。
+三角形 1 枚では辺が各 1 回しか現れず boundary=3, nonmanifold=0 になる最小ケースが未固定。
+また is_edge_manifold は boundary==0 かつ nonmanifold==0 のときのみ true であり、
+単一三角形は開境界あり (false) という逆向きの動作も未確認だった。
+
+**実装 (mesh.rs)**:
+- `edge_defects_single_triangle_has_three_boundary_edges`:
+  1 三角形スープ → boundary=3, nonmanifold=0、is_edge_manifold=false を確認。
+
+## 問197 — downsample factor=4 の 16 画素平均が未確認
+
+**問**: downsample_averages_blocks は factor=2 (4 画素平均) のみ。
+factor=4 では n=16 で除算し、`(factor*factor) as u32` のオーバーフロー耐性も必要。
+
+**実装 (image.rs)**:
+- `downsample_factor_four_averages_sixteen_pixels`:
+  4×4 → 1×1 で R チャンネル 0,16,...,240 の平均 120 を確認。
+
+## 問200 — base64 の長い入力が有効アルファベットのみ・決定的かを未確認
+
+**問**: base64_matches_rfc4648 は最大 8 バイト。1000 バイトの入力で
+複数の chunks(3) を跨いでも有効 Base64 文字のみ出力され決定的であることが未固定。
+中間に '=' が混入しないことも未確認。
+
+**実装 (tools.rs)**:
+- `base64_encode_long_input_uses_valid_alphabet_and_is_deterministic`:
+  1000 バイト入力で長さ=1336、全文字が Base64 アルファベット、
+  '=' は末尾のみ、同一入力で同一出力を確認。
+
+## 問201 — zero-period 軸を持つ Repeat の sampling_box が未確認
+
+**問**: sampling_box_encloses_aabb は repeat_n(splat(2), [1,1,1]) のみ確認。
+period.x=0 (x 軸無効) の repeat で sampling_box が反転せず AABB を包含することが未固定。
+diag マージンが全軸一律に加わるため zero-period 軸も若干広がる動作を文書化。
+
+**実装 (sdf.rs)**:
+- `sampling_box_with_zero_period_repeat_axis_is_not_inverted`:
+  period=[0,2,2], count=[0,1,1] で sampling_box が AABB を包含し、
+  反転せず (lo<=hi)、x 軸が過剰拡張しないことを確認。
+
+## 問202 — GLB 単一三角形の POSITION accessor min/max が未確認
+
+**問**: glb_json_describes_mesh_accurately は多頂点 sphere のみ確認。
+頂点 3 つ (うち outlier 1 個) の場合に accessor の min/max ループ (lines 30-41) が
+正しく最小/最大を計算することが未固定。
+
+**実装 (gltf.rs)**:
+- `glb_accessor_min_max_correct_for_single_triangle`:
+  (0,0,0), (1,0,0), (0,2,3) の三角形で min=[0,0,0], max=[1,2,3] を確認。
+
+## 反映サマリ v94
+| 問 | 実装 |
+|----|------|
+| 196 | 単一三角形 edge_defects: boundary=3, is_edge_manifold=false (mesh.rs) |
+| 197 | downsample factor=4 の 16 画素平均 (image.rs) |
+| 200 | base64 1000 バイトの有効アルファベット・決定性 (tools.rs) |
+| 201 | zero-period Repeat の sampling_box 非反転・AABB 包含 (sdf.rs) |
+| 202 | GLB 単一三角形の accessor min/max 正確性 (gltf.rs) |
+
+> 総括: v94 は Image/GLB の I/O パス・mesh の edge 検出・base64 長入力・
+> zero-period Repeat の sampling_box を固定した。問196 は is_edge_manifold の
+> 「開境界あり → false」という動作を実際に確認し、コメントで boundary==0 の
+> 意味を明文化。問201 は diag マージンが全軸共通のため zero-period 軸も
+> 広がるという sampling_box の保守的設計を文書化。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 267 ユニット + 統合 3 = 270 合計。
