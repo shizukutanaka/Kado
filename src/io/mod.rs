@@ -139,4 +139,22 @@ mod tests {
         assert!(stl_bytes.starts_with(b"kado binary stl"), "STL must have kado header");
         let _ = std::fs::remove_file(&stl);
     }
+
+    #[test]
+    fn all_export_formats_re_encode_byte_identically() {
+        // 問203 (SPEC §6): "STL/GLB/PNG は同一メッシュからバイト同一"。
+        // 各形式は個別に determinism テストを持つが、同一メッシュから 4 形式すべてが
+        // バイト同一に再エンコードされることを 1 つのテストで横断的に固定する。
+        // 1 形式だけ決定性が壊れる回帰を確実に検出する回帰防壁。
+        use crate::core::{Sdf, Vec3};
+        use crate::extract::polygonize;
+        let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 12);
+
+        assert_eq!(stl::encode_binary(&mesh), stl::encode_binary(&mesh), "STL must re-encode identically");
+        assert_eq!(gltf::encode_glb(&mesh), gltf::encode_glb(&mesh), "GLB must re-encode identically");
+        assert_eq!(threemf::encode_3mf(&mesh), threemf::encode_3mf(&mesh), "3MF must re-encode identically");
+        assert_eq!(html::encode_html(&mesh), html::encode_html(&mesh), "HTML must re-encode identically");
+        // メッシュダイジェスト (観測可能な決定性プロキシ) も安定。
+        assert_eq!(mesh.digest(), mesh.digest(), "mesh digest must be deterministic");
+    }
 }

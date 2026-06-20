@@ -831,6 +831,56 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_applies_uniformly_across_all_export_formats() {
+        // 問204 (SPEC §7.2): サンドボックスは拡張子非依存。STL だけでなく
+        // GLB/3MF/HTML すべてのエクスポートパスが同一の制約 (絶対/トラバーサル拒否) を
+        // 受けることを固定する。将来 1 形式だけパスチェックを飛ばす回帰を防ぐ。
+        for ext in ["stl", "glb", "3mf", "html"] {
+            // 正常なプロジェクト相対パスは許可。
+            assert!(
+                sandbox_write_path(&format!("model.{ext}")).is_ok(),
+                "valid .{ext} path must be accepted"
+            );
+            assert!(
+                sandbox_write_path(&format!("sub/dir/model.{ext}")).is_ok(),
+                "nested .{ext} path must be accepted"
+            );
+            // トラバーサル・絶対パスは形式を問わず拒否。
+            assert!(
+                sandbox_write_path(&format!("../escape.{ext}")).is_err(),
+                ".{ext} traversal must be rejected"
+            );
+            assert!(
+                sandbox_write_path(&format!("/tmp/escape.{ext}")).is_err(),
+                ".{ext} absolute path must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn get_scene_reports_script_bounds_and_undo_state() {
+        // 問205 (SPEC §5.1): get_scene ツールは個別テストがなかった。
+        // 初期 (デフォルトシーン) では undo_available=false、run_script 後は
+        // 現在のスクリプトと undo_available=true を報告することを固定する。
+        let mut s = Session::new();
+        // 初期状態: prev_scene なし → undo_available=false。
+        let r0 = call_tool(&mut s, "get_scene", &json::obj([]));
+        assert!(!r0.is_error, "get_scene must succeed on default scene");
+        let t0 = r0.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        assert!(t0.contains("undo_available=false"), "default scene must report undo unavailable: {t0}");
+        assert!(t0.contains("sampling_bounds="), "must report sampling bounds: {t0}");
+
+        // run_script でシーン更新 → script= に反映、undo_available=true。
+        let run = json::obj([("script", json::s(r#"{"op":"sphere","r":1.5}"#))]);
+        assert!(!call_tool(&mut s, "run_script", &run).is_error, "run_script must succeed");
+        let r1 = call_tool(&mut s, "get_scene", &json::obj([]));
+        let t1 = r1.content[0].get("text").and_then(|v| v.as_str()).unwrap();
+        assert!(t1.contains("sphere"), "get_scene must echo current script: {t1}");
+        assert!(t1.contains("1.5"), "get_scene must include script params: {t1}");
+        assert!(t1.contains("undo_available=true"), "after run_script undo must be available: {t1}");
+    }
+
+    #[test]
     fn sandbox_backslash_path_is_literal_filename_on_unix_not_traversal() {
         // 問189: Unix では '\\' はパス区切りではなくファイル名の一文字。
         // "a\\..\\escape.stl" は単一の Normal コンポーネントになり、ParentDir として

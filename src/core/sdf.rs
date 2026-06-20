@@ -1126,6 +1126,28 @@ mod tests {
     }
 
     #[test]
+    fn sampling_box_normalizes_for_all_inverted_aabb_variants() {
+        // 問206 (SPEC §3.4): sampling_box は反転 AABB を生むすべての変種で正規化する。
+        // sampling_box_is_never_inverted は SmoothIntersection のみ。
+        // hard Intersection / Difference / SmoothDifference でも lo<=hi を保証することを
+        // グループで固定し、いずれかの変種で正規化が壊れる回帰を防ぐ。
+        let far = |s: Sdf| s.translate(Vec3::new(10.0, 0.0, 0.0));
+        let cases: Vec<(&str, Sdf)> = vec![
+            ("hard_intersection", Sdf::sphere(1.0).intersection(far(Sdf::sphere(1.0)))),
+            ("smooth_intersection", Sdf::sphere(1.0).smooth_intersection(far(Sdf::sphere(1.0)), 0.3)),
+            ("hard_difference", Sdf::sphere(0.5).difference(far(Sdf::sphere(2.0)))),
+            ("smooth_difference", Sdf::sphere(0.5).smooth_difference(far(Sdf::sphere(2.0)), 0.3)),
+        ];
+        for (name, sdf) in cases {
+            let (slo, shi) = sdf.sampling_box();
+            assert!(
+                slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+                "{name}: sampling_box must be normalized, got lo={slo:?} hi={shi:?}"
+            );
+        }
+    }
+
+    #[test]
     fn aabb_encloses_surface_samples() {
         // 代表ツリーで AABB が表面サンプルを内包することを確認 (問14)。
         let tree = Sdf::sphere(1.0)

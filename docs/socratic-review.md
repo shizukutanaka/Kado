@@ -3596,3 +3596,60 @@ diag マージンが全軸一律に加わるため zero-period 軸も若干広�
 > 広がるという sampling_box の保守的設計を文書化。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 267 ユニット + 統合 3 = 270 合計。
+
+## 問203 — STL/GLB/3MF/HTML の横断的バイト同一性 (SPEC §6)
+
+**問**: 各形式は個別に determinism テストを持つが、同一メッシュから全形式が
+バイト同一に再エンコードされることを横断的に確認するテストがなかった。
+1 形式だけ決定性が壊れる回帰が検出されない。
+
+**実装 (io/mod.rs)**:
+- `all_export_formats_re_encode_byte_identically`:
+  sphere メッシュから STL/GLB/3MF/HTML すべてが再エンコードでバイト同一、
+  mesh.digest() も安定であることを確認。
+
+## 問204 — サンドボックスが全エクスポート形式に一律適用 (SPEC §7.2)
+
+**問**: sandbox_write_path は拡張子非依存だが、テストは .stl のみ。
+GLB/3MF/HTML も同じトラバーサル/絶対パス拒否を受けることが未固定。
+将来 1 形式だけパスチェックを飛ばす回帰を防げない。
+
+**実装 (tools.rs)**:
+- `sandbox_applies_uniformly_across_all_export_formats`:
+  stl/glb/3mf/html の各拡張子で正常パス許可・`../`/絶対パス拒否を確認。
+
+## 問205 — get_scene ツールの個別テストが存在しなかった (SPEC §5.1)
+
+**問**: get_scene は eval/undo_script と異なり個別テストがなかった。
+script= / sampling_bounds= / undo_available= の報告が未確認。
+
+**実装 (tools.rs)**:
+- `get_scene_reports_script_bounds_and_undo_state`:
+  初期は undo_available=false + sampling_bounds、run_script 後は
+  現在スクリプト (sphere/1.5) + undo_available=true を確認。
+
+## 問206 — sampling_box 正規化を全反転 AABB 変種で確認 (SPEC §3.4)
+
+**問**: sampling_box_is_never_inverted は SmoothIntersection のみ。
+hard Intersection / Difference / SmoothDifference も反転 AABB を生みうるが
+グループでの正規化保証が未固定だった。
+
+**実装 (sdf.rs)**:
+- `sampling_box_normalizes_for_all_inverted_aabb_variants`:
+  4 変種すべてで非重複ケースの sampling_box が lo<=hi を保証することを確認。
+
+## 反映サマリ v95 (SPEC 駆動)
+| 問 | 実装 | SPEC 節 |
+|----|------|---------|
+| 203 | 全形式の横断的バイト同一性 (io/mod.rs) | §6 決定性 |
+| 204 | 全形式のサンドボックス一律適用 (tools.rs) | §7.2 サンドボックス |
+| 205 | get_scene ツールの個別テスト (tools.rs) | §5.1 ツール |
+| 206 | 全反転 AABB 変種の sampling_box 正規化 (sdf.rs) | §3.4 中核契約 |
+
+> 総括: v95 は SPEC.md 作成で浮上した「契約は宣言されているがテストで固定されて
+> いない」乖離を埋めた。問203 (横断決定性)・問206 (全変種正規化) は個別テストの
+> 隙間を埋める回帰防壁。問205 (get_scene) は唯一の未テスト MCP ツールを解消。
+> 問204 は形式非依存サンドボックスの契約を全形式で明示。
+> なお問207 (3MF unit 宣言) は既存テスト threemf::*line121 で既出のため対象外。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 271 ユニット + 統合 3 = 274 合計。
