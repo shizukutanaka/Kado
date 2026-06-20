@@ -3166,3 +3166,72 @@ X・Y 軸は `rotate_point` 内で異なる行列行 (axis=0: Y-Z 回転行列�
 > ellipsoid 極端縦横比 (問157) は IQ 近似の精度境界への探索的テスト。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 236 ユニット + 統合 3 = 239 合計。
+
+## 問161 — scale(1.0) の恒等性が未確認
+
+**問**: `uniform_scale_preserves_distance_field` は factor=2.0 のみを検証している。
+scale(1.0) では `p / 1.0` という f64 除算が起きるが、正確に恒等写像になるか
+(丸め誤差が生じないか) を確認するテストが存在しなかった。
+
+**実装 (sdf.rs)**:
+- `scale_factor_one_is_identity`:
+  sphere(1.0).scale(1.0) が 4 プローブ点すべてで child.eval(p) と `==` (ビット同一) を確認。
+
+## 問162 — count=0 が実際に軸を無効化するか未確認
+
+**問**: `snap()` は `if per == 0.0 || n == 0 { return v; }` を持ち、count=0 で
+繰り返しを無効化する。しかし「count=0 の軸は繰り返さない」という動作を直接
+テストするケースが存在せず、この早期リターンが黙って消えても既存テストは通過する。
+
+**実装 (sdf.rs)**:
+- `repeat_count_zero_disables_axis_with_positive_period`:
+  repeat_n(period=[2,2,2], count=[1,0,1]) で x 軸 (count=1) は同値、
+  y 軸 (count=0) は y=0 と y=2.0 で値が異なることを確認。
+
+## 問163 — smooth bool の k→0 での NaN/Inf 安全性
+
+**問**: k=1e-6 で収束性を確認するテストはあるが、k が 1e-100〜1e-300 の
+極限領域で `(da-db)/k → ±∞` になり NaN/Inf が生じないかを確認していなかった。
+clamp(h, 0, 1) が吸収するはずだが、実際に吸収されているかは未検証。
+
+**実装 (sdf.rs)**:
+- `smooth_union_and_intersection_remain_finite_for_tiny_k`:
+  k ∈ {1e-1, 1e-6, 1e-12, 1e-100, 1e-300} で smooth_union/intersection/difference を
+  4 プローブ点で評価し、すべて is_finite() を確認。
+
+## 問164 — STL 法線の near-degenerate 三角形での NaN 安全性
+
+**問**: `face_normal` は `len == 0.0` を明示的にチェックするが、
+len が 1e-150 オーダーの「ほぼ退化」三角形では 1/len が Inf になりうる。
+既存テストは完全退化 (len=0) と正常 (len=1) のみで、中間領域を確認していない。
+
+**実装 (stl.rs)**:
+- `face_normal_near_degenerate_is_finite_and_not_nan`:
+  辺長 1e-75 の三角形 (外積長 ≈ 1e-150) で face_normal を呼び、
+  各成分が finite で長さが 0 か単位長であることを確認。
+
+## 問165 — edge_vertex 結果が線分端点の間に収まることの形式的確認
+
+**問**: `edge_vertex_clamp_produces_valid_interpolation` は 2 ケースのみで
+「x が [0,1] 内」を確認するが、f64 の境界値 (f64::MAX、1e-200 vs 1e200 等)
+での挙動を確認していない。clamp(t, 0, 1) で守られているはずだが未検証。
+
+**実装 (marching_tetrahedra.rs)**:
+- `edge_vertex_result_lies_within_segment_endpoints`:
+  8 種の (va, vb) ペア (同符号正負、異符号、ゼロ端、極端倍率差、f64::MAX) で
+  結果 x が [0.0, 1.0] に収まることを確認。
+
+## 反映サマリ v89
+| 問 | 実装 |
+|----|------|
+| 161 | scale(1.0) 恒等性をビット同一で確認 (sdf.rs) |
+| 162 | count=0 が軸を実際に無効化することを確認 (sdf.rs) |
+| 163 | smooth bool k→1e-300 で finite を確認 (sdf.rs) |
+| 164 | STL face_normal near-degenerate で NaN/Inf なし (stl.rs) |
+| 165 | edge_vertex 結果が常に線分上 (marching_tetrahedra.rs) |
+
+> 総括: v89 は「コード内の早期リターン/クランプ/ガード節が実際に機能するか」を
+> 独立テストで固定した。scale(1.0) 恒等性・count=0 軸無効・smooth bool k→0 安全性は
+> 既存テストでは検知できない削除に対して盲点になっていた。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 241 ユニット。

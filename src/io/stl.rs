@@ -101,4 +101,26 @@ mod tests {
         let coinc = face_normal(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
         assert_eq!(coinc, Vec3::ZERO, "coincident triangle must produce zero normal");
     }
+
+    #[test]
+    fn face_normal_near_degenerate_is_finite_and_not_nan() {
+        // 問164: len が 0 より大きいが極めて小さい (1e-150 オーダー) 三角形でも
+        // 1/len が NaN/Inf にならないことを確認する。
+        // 三角形の 2 辺が 1e-75 スケールだと外積長 ≈ (1e-75)^2 = 1e-150。
+        // f64::MIN_POSITIVE ≈ 2.2e-308 なので 1e-150 は正規化数のまま。
+        let tiny = 1e-75_f64;
+        let a = Vec3::ZERO;
+        let b = Vec3::new(tiny, 0.0, 0.0);
+        let c = Vec3::new(0.0, tiny, 0.0);
+        let n = face_normal(a, b, c);
+        assert!(n.x.is_finite(), "near-degenerate: x component must be finite, got {}", n.x);
+        assert!(n.y.is_finite(), "near-degenerate: y component must be finite, got {}", n.y);
+        assert!(n.z.is_finite(), "near-degenerate: z component must be finite, got {}", n.z);
+        // 正規化されているか 0 かどちらかでなければならない (長さが 0 でなければ単位長)。
+        let len = n.length();
+        assert!(
+            len == 0.0 || (len - 1.0).abs() < 1e-9,
+            "near-degenerate normal must be zero or unit-length, got length={len}"
+        );
+    }
 }

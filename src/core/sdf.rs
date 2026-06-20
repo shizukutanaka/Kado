@@ -1349,4 +1349,78 @@ mod tests {
         assert!(lo.y <= hi.y, "sampling_box y must be non-inverted after scale(-1)");
         assert!(lo.z <= hi.z, "sampling_box z must be non-inverted after scale(-1)");
     }
+
+    #[test]
+    fn scale_factor_one_is_identity() {
+        // 問161: scale(1.0) は恒等変換なので child.eval(p) と完全一致しなければならない。
+        // uniform_scale_preserves_distance_field は factor=2.0 のみ確認。factor=1.0 で
+        // 別のコードパスを通る可能性 (e.g., p / 1.0 の浮動小数点丸め) を固定する。
+        let sphere = Sdf::sphere(1.0);
+        let scaled = sphere.clone().scale(1.0);
+        let probes = [
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(-2.0, 3.0, -1.0),
+        ];
+        for p in probes {
+            let d_orig = sphere.eval(p);
+            let d_scaled = scaled.eval(p);
+            assert_eq!(
+                d_orig, d_scaled,
+                "scale(1.0) must be identity: at {p:?} orig={d_orig} scaled={d_scaled}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_count_zero_disables_axis_with_positive_period() {
+        // 問162: count=0 の軸は period が正でも繰り返しを行わない。
+        // snap() は `if per == 0.0 || n == 0 { return v; }` を持つが、
+        // count=0 で無効化される軸が実際に無効であることをテストで確認する。
+        // repeat_n(period=[2,2,2], count=[1,0,1]) → y 軸のみ繰り返しなし。
+        let sphere = Sdf::sphere(0.3);
+        let rep = sphere.clone().repeat_n(Vec3::splat(2.0), [1, 0, 1]);
+        // y=0 と y=2.0 の距離が異なる → y 軸はクランプされず連続な SDF のまま。
+        let d_y0 = rep.eval(Vec3::new(0.0, 0.0, 0.0));
+        let d_y2 = rep.eval(Vec3::new(0.0, 2.0, 0.0));
+        // count=1 の x 軸は period 2.0 で繰り返す → x=0 と x=2.0 は同じセルに snap。
+        let d_x0 = rep.eval(Vec3::new(0.0, 0.0, 0.0));
+        let d_x2 = rep.eval(Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(d_x0, d_x2, "x-axis (count=1) must repeat: d(x=0)={d_x0} d(x=2)={d_x2}");
+        // y 軸 (count=0) は繰り返しなし: y=2.0 は繰り返しセルに snap されない。
+        // 中心 (0,0,0) は球の内部 (d<0)、y=2.0 は 1.7 距離 (d≈1.4>0) なので異なるはず。
+        assert_ne!(
+            d_y0, d_y2,
+            "y-axis (count=0) must not repeat: d(y=0)={d_y0} should differ from d(y=2)={d_y2}"
+        );
+    }
+
+    #[test]
+    fn smooth_union_and_intersection_remain_finite_for_tiny_k() {
+        // 問163: k→0 のとき (da - db) / k → ±∞ になるが clamp(h, 0, 1) で吸収される。
+        // 非常に小さい k (1e-300) でも NaN/Inf が生じないことを確認する。
+        // k=1e-6 の収束テスト (問905相当) とは別に、極限での数値安全性を固定。
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(3.0, 0.0, 0.0));
+        let probes = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.5, 0.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+        ];
+        for &k in &[1e-1_f64, 1e-6, 1e-12, 1e-100, 1e-300] {
+            let su = a.clone().smooth_union(b.clone(), k);
+            let si = a.clone().smooth_intersection(b.clone(), k);
+            let sd = a.clone().smooth_difference(b.clone(), k);
+            for p in probes {
+                let du = su.eval(p);
+                let di = si.eval(p);
+                let dd = sd.eval(p);
+                assert!(du.is_finite(), "smooth_union k={k} at {p:?}: {du} is not finite");
+                assert!(di.is_finite(), "smooth_intersection k={k} at {p:?}: {di} is not finite");
+                assert!(dd.is_finite(), "smooth_difference k={k} at {p:?}: {dd} is not finite");
+            }
+        }
+    }
 }

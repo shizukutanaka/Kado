@@ -537,4 +537,40 @@ mod tests {
             "6 tetrahedra must fill unit cube exactly: sum of volumes = {total_vol}"
         );
     }
+
+    #[test]
+    fn edge_vertex_result_lies_within_segment_endpoints() {
+        // 問165: edge_vertex の clamp(t, 0, 1) により結果が常に a.pos〜b.pos の
+        // 線分上に収まる。両端同符号/異符号/ゼロ割り/極端マグニチュードを網羅する。
+        // p = 辞書順で先の角 (coord 昇順)。結果 v = p + (q-p)*t, t∈[0,1] なので
+        // v の各成分は min(p.x,q.x) 以上 max(p.x,q.x) 以下になるはず。
+        let cases: &[(f64, f64)] = &[
+            (0.5, 1.0),      // 同符号 (正) → クランプ
+            (-0.5, -1.0),    // 同符号 (負) → クランプ
+            (-0.3, 0.7),     // 異符号 → 正常補間
+            (0.7, -0.3),     // 異符号逆順
+            (0.0, 1.0),      // ゼロ端点 (ゼロ交差境界)
+            (1e-200, 1e200), // 極端倍率差 (アンダーフロー/オーバーフロー)
+            (f64::MAX, 1.0), // 一方がMAX
+            (1.0, f64::MAX), // 他方がMAX
+        ];
+        for &(va, vb) in cases {
+            let a = Corner {
+                coord: [0, 0, 0],
+                pos: Vec3::new(0.0, 0.0, 0.0),
+                val: va,
+            };
+            let b = Corner {
+                coord: [1, 0, 0],
+                pos: Vec3::new(1.0, 0.0, 0.0),
+                val: vb,
+            };
+            let v = edge_vertex(&a, &b);
+            assert!(
+                v.x >= 0.0 && v.x <= 1.0,
+                "edge_vertex([0..1], va={va}, vb={vb}) x={} must lie in [0,1]",
+                v.x
+            );
+        }
+    }
 }
