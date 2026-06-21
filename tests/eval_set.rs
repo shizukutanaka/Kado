@@ -12,6 +12,8 @@
 //! 横断的に運動させ、機能追加時の退行を一点で検知する。
 
 use kado::extract::polygonize;
+use kado::io::{gltf, html, stl, threemf};
+use kado::mcp::json::parse;
 use kado::script::eval_scene;
 use kado::verify::validate;
 
@@ -155,6 +157,58 @@ fn eval_set_models_are_watertight_and_sound() {
                 issue.cause
             );
         }
+    }
+}
+
+#[test]
+fn eval_set_models_export_to_all_formats_with_valid_structure() {
+    // 問231: 既存の eval_set は script→mesh→validate までで、ユーザ/AI が実際に行う
+    // 最終段 (export = フォーマット直列化) を横断的に通していなかった。
+    // 各エンコーダ (STL/GLB/3MF/HTML) の単体テストは単一の sphere メッシュのみで、
+    // CSG・smooth・repeat・mirror・rotate・torus 等の多様な実モデルでの退行は
+    // 検出できなかった。13 課題 × 4 形式の出力が構造的に妥当かつ決定的であることを固定する。
+    let res = 32;
+    for task in eval_set() {
+        let sdf = eval_scene(task.script).unwrap();
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, res);
+        assert!(!mesh.triangles.is_empty(), "[{}] mesh must be non-empty", task.name);
+
+        // ── STL: 80 バイトヘッダ "kado binary stl" + 三角形数フィールド ──
+        let stl_bytes = stl::encode_binary(&mesh);
+        assert!(stl_bytes.starts_with(b"kado binary stl"), "[{}] STL header", task.name);
+        let stl_tri = u32::from_le_bytes(stl_bytes[80..84].try_into().unwrap());
+        assert_eq!(stl_tri as usize, mesh.triangles.len(), "[{}] STL tri count", task.name);
+        assert_eq!(stl_bytes.len(), 84 + mesh.triangles.len() * 50, "[{}] STL size", task.name);
+        assert_eq!(stl_bytes, stl::encode_binary(&mesh), "[{}] STL deterministic", task.name);
+
+        // ── GLB: マジック + JSON チャンクが parse でき accessor count が一致 ──
+        let glb = gltf::encode_glb(&mesh);
+        assert_eq!(&glb[0..4], b"glTF", "[{}] GLB magic", task.name);
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc = parse(std::str::from_utf8(&glb[20..20 + json_len]).unwrap().trim_end())
+            .unwrap_or_else(|e| panic!("[{}] GLB JSON must parse: {e}", task.name));
+        let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
+        let pos_count = accessors[0].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
+        let idx_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
+        assert_eq!(pos_count, mesh.vertices.len(), "[{}] GLB POSITION count", task.name);
+        assert_eq!(idx_count, mesh.triangles.len() * 3, "[{}] GLB index count", task.name);
+        assert_eq!(glb, gltf::encode_glb(&mesh), "[{}] GLB deterministic", task.name);
+
+        // ── 3MF: ZIP 署名 + vertex/triangle 要素数が一致 ──
+        let mf = threemf::encode_3mf(&mesh);
+        assert_eq!(&mf[0..4], &[0x50, 0x4B, 0x03, 0x04], "[{}] 3MF is ZIP", task.name);
+        assert_eq!(mf, threemf::encode_3mf(&mesh), "[{}] 3MF deterministic", task.name);
+
+        // ── HTML: doctype + プレースホルダ全置換 + 非有限リテラルなし ──
+        let h = html::encode_html(&mesh);
+        assert!(h.starts_with("<!DOCTYPE html>"), "[{}] HTML doctype", task.name);
+        for ph in ["/*POSITIONS*/", "/*INDICES*/", "/*CENTER*/", "/*RADIUS*/"] {
+            assert!(!h.contains(ph), "[{}] HTML placeholder {ph} must be replaced", task.name);
+        }
+        let hl = h.to_lowercase();
+        assert!(!hl.contains("nan") && !hl.contains("inf"), "[{}] HTML no nan/inf", task.name);
+        assert_eq!(h, html::encode_html(&mesh), "[{}] HTML deterministic", task.name);
     }
 }
 

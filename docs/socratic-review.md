@@ -3894,3 +3894,30 @@ apex が厳密に 0.0 (== 0.0、符号付きゼロ含む)、底面のエッジ�
 > 問231 (2-inside 巻き順) は既存 watertight テストの再掲のため見送り。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 288 ユニット + 統合 3 = 291 合計。
+
+## 問231 — エクスポート段が eval_set パイプラインで未検証
+
+**問**: 既存の eval_set 統合テストは script→mesh→validate までで、ユーザ/AI が実際に行う
+最終段 (export = フォーマット直列化) を横断的に通していなかった。各エンコーダ
+(STL/GLB/3MF/HTML) の単体テストは単一の sphere メッシュのみで、CSG・smooth・repeat・
+mirror・rotate・torus 等の多様な実モデルでのエンコーダ退行は検出できなかった。
+
+**実装 (tests/eval_set.rs)**:
+- `eval_set_models_export_to_all_formats_with_valid_structure`:
+  13 課題 × 4 形式を出力し、各形式の構造的妥当性 (STL ヘッダ/三角形数、
+  GLB マジック/JSON parse/accessor count、3MF ZIP 署名、HTML doctype/プレースホルダ
+  全置換/非有限リテラルなし) と決定性 (2 回エンコードでバイト同一) を確認。
+
+## 反映サマリ v100
+| 問 | 実装 |
+|----|------|
+| 231 | エクスポート段の全形式×全モデル統合テスト (tests/eval_set.rs) |
+
+> 総括: v100 はマイクロギャップ探索の収穫逓減を踏まえ、より高価値な
+> エンドツーエンド統合テストへ転換した。CLI (main.rs) は exit() を直接呼ぶ薄い
+> グルーで、中核ロジックは全てライブラリ側で検証済みのため単体テストは低価値と判断。
+> 代わりに「ユーザが実際に行う完全なパイプライン (script→mesh→**export**)」を
+> 13 の多様なモデルで通すことで、単一 sphere メッシュの単体テストでは見えない
+> エンコーダ退行 (多様体・大頂点数・特殊形状) を一点で検知する防壁を追加した。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 288 ユニット + 統合 4 = 292 合計。
