@@ -881,6 +881,33 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_accepts_all_seven_documented_views_and_rejects_unknown() {
+        // 問224: help (line 662) は front|back|right|left|top|bottom|iso を有効ビューとして
+        // 宣言するが、各ビューが実際に screenshot で成功することを確認するテストがなかった。
+        // Camera::presets の 7 名すべてが画像を生成し、未知ビューが明示エラーになることを固定。
+        let mut s = Session::new();
+        for view in ["front", "back", "right", "left", "top", "bottom", "iso"] {
+            let args = json::obj([
+                ("view", json::s(view)),
+                ("width", json::n(32.0)),
+                ("height", json::n(32.0)),
+                ("resolution", json::n(16.0)),
+            ]);
+            let r = call_tool(&mut s, "screenshot", &args);
+            assert!(
+                !r.is_error,
+                "screenshot(view={view}) must succeed for a documented view"
+            );
+        }
+        // 未知ビューはサイレントフォールバックせず明示エラー (問71)。
+        let bad = json::obj([("view", json::s("diagonal"))]);
+        let rb = call_tool(&mut s, "screenshot", &bad);
+        assert!(rb.is_error, "unknown view must produce an explicit error");
+        let txt = rb.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(txt.contains("unknown view"), "error must name the problem: {txt}");
+    }
+
+    #[test]
     fn sandbox_backslash_path_is_literal_filename_on_unix_not_traversal() {
         // 問189: Unix では '\\' はパス区切りではなくファイル名の一文字。
         // "a\\..\\escape.stl" は単一の Normal コンポーネントになり、ParentDir として

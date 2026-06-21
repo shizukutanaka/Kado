@@ -212,6 +212,67 @@ mod tests {
     }
 
     #[test]
+    fn glb_accessor_bufferview_indices_are_correctly_wired() {
+        // 問221: glb_json_describes_mesh_accurately は count のみ確認。
+        // accessor[0]→bufferView 0 (POSITION)、accessor[1]→bufferView 1 (INDEX) の
+        // 参照配線と bufferView が厳密に 2 個であることが未検証だった。
+        // 配線が入れ替わると GLB ビューアが頂点/索引を取り違える。
+        let bytes = encode_glb(&sphere_mesh());
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let doc = parse(std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end()).unwrap();
+        let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
+        let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(views.len(), 2, "must have exactly 2 bufferViews (POSITION, INDEX)");
+        assert_eq!(
+            accessors[0].get("bufferView").and_then(|x| x.as_f64()),
+            Some(0.0),
+            "POSITION accessor must reference bufferView 0"
+        );
+        assert_eq!(
+            accessors[1].get("bufferView").and_then(|x| x.as_f64()),
+            Some(1.0),
+            "INDEX accessor must reference bufferView 1"
+        );
+        // 各 bufferView は buffer 0 を参照する。
+        for (k, view) in views.iter().enumerate() {
+            assert_eq!(
+                view.get("buffer").and_then(|x| x.as_f64()),
+                Some(0.0),
+                "bufferView {k} must reference buffer 0"
+            );
+        }
+    }
+
+    #[test]
+    fn glb_buffer_byte_lengths_are_internally_consistent() {
+        // 問222: bufferView の byteLength・byteOffset・buffers[0].byteLength・BIN チャンク
+        // ヘッダの整合 (pos_len + idx_len == total) が未検証だった。
+        // view0.byteOffset=0, view1.byteOffset=pos_len, 合計=buffer 全長を確認する。
+        let bytes = encode_glb(&sphere_mesh());
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json_end = 20 + json_len;
+        let bin_len_header = u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
+        let doc = parse(std::str::from_utf8(&bytes[20..json_end]).unwrap().trim_end()).unwrap();
+
+        let buffers = doc.get("buffers").and_then(|a| a.as_array()).unwrap();
+        let declared_total = buffers[0].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+        let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
+        let v0_off = views[0].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
+        let v0_len = views[0].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+        let v1_off = views[1].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
+        let v1_len = views[1].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+
+        // view0 は先頭、view1 は view0 の直後 (連続配置)。
+        assert_eq!(v0_off, 0, "POSITION bufferView must start at offset 0");
+        assert_eq!(v1_off, v0_len, "INDEX bufferView must start right after POSITION");
+        // bufferView の合計 == buffer 宣言長 (パディング前は厳密一致)。
+        assert_eq!(v0_len + v1_len, declared_total, "bufferView byteLengths must sum to buffer byteLength");
+        // BIN チャンクヘッダ長は宣言長以上 (4 バイト境界パディングを許容)。
+        assert!(bin_len_header >= declared_total, "BIN chunk must hold the full buffer (+padding)");
+        assert!(bin_len_header - declared_total < 4, "BIN padding must be < 4 bytes");
+    }
+
+    #[test]
     fn glb_encoding_is_deterministic() {
         let m = sphere_mesh();
         assert_eq!(encode_glb(&m), encode_glb(&m));

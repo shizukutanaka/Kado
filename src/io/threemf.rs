@@ -128,6 +128,50 @@ mod tests {
     }
 
     #[test]
+    fn model_xml_nesting_and_document_order_is_3mf_conformant() {
+        // 問225: model_xml_counts_match_mesh は要素数のみ確認し、階層構造と
+        // ドキュメント順序 (resources が build に先行) を検証していなかった。
+        // 3MF スキーマ: model → resources → object → mesh → vertices/triangles、
+        // その後 build → item。順序が壊れるとスライサが解釈に失敗する。
+        let xml = build_model_xml(&sphere_mesh());
+        // 必須要素の存在。
+        for (open, close) in [
+            ("<model ", "</model>"),
+            ("<resources>", "</resources>"),
+            ("<mesh>", "</mesh>"),
+            ("<vertices>", "</vertices>"),
+            ("<triangles>", "</triangles>"),
+            ("<build>", "</build>"),
+        ] {
+            assert!(xml.contains(open), "missing element {open}");
+            assert!(xml.contains(close), "missing closing {close}");
+        }
+        assert!(xml.contains("<object id=\"1\" type=\"model\">"), "single object id=1 required");
+        // 名前空間宣言。
+        assert!(
+            xml.contains("xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\""),
+            "3MF core namespace must be declared"
+        );
+        // ドキュメント順序: resources < object < mesh < vertices < triangles < build。
+        let pos = |s: &str| xml.find(s).unwrap_or_else(|| panic!("missing {s}"));
+        let order = [
+            pos("<resources>"),
+            pos("<object "),
+            pos("<mesh>"),
+            pos("<vertices>"),
+            pos("</vertices>"),
+            pos("<triangles>"),
+            pos("</triangles>"),
+            pos("</resources>"),
+            pos("<build>"),
+            pos("<item objectid=\"1\"/>"),
+        ];
+        for w in order.windows(2) {
+            assert!(w[0] < w[1], "3MF document order violated at offsets {w:?}");
+        }
+    }
+
+    #[test]
     fn threemf_is_deterministic() {
         let m = sphere_mesh();
         assert_eq!(encode_3mf(&m), encode_3mf(&m));

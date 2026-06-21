@@ -3780,3 +3780,61 @@ CD の +42 に格納される LFH オフセットの正しさは未検証だっ�
 > なお問217/218/220 (opt_f64/overhang境界/req_child) は低価値または FP 不安定のため見送り。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 280 ユニット + 統合 3 = 283 合計。
+
+## 問221 — GLB の bufferView/accessor 参照配線が未確認
+
+**問**: glb_json_describes_mesh_accurately は count のみ確認。
+accessor[0]→bufferView 0 (POSITION)、accessor[1]→bufferView 1 (INDEX) の
+参照配線と bufferView が厳密に 2 個であることが未検証だった。配線が入れ替わると
+GLB ビューアが頂点/索引を取り違える。
+
+**実装 (gltf.rs)**:
+- `glb_accessor_bufferview_indices_are_correctly_wired`:
+  bufferViews=2、accessor[0].bufferView=0、accessor[1].bufferView=1、
+  各 bufferView が buffer 0 を参照することを確認。
+
+## 問222 — GLB の byteLength 内部整合が未確認
+
+**問**: bufferView の byteLength/byteOffset・buffers[0].byteLength・BIN チャンク
+ヘッダの整合 (pos_len + idx_len == total) が未検証だった。
+
+**実装 (gltf.rs)**:
+- `glb_buffer_byte_lengths_are_internally_consistent`:
+  view0.byteOffset=0、view1.byteOffset=view0.byteLength (連続配置)、
+  byteLength 合計=buffer 宣言長、BIN ヘッダ長は宣言長以上かつパディング<4 を確認。
+
+## 問224 — screenshot の全 7 ビューの動作が未確認
+
+**問**: help は front|back|right|left|top|bottom|iso を有効ビューと宣言するが、
+各ビューが実際に screenshot で成功することを確認するテストがなかった。
+
+**実装 (tools.rs)**:
+- `screenshot_accepts_all_seven_documented_views_and_rejects_unknown`:
+  7 ビューすべてが画像生成に成功、未知ビューが明示エラー (問71) になることを確認。
+
+## 問225 — 3MF XML の階層構造・ドキュメント順序が未確認
+
+**問**: model_xml_counts_match_mesh は要素数のみ確認し、階層構造と
+ドキュメント順序 (resources が build に先行) を検証していなかった。
+3MF スキーマ: model→resources→object→mesh→vertices/triangles→build→item。
+
+**実装 (threemf.rs)**:
+- `model_xml_nesting_and_document_order_is_3mf_conformant`:
+  必須 6 要素の存在、名前空間宣言、10 要素のドキュメント順序を確認。
+
+## 反映サマリ v98
+| 問 | 実装 |
+|----|------|
+| 221 | GLB bufferView/accessor 参照配線 (gltf.rs) |
+| 222 | GLB byteLength 内部整合 (gltf.rs) |
+| 224 | screenshot 全 7 ビューの動作 + 未知拒否 (tools.rs) |
+| 225 | 3MF XML 階層・ドキュメント順序 (threemf.rs) |
+
+> 総括: v98 は出力フォーマット (GLB/3MF) の構造的不変条件と MCP screenshot の
+> ビュー網羅を固定した。問221/222 は GLB の参照配線・サイズ整合という
+> 「個別の数値は正しいが相互参照が壊れると検出されない」構造ギャップ。
+> 問225 は要素数だけでなくドキュメント順序を固定 (3MF スキーマ適合)。
+> 問223 (グリッド網羅性) は assertion が緩く、問226 (CLI exit code) は
+> main() が exit() を呼ぶため単体テスト困難なため見送り。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 284 ユニット + 統合 3 = 287 合計。
