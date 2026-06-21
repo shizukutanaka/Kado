@@ -470,4 +470,99 @@ mod tests {
         assert!(r.dot(nf).abs() < 1e-12, "r ⊥ f: {}", r.dot(nf));
         assert!(u.dot(nf).abs() < 1e-12, "u ⊥ f: {}", u.dot(nf));
     }
+
+    /// 最小構成のテストカメラ (eye→target を見る)。
+    fn test_camera(eye: Vec3, target: Vec3) -> Camera {
+        Camera {
+            eye,
+            target,
+            up: Vec3::new(0.0, 1.0, 0.0),
+            fov_y: std::f64::consts::FRAC_PI_4,
+            bg: [0, 0, 0],
+            light_dir: Vec3::new(0.577, 0.577, 0.577),
+            diffuse: [200, 200, 200],
+            ambient: 0.2,
+        }
+    }
+
+    #[test]
+    fn triangle_behind_camera_is_culled() {
+        // 問207: クリップ空間 w <= 0 (near 面の裏) の三角形は描画前に continue で除外される。
+        // 既存テストはすべて前方の sphere のみ。カメラ背後の三角形が全背景になることを固定。
+        // eye=(0,0,1) は -z 方向を見る。z=3 の三角形は eye より後方 (背面) → w<=0 で除外。
+        let cam = test_camera(Vec3::new(0.0, 0.0, 1.0), Vec3::ZERO);
+        let mesh = Mesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 3.0),
+                Vec3::new(1.0, 0.0, 3.0),
+                Vec3::new(0.0, 1.0, 3.0),
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        let img = render(&mesh, &cam, 32, 32);
+        // 全画素が背景 (前景なし)。
+        assert!(
+            img.pixels.chunks(3).all(|c| c == cam.bg),
+            "behind-camera triangle must be fully culled (all background)"
+        );
+    }
+
+    #[test]
+    fn degenerate_collinear_triangle_is_not_rendered() {
+        // 問208: face_n_len == 0.0 (共線=面積ゼロ) の三角形は continue で除外される。
+        // polygonize は退化三角形を生まないため、この経路は手動メッシュでのみ到達する。
+        let cam = test_camera(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO);
+        let mesh = Mesh {
+            vertices: vec![
+                Vec3::new(-1.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0), // 3 点共線 → 面法線ゼロ
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        let img = render(&mesh, &cam, 32, 32);
+        assert!(
+            img.pixels.chunks(3).all(|c| c == cam.bg),
+            "degenerate (collinear) triangle must not render (zero face normal)"
+        );
+    }
+
+    #[test]
+    fn perspective_matrix_depth_coefficients_are_exact() {
+        // 問209: 透視行列の z 関連係数 (proj[10], proj[11], proj[14]) の数値を固定する。
+        // 既存テストは最終スクリーン座標のみ確認し、係数の符号入れ替え等を検出できない。
+        let fov = std::f64::consts::FRAC_PI_4;
+        let near = 0.01;
+        let far = 1000.0;
+        let proj = perspective(fov, 1.0, near, far);
+        let nf = 1.0 / (near - far); // near-far < 0 なので nf < 0
+        assert!(
+            (proj[10] - (far + near) * nf).abs() < 1e-15,
+            "proj[10] must be (far+near)/(near-far), got {}", proj[10]
+        );
+        assert!(
+            (proj[11] - 2.0 * far * near * nf).abs() < 1e-14,
+            "proj[11] must be 2*far*near/(near-far), got {}", proj[11]
+        );
+        assert_eq!(proj[14], -1.0, "proj[14] (w from z) must be -1");
+        // f = 1/tan(fov/2)。fov=π/4 → tan(π/8) ≈ 0.41421 → f ≈ 2.41421。aspect=1。
+        let f = 1.0 / (fov / 2.0).tan();
+        assert!((proj[0] - f).abs() < 1e-12, "proj[0] = f/aspect must equal f at aspect=1");
+        assert!((proj[5] - f).abs() < 1e-12, "proj[5] must equal f");
+    }
+
+    #[test]
+    fn normalize_zero_length_vector_falls_back_to_z_axis() {
+        // 問210: normalize は len < 1e-15 のとき (0,0,1) へフォールバックする。
+        // 閾値の上下で挙動が分かれることを固定 (look_at の縮退回避に依存)。
+        // 閾値以上 → 正規化される。
+        let above = normalize(Vec3::new(1e-14, 0.0, 0.0));
+        assert!(above.x > 0.5, "len=1e-14 (>threshold) must normalize toward x, got {above:?}");
+        assert!((above.length() - 1.0).abs() < 1e-9, "normalized vector must be unit length");
+        // 閾値未満 → (0,0,1) フォールバック。
+        let below = normalize(Vec3::new(1e-16, 0.0, 0.0));
+        assert_eq!(below, Vec3::new(0.0, 0.0, 1.0), "len=1e-16 (<threshold) must fall back to Z");
+        // 完全ゼロベクトルもフォールバック。
+        assert_eq!(normalize(Vec3::ZERO), Vec3::new(0.0, 0.0, 1.0), "zero vector must fall back to Z");
+    }
 }

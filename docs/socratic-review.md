@@ -3653,3 +3653,70 @@ hard Intersection / Difference / SmoothDifference も反転 AABB を生みうる
 > なお問207 (3MF unit 宣言) は既存テスト threemf::*line121 で既出のため対象外。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 271 ユニット + 統合 3 = 274 合計。
+
+## 問207 — カメラ背後の三角形カリングが未確認
+
+**問**: render は clip 空間 w<=0 (near 面の裏) の三角形を continue で除外するが、
+全テストが前方の sphere のみで、背面カリング経路が未検証だった。
+
+**実装 (raster.rs)**:
+- `triangle_behind_camera_is_culled`:
+  eye=(0,0,1) で z=3 の三角形が全背景になることを確認。
+
+## 問208 — 退化三角形 (面法線ゼロ) の除外が未確認
+
+**問**: render は face_n_len==0.0 (共線=面積ゼロ) の三角形を除外するが、
+polygonize は退化三角形を生まないためこの経路は未到達だった。
+
+**実装 (raster.rs)**:
+- `degenerate_collinear_triangle_is_not_rendered`:
+  共線 3 頂点の手動メッシュが全背景になることを確認。
+
+## 問209 — 透視行列の深度係数の数値が未固定
+
+**問**: 既存テストは最終スクリーン座標のみ確認し、透視行列の z 係数
+(proj[10], proj[11], proj[14]) の符号入れ替え等を検出できなかった。
+
+**実装 (raster.rs)**:
+- `perspective_matrix_depth_coefficients_are_exact`:
+  near=0.01, far=1000 で proj[10]=(far+near)/(near-far)、
+  proj[11]=2*far*near/(near-far)、proj[14]=-1、proj[0]=proj[5]=f を確認。
+
+## 問210 — normalize のゼロ長フォールバック閾値が未確認
+
+**問**: normalize は len<1e-15 で (0,0,1) へフォールバックするが、
+閾値の上下での挙動が未検証だった (look_at の縮退回避に依存)。
+
+**実装 (raster.rs)**:
+- `normalize_zero_length_vector_falls_back_to_z_axis`:
+  len=1e-14 は正規化、len=1e-16 と完全ゼロは (0,0,1) フォールバックを確認。
+
+## 問213 — ZIP 中央ディレクトリのオフセット正しさが未確認
+
+**問**: local_header_and_central_directory_crc は CRC 一致のみ確認し、
+CD の +42 に格納される LFH オフセットの正しさは未検証だった。
+オフセットが誤ると展開ツールがアーカイブを壊れ扱いする。
+
+**実装 (zip.rs)**:
+- `central_directory_offsets_point_to_valid_local_headers`:
+  可変長名の 3 エントリで各 CD オフセットが有効な LFH 署名を指し、
+  LFH のファイル名がエントリ名と一致することを確認。
+
+## 反映サマリ v96
+| 問 | 実装 |
+|----|------|
+| 207 | カメラ背後三角形のカリング (raster.rs) |
+| 208 | 退化三角形 (面法線ゼロ) の除外 (raster.rs) |
+| 209 | 透視行列の深度係数の数値固定 (raster.rs) |
+| 210 | normalize ゼロ長フォールバック閾値 (raster.rs) |
+| 213 | ZIP 中央ディレクトリのオフセット正しさ (zip.rs) |
+
+> 総括: v96 はレンダラ (raster.rs) と ZIP パッケージング (zip.rs) の
+> 未到達分岐・数値係数・オフセットフィールドを固定した。問207/208 は
+> polygonize 経由では到達しない手動メッシュ経路 (背面カリング・退化除外)。
+> 問209 は視覚的に似た画像を生む符号エラーを数値で検出する防壁。
+> 問213 は CRC だけでなくオフセットの正しさを LFH 署名追跡で確認。
+> なお問211 (CLI clamp) と問212 (HTML near/far) は clamp ロジックの自明な
+> 再掲または既存テスト範囲のため見送り。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 276 ユニット + 統合 3 = 279 合計。

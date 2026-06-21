@@ -180,4 +180,44 @@ mod tests {
         assert_eq!(lfh0_crc, crc32(b"<hello/>"));
         assert_eq!(lfh1_crc, crc32(b"\x00\x01\x02\x03\xff"));
     }
+
+    #[test]
+    fn central_directory_offsets_point_to_valid_local_headers() {
+        // 問213: 各中央ディレクトリエントリは対応するローカルファイルヘッダ (LFH) の
+        // バイトオフセットを格納する (CD の +42)。オフセットが誤ると展開ツールが
+        // アーカイブを壊れ扱いする。可変長の名前を持つ 3 エントリで、各オフセットが
+        // 実際に有効な LFH 署名 (PK\x03\x04) を指すことを確認する。
+        // 既存テストは CRC 一致のみ確認しオフセットの正しさは未検証だった。
+        let entries: &[(&str, &[u8])] = &[
+            ("s.txt", b"hi"),
+            ("medium_name.xml", b"<x/>"),
+            ("very_long_filename_for_offset_check.bin", b"binarydata"),
+        ];
+        let z = build_zip(entries);
+
+        // EOCD から中央ディレクトリ開始位置とエントリ数を取得。
+        let eocd_pos = z.windows(4).rposition(|w| w == [0x50, 0x4B, 0x05, 0x06]).unwrap();
+        let cd_count = u16::from_le_bytes(z[eocd_pos + 10..eocd_pos + 12].try_into().unwrap());
+        assert_eq!(cd_count as usize, entries.len(), "EOCD entry count must match");
+        let cd_start = u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
+
+        // 各 CD エントリを辿り、その LFH オフセットが有効な署名を指すことを確認。
+        let mut cd_pos = cd_start;
+        for (i, (name, _)) in entries.iter().enumerate() {
+            // CD 署名 = PK\x01\x02。
+            let cd_sig = u32::from_le_bytes(z[cd_pos..cd_pos + 4].try_into().unwrap());
+            assert_eq!(cd_sig, 0x0201_4b50, "entry {i}: central directory signature");
+            // CD の +42 に LFH オフセット。
+            let lfh_off = u32::from_le_bytes(z[cd_pos + 42..cd_pos + 46].try_into().unwrap()) as usize;
+            // そのオフセットが有効な LFH 署名 (PK\x03\x04) を指す。
+            let lfh_sig = u32::from_le_bytes(z[lfh_off..lfh_off + 4].try_into().unwrap());
+            assert_eq!(lfh_sig, 0x0403_4b50, "entry {i}: offset {lfh_off} must point to valid LFH");
+            // LFH のファイル名がエントリ名と一致 (オフセットが正しいエントリを指す確証)。
+            let name_len = u16::from_le_bytes(z[lfh_off + 26..lfh_off + 28].try_into().unwrap()) as usize;
+            let lfh_name = std::str::from_utf8(&z[lfh_off + 30..lfh_off + 30 + name_len]).unwrap();
+            assert_eq!(lfh_name, *name, "entry {i}: LFH name must match");
+            // 次の CD エントリへ (固定 46 + 名前長)。
+            cd_pos += 46 + name.len();
+        }
+    }
 }
