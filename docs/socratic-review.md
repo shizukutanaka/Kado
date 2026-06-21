@@ -3720,3 +3720,63 @@ CD の +42 に格納される LFH オフセットの正しさは未検証だっ�
 > 再掲または既存テスト範囲のため見送り。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 276 ユニット + 統合 3 = 279 合計。
+
+## 問214 — 未知メソッドの通知 (id なし) が None を返すことが未確認
+
+**問**: notification_returns_none は既知メソッド "initialized" のみ確認。
+未知メソッドかつ id なし (通知) のとき handle が error でなく None を返す
+(JSON-RPC 2.0: 通知には応答しない) 経路が未検証だった。
+
+**実装 (server.rs)**:
+- `unknown_method_as_notification_returns_none_not_error`:
+  未知メソッド + id なしで handle が None を返すことを確認。
+  対照: 未知メソッド + id あり は -32601 エラー。
+
+## 問215 — rotate の負角・360°超が未確認
+
+**問**: angle は req_f64 で範囲制限なし。rotate_operations_via_script は 0°/90° のみ。
+負角や 360° 超が to_radians() で正しく周期的に扱われることが未検証だった。
+
+**実装 (eval.rs)**:
+- `rotate_accepts_negative_and_over_360_degree_angles`:
+  -90°==270°、450°==90° を eval 値で確認。
+
+## 問216 — HTML が非有限座標をサニタイズしていなかった (実バグ修正)
+
+**問**: io/html.rs の mesh_arrays は `{:.4}` で座標を出力するが、3MF の finite_coord と
+異なり is_finite() チェックがなかった。NaN/Inf 頂点が "NaN"/"inf" 文字列になり
+埋め込み JS の MESH.positions が構文エラーになる。さらに radius も
+`Inf.max(1e-3)=Inf` で素通りし "inf" になっていた (positions だけでなく radius も)。
+
+**修正 (html.rs)**: positions/center を 0.0 へ、radius は非有限を 1e-3 へサニタイズ。
+3MF の finite_coord と同方針で防御。
+
+**実装 (html.rs)**:
+- `html_sanitizes_nonfinite_coordinates`:
+  NaN/Inf 頂点メッシュで HTML に "nan"/"inf" リテラルが現れず 0.0000 になることを確認。
+
+## 問219 — dims_mm の精度桁数が未確認
+
+**問**: summary は dims_mm=[{:.3}x...] で 3 桁固定。既存テストは "dims_mm=[2." 接頭辞
+のみ確認し、精度桁数 (3 桁) を検証していなかった。
+
+**実装 (check.rs)**:
+- `summary_dims_mm_uses_exactly_three_decimal_places`:
+  3 成分すべてが厳密に 3 桁小数であることをパースして確認。
+
+## 反映サマリ v97
+| 問 | 実装 |
+|----|------|
+| 214 | 未知メソッド通知の None 応答 (server.rs) |
+| 215 | rotate 負角・360°超の周期性 (eval.rs) |
+| 216 | **実バグ修正**: HTML 非有限座標/radius サニタイズ (html.rs) |
+| 219 | dims_mm 精度 3 桁の固定 (check.rs) |
+
+> 総括: v97 はソクラテス問答が再び**実バグ**を発見した回。問216 の HTML
+> 非有限座標は 3MF が finite_coord で防いでいる一方 HTML は無防備で、NaN/Inf 頂点が
+> 埋め込み JS を構文破壊していた。さらに radius は Inf.max(1e-3)=Inf で素通りする
+> ため positions だけでなく radius のサニタイズも必要だった (agent の提案より広い修正)。
+> 問214/215/219 は JSON-RPC ディスパッチ・角度周期性・出力精度の境界固定。
+> なお問217/218/220 (opt_f64/overhang境界/req_child) は低価値または FP 不安定のため見送り。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 280 ユニット + 統合 3 = 283 合計。

@@ -543,6 +543,30 @@ mod tests {
     }
 
     #[test]
+    fn summary_dims_mm_uses_exactly_three_decimal_places() {
+        // 問219: summary は dims_mm=[{:.3}x{:.3}x{:.3}] で 3 桁固定精度。
+        // summary_reports_physical_dimensions_in_mm は "dims_mm=[2." 接頭辞のみ確認し、
+        // 精度桁数 (3 桁) を検証していなかった。各成分が厳密に 3 桁小数であることを固定。
+        let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let s = validate(&mesh, 0.0, 0.0).summary();
+        let start = s.find("dims_mm=[").expect("dims_mm must be present") + "dims_mm=[".len();
+        let end = s[start..].find(']').expect("dims_mm must close with ]") + start;
+        let body = &s[start..end]; // 例: "2.000x2.000x2.000"
+        let parts: Vec<&str> = body.split('x').collect();
+        assert_eq!(parts.len(), 3, "dims_mm must have 3 components: {body}");
+        for part in parts {
+            let dot = part.find('.').unwrap_or_else(|| panic!("each dim must have a decimal point: {part}"));
+            let decimals = &part[dot + 1..];
+            assert_eq!(
+                decimals.len(),
+                3,
+                "each dim must have exactly 3 decimal places, got '{part}' ({} decimals)",
+                decimals.len()
+            );
+        }
+    }
+
+    #[test]
     fn suspicious_scale_warns_when_part_smaller_than_its_own_min_wall() {
         // 問62: 最大寸法が min_wall すら下回る = 単位/スケール誤りの可能性。
         // 直径 0.2mm の球に min_wall=0.5mm を課すと SUSPICIOUS_SCALE。

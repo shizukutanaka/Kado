@@ -765,6 +765,24 @@ mod tests {
     }
 
     #[test]
+    fn unknown_method_as_notification_returns_none_not_error() {
+        // 問214: notification_returns_none は既知メソッド "initialized" のみ。
+        // 未知メソッドかつ id なし (通知) の場合、handle は error ではなく None を返す
+        // (JSON-RPC 2.0: 通知には応答しない)。line 105-107 の早期 return None 経路を固定。
+        // 対照: 未知メソッド + id あり は -32601 エラー (unknown_method_returns_error)。
+        let mut s = tools::Session::new();
+        let notif = json::obj([
+            ("jsonrpc", json::s("2.0")),
+            ("method", json::s("totally/unknown")),
+            // "id" フィールドなし = 通知
+        ]);
+        assert!(
+            handle(&mut s, &notif).is_none(),
+            "unknown method as notification must return None (no response), not an error"
+        );
+    }
+
+    #[test]
     fn malformed_tools_call_returns_uniform_error_shape() {
         // 問106: 不正な tools/call (name 欠落、name 非文字列、arguments 非オブジェクト) は
         // パニックせず、未知ツールと同じ {content, isError:true} 形のツール結果を返す。

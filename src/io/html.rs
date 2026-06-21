@@ -16,13 +16,18 @@ pub fn encode_html(mesh: &Mesh) -> String {
     let (positions, indices) = mesh_arrays(mesh);
     let (lo, hi) = mesh.bounds().unwrap_or((Vec3::ZERO, Vec3::ZERO));
     let c = (lo + hi) * 0.5;
-    let radius = ((hi - lo).length() * 0.5).max(1e-3);
+    // 問216: 非有限頂点を含むメッシュでは bounds 由来の center/radius が NaN/Inf に
+    // なりうる。center は 0.0 へ、radius は (Inf.max(1e-3)=Inf を通すため) 明示的に
+    // 非有限を 1e-3 フォールバックへサニタイズする (3MF の finite_coord と同方針)。
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let raw_radius = (hi - lo).length() * 0.5;
+    let radius = if raw_radius.is_finite() { raw_radius.max(1e-3) } else { 1e-3 };
     TEMPLATE
         .replace("/*POSITIONS*/", &positions)
         .replace("/*INDICES*/", &indices)
         .replace(
             "/*CENTER*/",
-            &format!("[{:.4},{:.4},{:.4}]", c.x, c.y, c.z),
+            &format!("[{:.4},{:.4},{:.4}]", finite(c.x), finite(c.y), finite(c.z)),
         )
         .replace("/*RADIUS*/", &format!("{radius:.4}"))
 }
@@ -34,12 +39,22 @@ pub fn write_html(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
 
 /// 埋め込み用の `(positions, indices)` を固定精度 (4桁) のカンマ区切りで作る。
 fn mesh_arrays(mesh: &Mesh) -> (String, String) {
+    // 問216: 非有限座標 (NaN/Inf) は `{:.4}` で "NaN"/"inf" 文字列になり、
+    // 埋め込み JS の MESH.positions 配列が構文エラーになる。3MF の finite_coord と
+    // 同様に 0.0 へサニタイズしてビューアが壊れないようにする。
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
     let mut positions = String::with_capacity(mesh.vertices.len() * 24);
     for (i, v) in mesh.vertices.iter().enumerate() {
         if i > 0 {
             positions.push(',');
         }
-        let _ = write!(positions, "{:.4},{:.4},{:.4}", v.x, v.y, v.z);
+        let _ = write!(
+            positions,
+            "{:.4},{:.4},{:.4}",
+            finite(v.x),
+            finite(v.y),
+            finite(v.z)
+        );
     }
     let mut indices = String::with_capacity(mesh.triangles.len() * 18);
     for (i, t) in mesh.triangles.iter().enumerate() {
@@ -212,5 +227,28 @@ mod tests {
             html.contains("center:[0.0000,0.0000,0.0000]"),
             "empty mesh center must fall back to origin"
         );
+    }
+
+    #[test]
+    fn html_sanitizes_nonfinite_coordinates() {
+        // 問216 (バグ修正): mesh_arrays は以前 {:.4} で非有限座標を出力していたため
+        // NaN/Inf 頂点が "NaN"/"inf" 文字列になり MESH.positions が構文エラーになった。
+        // 3MF の finite_coord と同様に 0.0 へサニタイズする修正を固定する。
+        let bad = Mesh {
+            vertices: vec![
+                Vec3::new(f64::NAN, 0.0, 0.0),
+                Vec3::new(f64::INFINITY, 1.0, 0.0),
+                Vec3::new(0.0, f64::NEG_INFINITY, 1.0),
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        let html = encode_html(&bad);
+        let lower = html.to_lowercase();
+        // 埋め込み JS に "nan"/"inf" リテラルが現れてはならない。
+        // (テンプレ固定文字列に nan/inf を含まないことは別途確認済みの前提)
+        assert!(!lower.contains("nan"), "sanitized HTML must not contain 'nan' literal");
+        assert!(!lower.contains("inf"), "sanitized HTML must not contain 'inf' literal");
+        // 非有限は 0.0000 に置換される。
+        assert!(html.contains("0.0000"), "non-finite coords must become 0.0000");
     }
 }

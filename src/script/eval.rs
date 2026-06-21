@@ -675,6 +675,29 @@ mod tests {
     }
 
     #[test]
+    fn rotate_accepts_negative_and_over_360_degree_angles() {
+        // 問215: angle は req_f64 で範囲制限なし。負角や 360° 超も to_radians() で
+        // 正しく扱われる。rotate_operations_via_script は 0°/90° のみ確認していた。
+        // -90° は +270° と、450° は +90° と同じ回転になる (mod 360 の周期性)。
+        let cyl = r#"{"op":"cylinder","r":0.3,"h":2.0}"#;
+        let p = Vec3::new(1.5, 0.0, 0.0);
+        // 負角 -90° と +270° は同一回転。
+        let neg = eval_scene(&format!(r#"{{"op":"rotate_y","angle":-90,"shape":{cyl}}}"#)).unwrap();
+        let pos270 = eval_scene(&format!(r#"{{"op":"rotate_y","angle":270,"shape":{cyl}}}"#)).unwrap();
+        assert!(
+            (neg.eval(p) - pos270.eval(p)).abs() < 1e-9,
+            "-90° must equal 270°: {} vs {}", neg.eval(p), pos270.eval(p)
+        );
+        // 450° と 90° は同一回転。
+        let big = eval_scene(&format!(r#"{{"op":"rotate_y","angle":450,"shape":{cyl}}}"#)).unwrap();
+        let small = eval_scene(&format!(r#"{{"op":"rotate_y","angle":90,"shape":{cyl}}}"#)).unwrap();
+        assert!(
+            (big.eval(p) - small.eval(p)).abs() < 1e-9,
+            "450° must equal 90°: {} vs {}", big.eval(p), small.eval(p)
+        );
+    }
+
+    #[test]
     fn repeat_script_is_bounded() {
         // 問21: スクリプトの repeat は有限。nx=1 (x方向3コピー)、他軸は既定だが period 0 で無効。
         let src = r#"{"op":"repeat","x":2.0,"nx":1,"shape":{"op":"sphere","r":0.3}}"#;
