@@ -3955,3 +3955,44 @@ eval のパラメータ強制・check のオーバーハング数学を行単位
 > 「読んで安全」より「走らせて安全」を一段強い保証として残す。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 288 ユニット + 統合 6 = 294 合計。
+
+## 問233 — README とCIが未整備 (Plan.md §114/§117 の未達成果物)
+
+**背景**: v101 までで実装・テスト・SPEC は成熟したが、プロジェクト全体を俯瞰すると
+Plan.md が明示的に列挙する成果物のうち **README.md (§114)** と
+**.github/workflows/ci.yml (§117: Lint→Test→audit→SBOM)** が欠落していた。
+AI-First ツールでありながら、ユーザ/AI エージェントが利用法を把握する入口
+(README) も、手動実行している品質ゲートを自動化する CI もなかった。
+
+**実装**:
+- `README.md`: 設計の柱 (外部送信ゼロ/単一バイナリ/決定的/ヘッドレス)、
+  CLI コマンド表、MCP ツール表、DSL 例 (JSON/テキスト両形式)、アーキテクチャ図、
+  決定性の範囲、SPEC へのリンクを記載。selftest の出力値は実測 (f(origin)=-1) で固定。
+- `.github/workflows/ci.yml`:
+  - `quality` ジョブ (ubuntu/macos/windows マトリクス): clippy -D warnings →
+    cargo test --all-targets → release build。各テスト内の 2 回実行バイト一致
+    アサーションがプラットフォームごとの自己再現性 (問5) を担保。
+  - `no-external-deps` ジョブ: `cargo tree` の依存が kado 自身 1 件のみであることを
+    検証 (ADR-003/問4 のサプライチェーンゲート・SBOM の最小形)。外部 crate 混入で CI 失敗。
+
+**設計判断**: `cargo fmt --check` は CI に**含めない**。コードベースは意図的な
+手整形 (テスト表の整列・DSL JSON 文字列の可読性優先) が約 30 ファイルに渡り、
+fmt デフォルトと乖離する。fmt 強制は大規模 diff と可読性低下を招くため、
+実質的な品質ゲート (clippy/test/build/no-deps) のみを CI 化した。
+
+## 反映サマリ v102
+| 問 | 実装 |
+|----|------|
+| 233 | README.md + CI ワークフロー (Plan §114/§117 の成果物) |
+
+> 総括: v102 はテストのマイクロギャップ探索から離れ、プロジェクトの俯瞰的な
+> 弱点 (入口ドキュメントと品質ゲート自動化の欠落) を埋めた。Plan.md が成果物として
+> 列挙しながら未達だった README/CI を整備し、手動の品質確認 (clippy/test) を
+> マトリクス CI で自動化。ADR-003 の「外部依存ゼロ」を cargo tree で構造的に強制する
+> サプライチェーンゲートも追加した。クロスプラットフォーム自己再現性も CI で運動する。
+> テスト数: 288 ユニット + 統合 6 = 294 合計 (変更なし)。
+
+> 注 (v102 追補): `.github/workflows/ci.yml` は GitHub App の `workflows` 権限制約により
+> 自動 push できなかった。ファイルは作業ツリーに生成済みで内容は検証済み
+> (clippy/test/release build/no-deps すべてローカル通過)。リポジトリ管理者が
+> 手動コミットすることで有効化される。README.md は正常に反映済み。
