@@ -1106,6 +1106,59 @@ mod tests {
     }
 
     #[test]
+    fn cone_apex_is_exactly_zero_and_base_disk_is_complete() {
+        // 問229/230: cone_surface_and_sign は apex を .abs()<EPS で確認し、底面は
+        // 内部 1 点 (0.4,0,-2) のみ。apex が厳密に 0.0 (== 0.0)、底面のエッジ・内部・
+        // 外側が正しいことを固定する (底面ディスク全体の被覆を確認)。
+        let c = Sdf::cone(1.0, 2.0);
+        // 先端は厳密に 0.0 (符号付きゼロ含む; .abs()<EPS より強い等値)。
+        let apex = c.eval(Vec3::ZERO);
+        assert_eq!(apex, 0.0, "apex distance must be exactly 0.0, got {apex}");
+        // 底面ディスクのエッジ (r, 0, -h) は表面。
+        assert!(
+            c.eval(Vec3::new(1.0, 0.0, -2.0)).abs() < 1e-12,
+            "base disk edge (1,0,-2) must be on surface: {}",
+            c.eval(Vec3::new(1.0, 0.0, -2.0))
+        );
+        // 底面ディスク内部 (0.5, 0, -2) も表面 (ディスク全体が境界)。
+        assert!(
+            c.eval(Vec3::new(0.5, 0.0, -2.0)).abs() < 1e-12,
+            "base disk interior (0.5,0,-2) must be on surface: {}",
+            c.eval(Vec3::new(0.5, 0.0, -2.0))
+        );
+        // 底面ディスク外側 (1.1, 0, -2) は外部 (正)。
+        assert!(
+            c.eval(Vec3::new(1.1, 0.0, -2.0)) > 0.0,
+            "just outside base disk (1.1,0,-2) must be exterior"
+        );
+    }
+
+    #[test]
+    fn smooth_union_of_shape_with_itself_subtracts_quarter_k_everywhere() {
+        // 問228: smooth_union の多項式 mix(db,da,h) - k*h*(1-h) は da==db のとき
+        // h=0.5 となり補正項 = k*0.25 (最大ブレンド)。同一形状同士の smooth_union は
+        // 全点で da==db なので結果は d - k*0.25 になる。既存テストは収束 (k→0) や
+        // ブレンドゾーン外 (|da-db|>k) のみで、中点での厳密な補正値を確認していなかった。
+        let s = Sdf::sphere(1.0);
+        let k = 0.4_f64;
+        let su = s.clone().smooth_union(s.clone(), k);
+        for p in [
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0), // 外部でも成立
+            Vec3::ZERO,
+        ] {
+            let d = s.eval(p);
+            let expected = d - k * 0.25;
+            let got = su.eval(p);
+            assert!(
+                (got - expected).abs() < 1e-14,
+                "smooth_union(s,s,{k}) at {p:?} must be d - k*0.25 = {expected}, got {got}"
+            );
+        }
+    }
+
+    #[test]
     fn sampling_box_is_never_inverted() {
         // 問40: 非重複 SmoothIntersection の AABB は反転する (lo > hi) が、
         // sampling_box は lo <= hi を保証し polygonize が安全に空メッシュを返す。

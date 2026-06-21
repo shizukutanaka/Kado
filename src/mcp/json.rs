@@ -657,6 +657,41 @@ mod tests {
     }
 
     #[test]
+    fn negative_zero_serializes_as_zero_and_is_numerically_equivalent() {
+        // 問226: Display は n.fract()==0.0 && n.abs()<1e15 で整数出力するため
+        // -0.0 は "0" になり符号ビットが失われる。-0.0 == +0.0 なので幾何・算術に
+        // 影響はなく、出力は決定的 (-0.0 は常に "0")。この意図された良性挙動を固定する。
+        let serialized = Value::Number(-0.0_f64).to_string();
+        assert_eq!(serialized, "0", "-0.0 must serialize as \"0\" (sign-bit loss is benign)");
+        // 再パースは +0.0 になり、数値的に 0.0 と等価。
+        let reparsed = parse(&serialized).unwrap().as_f64().unwrap();
+        assert_eq!(reparsed, 0.0, "re-parsed value must equal 0.0");
+        // 出力は決定的 (同一入力で同一出力)。
+        assert_eq!(Value::Number(-0.0).to_string(), serialized);
+    }
+
+    #[test]
+    fn scientific_notation_input_roundtrips_bit_identically_via_decimal() {
+        // 問227: パーサは科学記法 (1.5e-3) を受理するが Display は十進 (0.0015) で出力する。
+        // 文字列形式は変わるが f64 のビット列は保存される (Rust の Display↔parse 往復保証)。
+        // AI が科学記法を送っても数値が壊れないことを固定する。
+        for input in ["1.5e-3", "2.0e5", "1e-10", "3.14e2", "6.022e23"] {
+            let parsed = parse(&format!(r#"{{"n":{input}}}"#))
+                .unwrap()
+                .get("n")
+                .and_then(|v| v.as_f64())
+                .unwrap();
+            let serialized = Value::Number(parsed).to_string();
+            let reparsed = parse(&serialized).unwrap().as_f64().unwrap();
+            assert_eq!(
+                parsed.to_bits(),
+                reparsed.to_bits(),
+                "scientific {input}: {parsed} → \"{serialized}\" → {reparsed} must be bit-identical"
+            );
+        }
+    }
+
+    #[test]
     fn trailing_comma_is_rejected() {
         // 問144: JSON 仕様は配列・オブジェクトの末尾カンマを禁止する。
         // 現パーサはカンマ後に再度 parse_value() を呼ぶ仕組み上自然に拒否するが、

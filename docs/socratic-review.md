@@ -3838,3 +3838,59 @@ GLB ビューアが頂点/索引を取り違える。
 > main() が exit() を呼ぶため単体テスト困難なため見送り。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 284 ユニット + 統合 3 = 287 合計。
+
+## 問226 — 負ゼロ (-0.0) のシリアライズ挙動が未確認
+
+**問**: Display は `n.fract()==0.0 && n.abs()<1e15` で整数出力するため -0.0 は "0" になり
+符号ビットが失われる。-0.0 == +0.0 なので幾何・算術に影響はなく出力も決定的だが、
+この良性挙動を固定するテストがなかった。
+
+**実装 (json.rs)**:
+- `negative_zero_serializes_as_zero_and_is_numerically_equivalent`:
+  -0.0 → "0"、再パースで +0.0、出力が決定的であることを確認 (意図された良性挙動)。
+
+## 問227 — 科学記法入力のビット保存往復が未確認
+
+**問**: パーサは科学記法 (1.5e-3) を受理するが Display は十進 (0.0015) で出力する。
+文字列形式は変わるが f64 ビット列は保存される (Rust の Display↔parse 往復保証) ことが
+未検証だった。AI が科学記法を送っても数値が壊れないことを固定。
+
+**実装 (json.rs)**:
+- `scientific_notation_input_roundtrips_bit_identically_via_decimal`:
+  5 種の科学記法入力で parse→to_string→parse がビット同一であることを確認。
+
+## 問228 — smooth_union の中点ブレンド補正値が未確認
+
+**問**: smooth_union の多項式 `mix(db,da,h) - k*h*(1-h)` は da==db のとき h=0.5、
+補正項 = k*0.25 (最大ブレンド)。既存テストは収束 (k→0) とブレンドゾーン外 (|da-db|>k)
+のみで、中点での厳密な補正値を確認していなかった。
+
+**実装 (sdf.rs)**:
+- `smooth_union_of_shape_with_itself_subtracts_quarter_k_everywhere`:
+  同一形状同士の smooth_union が全点で d - k*0.25 になることを 4 点で確認。
+
+## 問229/230 — cone の apex 厳密ゼロと底面ディスク被覆が未確認
+
+**問**: cone_surface_and_sign は apex を `.abs()<EPS` で確認し底面は内部 1 点のみ。
+apex が厳密に 0.0 (== 0.0、符号付きゼロ含む)、底面のエッジ・内部・外側が正しいことを
+固定する。なお apex は実装上 -0.0 になりうるため `== 0.0` で比較 (bit-exact は不可)。
+
+**実装 (sdf.rs)**:
+- `cone_apex_is_exactly_zero_and_base_disk_is_complete`:
+  apex == 0.0、底面エッジ (1,0,-2)≈0、内部 (0.5,0,-2)≈0、外側 (1.1,0,-2)>0 を確認。
+
+## 反映サマリ v99
+| 問 | 実装 |
+|----|------|
+| 226 | 負ゼロのシリアライズ良性挙動 (json.rs) |
+| 227 | 科学記法のビット保存往復 (json.rs) |
+| 228 | smooth_union 中点ブレンド補正 d-k*0.25 (sdf.rs) |
+| 229/230 | cone apex 厳密ゼロ + 底面ディスク被覆 (sdf.rs) |
+
+> 総括: v99 は数値・代数的正しさを固定した。問229 で agent は apex を bit-exact +0.0 と
+> 仮定したが、実装をトレースすると s=-0.0 → signum(-0.0)=-1 で result が -0.0 になりうる
+> ため、bit-exact (to_bits 比較) は失敗する。`== 0.0` (符号付きゼロを包含) を採用し罠を回避。
+> 問228 は同一形状同士の smooth_union が全点 d-k*0.25 になる性質で多項式を厳密検証。
+> 問231 (2-inside 巻き順) は既存 watertight テストの再掲のため見送り。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 288 ユニット + 統合 3 = 291 合計。
