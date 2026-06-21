@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# このファイルは `.github/workflows/ci.yml` に配置することで有効化される。
+# (Claude Code の GitHub App は `workflows` 権限を持たないため自動 push できず、
+#  暫定的に docs/ci.yml に置いている。リポジトリ管理者が下記を実行して有効化する:
+#    mkdir -p .github/workflows && git mv docs/ci.yml .github/workflows/ci.yml
+#  内容はローカルで検証済み: clippy -D warnings / cargo test / release build /
+#  cargo tree による外部依存ゼロ検証、すべて通過。)
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI
+
+# Plan.md §117: Lint → Test → audit/SBOM の品質ゲートを CI 化する。
+# Kado は外部 crate ゼロ (std のみ・ADR-003) のため、依存監査 (cargo-audit) と
+# SBOM は「依存ツリーが空」であること自体の検証に帰着する (下記 no-external-deps)。
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # 決定性 (ADR-003 / 問5): fast-math 相当を持ち込まない。
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  quality:
+    name: Lint · Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # クロスプラットフォームでの自己再現性を確認する (問5: 各環境で 2 回実行
+        # のバイト一致はテスト内 determinism アサーションが担保する)。
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Lint: clippy を警告ゼロで強制 (品質ゲート)。
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Test: ユニット + 統合 (eval_set / stress_probe)。
+      # 各テスト内で polygonize/encode の 2 回実行バイト一致を検証 = 自己再現性。
+      - name: Test
+        run: cargo test --all-targets
+
+      # Build: リリースプロファイル (LTO・単一 codegen-unit・panic=abort) が
+      # 通ることを確認する。
+      - name: Build (release)
+        run: cargo build --release
+
+  no-external-deps:
+    name: Zero external dependencies (ADR-003)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      # ADR-003 / 問4: コアは std のみ。`cargo tree` の依存が自分自身 1 件だけで
+      # あることを検証する。外部 crate が混入したら CI が落ちる (サプライチェーン
+      # ゲート・SBOM の最小形)。
+      - name: Assert dependency tree is empty
+        shell: bash
+        run: |
+          deps=$(cargo tree --edges normal --prefix none | grep -v '^kado ' | grep -v '^$' | sort -u)
+          if [ -n "$deps" ]; then
+            echo "::error::External dependencies detected (ADR-003 forbids non-std deps):"
+            echo "$deps"
+            exit 1
+          fi
+          echo "OK: no external dependencies (std only)."
