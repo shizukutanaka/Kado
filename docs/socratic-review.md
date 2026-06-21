@@ -3921,3 +3921,37 @@ mirror・rotate・torus 等の多様な実モデルでのエンコーダ退行�
 > エンコーダ退行 (多様体・大頂点数・特殊形状) を一点で検知する防壁を追加した。
 > clippy --all-targets -D warnings = 0 warnings。
 > テスト数: 288 ユニット + 統合 4 = 292 合計。
+
+## 問232 — 敵対的モデルの水密性ストレステスト (バグ探索の実証的補強)
+
+**背景**: v101 でバグ探索エージェントを起動し、aabb の回転境界・MT の勾配符号・
+eval のパラメータ強制・check のオーバーハング数学を行単位でトレース調査した結果、
+**実バグなし (clean bill of health)** という結論を得た。これをコード読解だけで
+信用せず、**実証的に**検証する。
+
+**問**: Marching Tetrahedra の限界に近い敵対的入力 (薄壁・深いネスト CSG・極端
+アスペクト比・ほぼ接する smooth_union の鞍点・細い穴・変換合成) で、水密性
+(edge-manifold) と向き一貫性 (正の符号付き体積) が保たれるか? 解像度依存の
+退行 (低解像度での非多様体化) はないか?
+
+**実証結果**: 6 モデル × 解像度 {24, 48, 64} の全 18 ケースで manifold=true・vol>0。
+薄壁シェル (0.08mm) は体積が解像度依存 (0.63→0.91→0.93 と収束) だが水密性は不変。
+これは SPEC §9 の既知の限界「ステップより薄いフィーチャは体積過少だが水密」を裏付ける。
+
+**実装 (tests/stress_probe.rs)**:
+- `adversarial_models_stay_watertight_across_resolutions`:
+  6 敵対的モデル × 3 解像度で edge-manifold かつ vol>0 を確認。
+- `under_resolved_thin_shell_stays_watertight_even_when_volume_is_underestimated`:
+  res=20 (step > 壁厚) の薄壁シェルでも水密性が保たれることを明示的に固定。
+
+## 反映サマリ v101
+| 問 | 実装 |
+|----|------|
+| 232 | 敵対的モデルの水密性ストレステスト (tests/stress_probe.rs) |
+
+> 総括: v101 はバグ探索の結論をコード読解で終わらせず実証で裏付けた回。
+> エージェントの「実バグなし」を 18 ケースの敵対的抽出で empirical に確認し、
+> 同時に SPEC §9 の既知限界 (薄壁の体積過少 vs 水密性維持) を回帰テスト化した。
+> 「読んで安全」より「走らせて安全」を一段強い保証として残す。
+> clippy --all-targets -D warnings = 0 warnings。
+> テスト数: 288 ユニット + 統合 6 = 294 合計。
