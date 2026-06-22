@@ -342,6 +342,28 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             want(1)?;
             Ok(obj(vec![("op", json::s(name)), ("shape", a(0))]))
         }
+        // cut(nx,ny,nz, shape) [offset=0] または cut(nx,ny,nz, offset, shape)。
+        // dot(p,(nx,ny,nz)) <= offset の側を残す (shape は最後の引数)。
+        "cut" => match args.len() {
+            4 => Ok(obj(vec![
+                ("op", json::s("cut")),
+                ("nx", a(0)),
+                ("ny", a(1)),
+                ("nz", a(2)),
+                ("shape", a(3)),
+            ])),
+            5 => Ok(obj(vec![
+                ("op", json::s("cut")),
+                ("nx", a(0)),
+                ("ny", a(1)),
+                ("nz", a(2)),
+                ("offset", a(3)),
+                ("shape", a(4)),
+            ])),
+            n => Err(ScriptError::new(format!(
+                "\"cut\" expects 4 (nx,ny,nz,shape) or 5 (nx,ny,nz,offset,shape) args, got {n}"
+            ))),
+        },
         "repeat" => match args.len() {
             // repeat(px,py,pz, shape) — 各軸 count 既定 1。
             4 => Ok(obj(vec![
@@ -436,7 +458,7 @@ mod tests {
     fn all_ops_parse_identically_in_dsl_and_json() {
         // 問104: JSON 評価器とテキスト DSL は同一の op 集合を扱い、各 op で同一の場を
         // 生まなければならない。片方にしか無い op があると、AI が一方の記法で書いた
-        // ときだけ "unknown" になる隠れた非対称が生じる。全 25 op の DSL↔JSON 等価性を
+        // ときだけ "unknown" になる隠れた非対称が生じる。全 op の DSL↔JSON 等価性を
         // 固定し、将来 op を片側だけに追加する退行を検知する。
         // プリミティブ (8)
         assert_same("sphere(1.0)", r#"{"op":"sphere","r":1.0}"#);
@@ -510,6 +532,16 @@ mod tests {
                 ),
             );
         }
+
+        // cut: 4 引数 (offset 省略) と 5 引数 (offset 明示) の両形式。
+        assert_same(
+            "cut(0, 0, -1, sphere(1))",
+            r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"shape":{"op":"sphere","r":1}}"#,
+        );
+        assert_same(
+            "cut(0, 0, -1, 0.5, sphere(1))",
+            r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0.5,"shape":{"op":"sphere","r":1}}"#,
+        );
     }
 
     #[test]

@@ -104,6 +104,11 @@ fn eval_set() -> Vec<Task> {
                 "shape":{"op":"translate","x":0.7,"y":0,"z":0,
                          "shape":{"op":"capsule","h":0.5,"r":0.25}}}"#,
         },
+        Task {
+            name: "flat-based dome (cut for FDM printability)",
+            script: r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0,
+                "shape":{"op":"sphere","r":1.0}}"#,
+        },
     ]
 }
 

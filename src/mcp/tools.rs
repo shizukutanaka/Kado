@@ -635,6 +635,11 @@ repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
               period per axis (x/y/z); count per axis (nx/ny/nz, default 1).
               count is copies PER SIDE of the origin → total = 2*count+1 per axis.
               e.g. nx=2 gives 5 copies along x (2 left + center + 2 right).
+cut           {"op":"cut","nx":0,"ny":0,"nz":1,"offset":0.5,"shape":<sdf>}
+              plane cut: keeps dot(p,(nx,ny,nz)) <= offset, removes the half the
+              normal points into. offset defaults to 0 (plane through origin).
+              e.g. flatten a printable base at z=0: nx=0,ny=0,nz=-1,offset=0
+              (keeps z>=0). Cross-section: thin slab via two cuts.
 
 ## Example: sphere with a cylindrical hole
 
@@ -655,6 +660,7 @@ DSL arg order mirrors the constructors:
   union/intersection/difference(a,b) · smooth_*(a,b[,k])
   translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
   rotate_x/y/z(deg,shape) · mirror_x/y/z(shape) · repeat(px,py,pz[,nx,ny,nz],shape)
+  cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape)
 
 ## Workflow
 

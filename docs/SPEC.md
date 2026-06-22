@@ -88,6 +88,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | 反復 | `repeat_n(period, count)` | 有限反復。count=0 または period=0 で軸無効 |
 | 鏡映 | `mirror_x/y/z()` | `child.eval(\|x\|,..)`：+側を−側へ反射 |
 | 回転 | `rotate_x/y/z(angle)` | 剛体・距離保存。angle はラジアン |
+| カット | `cut(normal, offset)` | 平面 `dot(p,n)=offset` で半空間と交差。`dot(p,n)≤offset` 側を残す。法線は単位化。FDM の平坦底面・断面用。AABB は子の AABB（材料を削るのみ） |
 
 ### 3.4 中核メソッドの契約
 

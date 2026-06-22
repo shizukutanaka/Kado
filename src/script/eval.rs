@@ -345,6 +345,28 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.rotate_z(req_f64(v, "angle")?.to_radians()))
         }
 
+        // 平面カット: dot(p,(nx,ny,nz)) <= offset の側を残す。法線は非ゼロ必須。
+        "cut" => {
+            let child = build_child(v, "shape", op, depth, budget)?;
+            let nx = req_f64(v, "nx")?;
+            let ny = req_f64(v, "ny")?;
+            let nz = req_f64(v, "nz")?;
+            // offset は省略可 (既定 0 = 原点を通る平面)。
+            let offset = opt_f64(v, "offset").unwrap_or(0.0);
+            let normal = Vec3::new(nx, ny, nz);
+            if normal.length() == 0.0 {
+                return Err(ScriptError::new(
+                    "cut normal (nx,ny,nz) must be non-zero".to_string(),
+                ));
+            }
+            if !offset.is_finite() {
+                return Err(ScriptError::new(format!(
+                    "cut \"offset\" must be finite, got {offset}"
+                )));
+            }
+            Ok(child.cut(normal, offset))
+        }
+
         other => Err(ScriptError::new(format!("unknown op: \"{other}\""))),
     }
 }
@@ -639,6 +661,31 @@ mod tests {
         assert!(
             (s.eval(p_pos) - s.eval(p_neg)).abs() < 1e-12,
             "mirror must be symmetric"
+        );
+    }
+
+    #[test]
+    fn cut_via_script_flattens_base_and_rejects_zero_normal() {
+        // 問235: cut で印刷用の平坦な底面を作る。z=0 平面で下半分 (z<0) を削る。
+        let src = r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0,
+            "shape":{"op":"sphere","r":1.0}}"#;
+        let s = eval_scene(src).unwrap();
+        assert!(s.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "upper half kept");
+        assert!(s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "lower half cut away");
+
+        // offset 省略時は 0 (原点を通る平面)。
+        let no_off = eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        assert!(no_off.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "default offset 0 cuts at origin");
+
+        // ゼロ法線は拒否 (退化平面)。
+        assert!(
+            eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":0,"shape":{"op":"sphere","r":1.0}}"#).is_err(),
+            "zero normal must be rejected"
+        );
+        // 法線成分の欠落はエラー。
+        assert!(
+            eval_scene(r#"{"op":"cut","nx":0,"ny":0,"shape":{"op":"sphere","r":1.0}}"#).is_err(),
+            "missing nz must be rejected"
         );
     }
 

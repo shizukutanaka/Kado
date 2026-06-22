@@ -70,6 +70,12 @@ pub enum Sdf {
     /// 剛体変換ゆえ距離場は厳密に保たれる (スケール変化なし)。
     /// 決定性 (問5): sin/cos は同一バイナリ・同一arch内で確定的 (sqrt と同じ保証水準)。
     Rotate(Box<Sdf>, u8, f64),
+    /// 平面カット (半空間との交差)。`normal` は**単位**法線、`offset` は原点からの符号付き距離。
+    /// `dot(p, normal) <= offset` の側を残し、法線が指す側を切り落とす。
+    /// FDM 印刷の平坦な底面づくり (サポート不要化) や断面表示に使う。
+    /// 単独の半空間は無限 AABB になるため、必ず子形状への単項修飾として持つ
+    /// (交差は材料を削るだけなので AABB は子の AABB で保守的に囲える)。
+    Cut(Box<Sdf>, Vec3, f64),
 }
 
 impl Sdf {
@@ -220,6 +226,13 @@ impl Sdf {
                 // (剛体・距離保存)。
                 child.eval(rotate_point(p, *axis, -*angle))
             }
+
+            Sdf::Cut(child, normal, offset) => {
+                // 半空間 dot(p,n) - offset との交差 (max)。n は単位法線なので
+                // 半空間側の距離場も正しい (Lipschitz ≈ 1)。
+                let half = p.dot(*normal) - offset;
+                child.eval(p).max(half)
+            }
         }
     }
 
@@ -319,6 +332,9 @@ impl Sdf {
             Sdf::Mirror(c, axis) => mirror_box(c.aabb(), *axis),
             // 子 aabb の 8 隅を +angle で回し、その軸整列 bbox を取る (保守的)。
             Sdf::Rotate(c, axis, angle) => rotate_box(c.aabb(), *axis, *angle),
+            // カットは材料を削るだけなので子の AABB が保守的な上界 (半空間は無限だが
+            // 交差により実体は子の範囲を超えない)。
+            Sdf::Cut(c, _, _) => c.aabb(),
         }
     }
 
@@ -429,6 +445,22 @@ impl Sdf {
     /// z 軸周りに `angle` ラジアン回転。
     pub fn rotate_z(self, angle: f64) -> Sdf {
         Sdf::Rotate(Box::new(self), 2, angle)
+    }
+
+    /// 平面カット: `dot(p, normal) <= offset` の側を残し、法線が指す側を切り落とす。
+    /// `normal` は内部で単位化される (距離場の Lipschitz を保つため)。
+    /// ゼロ法線は呼び出し側 (eval.rs) で拒否される前提だが、防御的に正規化する。
+    pub fn cut(self, normal: Vec3, offset: f64) -> Sdf {
+        let len = normal.length();
+        // 単位化。ゼロ長なら +Z を既定にして NaN を避ける (eval.rs がゼロ法線を拒否)。
+        let unit = if len > 0.0 {
+            normal * (1.0 / len)
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        };
+        // offset も同じスケールで正規化し、平面位置 dot(p,n)=offset を保つ。
+        let off = if len > 0.0 { offset / len } else { offset };
+        Sdf::Cut(Box::new(self), unit, off)
     }
 }
 
@@ -826,6 +858,48 @@ mod tests {
         for p in grid() {
             assert_eq!(tree.eval(p).to_bits(), tree.eval(p).to_bits());
         }
+    }
+
+    #[test]
+    fn cut_removes_half_space_the_normal_points_into() {
+        // 問235 (新機能): cut は dot(p,n) <= offset の側を残す。
+        // 球を z=0 平面で「下半分を削る」: 法線が下 (0,0,-1)、offset=0 → z>=0 を残す。
+        let s = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        // 上半球内部 (0,0,0.5) は残る (負)。
+        assert!(s.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "kept half (z>0) must be inside");
+        // 下半球の点 (0,0,-0.5) は切り落とされ外部 (正)。
+        // dot(p,n) = (0,0,-0.5)·(0,0,-1) = 0.5 > offset 0 → half=0.5 → max(球内部, 0.5)=0.5。
+        assert!(s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "cut-away half (z<0) must be outside");
+        // 切断面 z=0 上の中心は表面 (=0): 球内部 -1.0 と half = 0 の max = 0。
+        assert!(s.eval(Vec3::ZERO).abs() < 1e-12, "cut plane at z=0 is the new surface at center");
+    }
+
+    #[test]
+    fn cut_normal_is_normalized_so_distance_field_is_metric() {
+        // cut() は法線を単位化する。非正規化法線 (0,0,-3) を渡しても
+        // 平面位置 dot(p,n)=offset が保たれ、距離場が単位スケール (Lipschitz≈1) になる。
+        // sphere をカットせず平面だけが効く領域で、距離が真の幾何距離になることを確認。
+        let unit = Sdf::sphere(5.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let scaled = Sdf::sphere(5.0).cut(Vec3::new(0.0, 0.0, -3.0), 0.0); // 非正規化
+        // z=-2 の点: 球内部 (r=5)、平面側 half = 2 (真の距離)。両者一致すべき。
+        let p = Vec3::new(0.0, 0.0, -2.0);
+        assert!((unit.eval(p) - 2.0).abs() < 1e-12, "unit normal: half-space distance must be 2.0");
+        assert!(
+            (scaled.eval(p) - unit.eval(p)).abs() < 1e-12,
+            "non-unit normal must be normalized to the same metric field"
+        );
+    }
+
+    #[test]
+    fn cut_aabb_is_bounded_by_child_not_infinite() {
+        // 半空間単独なら無限 AABB だが、cut は子への交差なので AABB は子の AABB。
+        let child = Sdf::sphere(1.0);
+        let cut = child.clone().cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        assert_eq!(cut.aabb(), child.aabb(), "cut aabb must equal child aabb (bounded)");
+        // sampling_box も有限で非反転。
+        let (lo, hi) = cut.sampling_box();
+        assert!(lo.x.is_finite() && hi.x.is_finite(), "cut sampling_box must be finite");
+        assert!(lo.z <= hi.z, "cut sampling_box must not be inverted");
     }
 
     #[test]

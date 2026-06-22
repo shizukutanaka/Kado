@@ -4025,3 +4025,43 @@ std-only・決定性・手整形といった非自明な制約を伝えるコン
 > CONTRIBUTING.md は std-only・決定性・手整形という「知らないと踏む」制約を明文化した。
 > これでプロジェクトの基盤文書 (README/SPEC/LICENSE/SECURITY/CONTRIBUTING/ADR/CI) が
 > 一通り揃った。テスト数: 288 ユニット + 統合 6 = 294 合計 (変更なし)。
+
+## 問235 — 新機能: 平面カット (cut) — FDM 印刷の平坦底面・断面
+
+**ソクラテス問答**:
+- *製品の核心の仕事は?* AI が部品を生成し、**FDM 3D 印刷**向けに検証・出力する。
+- *ほぼ全ての印刷部品が必要とするのに Kado が直接表現できないものは?* **平坦な底面**。
+  FDM 部品はベッド密着とサポート回避のため平らな底が要る。Kado には平面でのカットがなかった。
+- *difference + 巨大 cuboid で代用できないか?* 部分的には可能だが footgun: AI が cuboid を
+  「十分大きく」配置せねばならず、形状が超えると無言で誤カット。半空間は**構成上無限で厳密**。
+- *SDF/std/決定性に適合?* 半空間は最も単純な SDF (`dot(p,n)-offset`)、カット=交差=`max`。
+  ただし単独平面は無限 AABB (sampling_box の footgun)。
+- *頑健な設計は?* `cut` を**子への単項修飾** `Cut(child,n,offset)` にする。AABB=子の AABB
+  (カットは材料を削るのみ→保守的かつ有界)。無限 AABP footgun なし、FDM 用途に直結、合成可能。
+
+**実装** (全スタック貫通):
+- `core/sdf.rs`: `Cut(Box<Sdf>, Vec3, f64)` variant + eval (`max(child, dot(p,n)-offset)`) +
+  aabb (`child.aabb()`) + builder `cut(normal, offset)` (法線を単位化し offset も同スケール補正)。
+- `script/eval.rs`: `{"op":"cut","nx","ny","nz","offset"?,"shape"}`。ゼロ法線・非有限 offset を拒否。
+- `script/dsl.rs`: `cut(nx,ny,nz,shape)` / `cut(nx,ny,nz,offset,shape)` の 2 アリティ。
+- `mcp/tools.rs`: help にカット例 (平坦底面・断面) を追記。
+- `docs/SPEC.md`: §3.3 変換表に cut を追加。
+
+**テスト**:
+- sdf: `cut_removes_half_space_the_normal_points_into` / `cut_normal_is_normalized_so_distance_field_is_metric` /
+  `cut_aabb_is_bounded_by_child_not_infinite`。
+- eval: `cut_via_script_flattens_base_and_rejects_zero_normal` (offset 省略=0、ゼロ法線/欠落拒否)。
+- dsl: cut の 4/5 引数 DSL↔JSON 等価性 (`assert_same`)。
+- 統合: eval_set に「flat-based dome (cut for FDM)」を追加 → 水密・健全・全形式出力・決定的を確認。
+- E2E 実測: 球を z=0 でカット → 水密な半球 (bbox z:0.000→1.000・PASS・0 errors)。
+
+## 反映サマリ v104
+| 問 | 実装 |
+|----|------|
+| 235 | 新機能 cut (平面カット/半空間交差) — core/eval/dsl/tools/spec/tests 全スタック |
+
+> 総括: v104 はソクラテス問答で**新機能**を導出・実装した回。「FDM 部品は平坦な底面が要る」
+> という製品ドメインの本質的要求から出発し、difference+cuboid 代用の脆さ (無言誤カット) を
+> 退けて、子への単項修飾という頑健な設計 (有界 AABB・厳密半空間) に到達した。
+> 全スタック (enum→eval→aabb→builder→JSON→DSL→help→SPEC) を貫通し、各層 + 統合 + E2E で固定。
+> テスト数: 292 ユニット + 統合 4 = 296 合計。
