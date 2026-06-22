@@ -4065,3 +4065,38 @@ std-only・決定性・手整形といった非自明な制約を伝えるコン
 > 退けて、子への単項修飾という頑健な設計 (有界 AABB・厳密半空間) に到達した。
 > 全スタック (enum→eval→aabb→builder→JSON→DSL→help→SPEC) を貫通し、各層 + 統合 + E2E で固定。
 > テスト数: 292 ユニット + 統合 4 = 296 合計。
+
+## 問236 — 改良: flatten (cut の最頻用ケースの安全な別名)
+
+**長所短所分析 (cut 出荷後)**:
+- *長所*: 汎用平面カットを厳密 SDF・有界 AABB で実現、全形式で水密。
+- *短所 #1 (最重要)*: cut の**法線方向が誤りやすい**。最頻用の「底面を平らに」は
+  `nz=-1` (法線が下を向く) が正解で、直感的な `nz=+1` だと逆 (底を残し上を削る) になる。
+  最も多用される操作が最もミスしやすい — AI が無言で誤った形状を作る footgun。
+
+**改良**: 意図明示型 op `flatten` を追加。`flatten(at)` は z=at (既定 0) で底を切り
+z>=at を残す。名前が動作を語るため法線方向の取り違えが起きない。
+新 core variant は作らず `cut((0,0,-1), -at)` に lower する (表面積最小)。
+汎用の `cut` は任意平面・断面用に残す (安全な別名 + 汎用プリミティブの 2 層構成)。
+
+**実装**:
+- `script/eval.rs`: `{"op":"flatten","at"?,"shape"}` → `child.cut((0,0,-1), -at)`。非有限 at 拒否。
+- `script/dsl.rs`: `flatten(shape)` [at=0] / `flatten(at, shape)`。
+- `mcp/tools.rs`: help に flatten (推奨ショートカット) を追記。
+- `docs/SPEC.md` §3.3 / `README.md`: flatten を追加し flatten を推奨記法として提示。
+
+**テスト**:
+- eval: `flatten_keeps_above_plane_and_equals_explicit_cut` — z>=at を残す、at 省略=0、
+  at=0.3 で底上げ、**flatten(0.3)==cut((0,0,-1),-0.3) をビット一致**で確認、非有限 at 拒否。
+- dsl: flatten の 1/2 引数 DSL↔JSON 等価性。
+- E2E: JSON `flatten` と DSL `flatten(sphere(1))` が同一 digest (b7c8515ae2ad1088)・水密。
+
+## 反映サマリ v105
+| 問 | 実装 |
+|----|------|
+| 236 | 改良 flatten — cut 法線方向 footgun の解消 (意図明示型別名) |
+
+> 総括: v105 は出荷した cut 機能の長所短所を分析し、最重要の短所 (法線方向の
+> 取り違え footgun) を改良した。新 variant を増やさず既存 cut への lower で実現し、
+> 「安全な別名 (flatten) + 汎用プリミティブ (cut)」の 2 層構成に。flatten==cut の
+> ビット一致テストで等価性を保証。テスト数: 293 ユニット + 統合 4 = 297 合計。

@@ -367,6 +367,22 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.cut(normal, offset))
         }
 
+        // flatten: FDM 印刷の平坦底面づくり (cut の最頻用ケースの安全な別名)。
+        // z = at の平面で底を切り、z >= at の側 (上) を残す。`cut` の法線方向の
+        // 取り違え (nz=+1 と -1 の混同) を避けるための意図明示型 op。
+        // 内部的には cut(normal=(0,0,-1), offset=-at) に lower する (新 variant 不要)。
+        "flatten" => {
+            let child = build_child(v, "shape", op, depth, budget)?;
+            let at = opt_f64(v, "at").unwrap_or(0.0);
+            if !at.is_finite() {
+                return Err(ScriptError::new(format!(
+                    "flatten \"at\" must be finite, got {at}"
+                )));
+            }
+            // keep z >= at  ⟺  dot(p,(0,0,-1)) <= -at
+            Ok(child.cut(Vec3::new(0.0, 0.0, -1.0), -at))
+        }
+
         other => Err(ScriptError::new(format!("unknown op: \"{other}\""))),
     }
 }
@@ -686,6 +702,42 @@ mod tests {
         assert!(
             eval_scene(r#"{"op":"cut","nx":0,"ny":0,"shape":{"op":"sphere","r":1.0}}"#).is_err(),
             "missing nz must be rejected"
+        );
+    }
+
+    #[test]
+    fn flatten_keeps_above_plane_and_equals_explicit_cut() {
+        // 問236: flatten は印刷用の平坦底面 (z>=at を残す) を意図明示型で作る。
+        // flatten(at) は cut(normal=(0,0,-1), offset=-at) と完全一致しなければならない
+        // (法線方向の取り違えを避ける安全な別名)。
+        let flat = eval_scene(r#"{"op":"flatten","at":0,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        // z>=0 は残る、z<0 は削られる。
+        assert!(flat.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "z>0 kept");
+        assert!(flat.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "z<0 cut away");
+        assert!(flat.eval(Vec3::ZERO).abs() < 1e-12, "z=0 is the flat base surface");
+
+        // at 省略時は 0。
+        let no_at = eval_scene(r#"{"op":"flatten","shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        assert!(no_at.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "default at=0");
+
+        // at=0.3 で底を上げる: z>=0.3 を残す。
+        let raised = eval_scene(r#"{"op":"flatten","at":0.3,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        assert!(raised.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "z>0.3 kept");
+        assert!(raised.eval(Vec3::new(0.0, 0.0, 0.1)) > 0.0, "z<0.3 cut away");
+
+        // flatten(at) == cut((0,0,-1), -at) を多点でビット一致確認。
+        let explicit = eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":-0.3,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        for p in [Vec3::ZERO, Vec3::new(0.2, -0.1, 0.5), Vec3::new(0.0, 0.0, -0.7), Vec3::new(0.5, 0.5, 0.3)] {
+            assert_eq!(
+                raised.eval(p).to_bits(),
+                explicit.eval(p).to_bits(),
+                "flatten(0.3) must equal cut((0,0,-1),-0.3) bit-for-bit at {p:?}"
+            );
+        }
+        // 非有限 at は拒否 (パーサが 1e999→inf を遮断: 問20)。
+        assert!(
+            eval_scene(r#"{"op":"flatten","at":1e999,"shape":{"op":"sphere","r":1.0}}"#).is_err(),
+            "non-finite at must be rejected"
         );
     }
 

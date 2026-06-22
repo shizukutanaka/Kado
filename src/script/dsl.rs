@@ -364,6 +364,18 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
                 "\"cut\" expects 4 (nx,ny,nz,shape) or 5 (nx,ny,nz,offset,shape) args, got {n}"
             ))),
         },
+        // flatten(shape) [at=0] または flatten(at, shape)。z=at で底を切り z>=at を残す。
+        "flatten" => match args.len() {
+            1 => Ok(obj(vec![("op", json::s("flatten")), ("shape", a(0))])),
+            2 => Ok(obj(vec![
+                ("op", json::s("flatten")),
+                ("at", a(0)),
+                ("shape", a(1)),
+            ])),
+            n => Err(ScriptError::new(format!(
+                "\"flatten\" expects 1 (shape) or 2 (at,shape) args, got {n}"
+            ))),
+        },
         "repeat" => match args.len() {
             // repeat(px,py,pz, shape) — 各軸 count 既定 1。
             4 => Ok(obj(vec![
@@ -541,6 +553,12 @@ mod tests {
         assert_same(
             "cut(0, 0, -1, 0.5, sphere(1))",
             r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0.5,"shape":{"op":"sphere","r":1}}"#,
+        );
+        // flatten: 1 引数 (at=0) と 2 引数 (at 明示)。
+        assert_same("flatten(sphere(1))", r#"{"op":"flatten","shape":{"op":"sphere","r":1}}"#);
+        assert_same(
+            "flatten(0.3, sphere(1))",
+            r#"{"op":"flatten","at":0.3,"shape":{"op":"sphere","r":1}}"#,
         );
     }
 

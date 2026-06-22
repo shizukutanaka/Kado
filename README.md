@@ -94,16 +94,20 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 
 - **プリミティブ**: `sphere` `cuboid` `cylinder` `torus` `cone` `capsule` `rounded_box` `ellipsoid`
 - **CSG**: `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference`
-- **変換**: `translate` `scale` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z` `cut`
+- **変換**: `translate` `scale` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z` `cut` `flatten`
 
-`cut` は平面で形状を切る半空間カットです。FDM 印刷の**平坦な底面**づくり（サポート不要化）に有用:
+`cut` は平面で形状を切る半空間カット、`flatten` はその最頻用途（FDM 印刷の**平坦な底面**づくり）の意図明示型ショートカットです:
 
 ```jsonc
-// 球の下半分 (z<0) を削り、z=0 に平らな底を作る (印刷可能なドーム)
+// 球の下半分を削り z=0 に平らな底を作る (印刷可能なドーム)。これが推奨:
+{"op":"flatten","at":0,"shape":{"op":"sphere","r":1.0}}
+
+// 汎用カット (任意平面)。flatten と等価な書き方:
 {"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0,"shape":{"op":"sphere","r":1.0}}
 ```
 
-`dot(p,(nx,ny,nz)) <= offset` の側を残し、法線が指す側を切り落とします。
+`cut` は `dot(p,(nx,ny,nz)) <= offset` の側を残します（法線が指す側を切り落とす）。
+`flatten(at)` は `z >= at` を残す安全な別名で、法線方向の取り違えを防ぎます。
 
 ## アーキテクチャ
 

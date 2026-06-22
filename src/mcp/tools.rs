@@ -638,8 +638,11 @@ repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
 cut           {"op":"cut","nx":0,"ny":0,"nz":1,"offset":0.5,"shape":<sdf>}
               plane cut: keeps dot(p,(nx,ny,nz)) <= offset, removes the half the
               normal points into. offset defaults to 0 (plane through origin).
-              e.g. flatten a printable base at z=0: nx=0,ny=0,nz=-1,offset=0
-              (keeps z>=0). Cross-section: thin slab via two cuts.
+              Cross-section: thin slab via two cuts.
+flatten       {"op":"flatten","at":0,"shape":<sdf>}
+              FDM printable base: cuts a flat bottom at z=at (default 0), keeping
+              z>=at. Safe, intent-named shortcut for the common cut case (avoids
+              the nz=+1/-1 normal-direction mistake).
 
 ## Example: sphere with a cylindrical hole
 
@@ -660,7 +663,7 @@ DSL arg order mirrors the constructors:
   union/intersection/difference(a,b) · smooth_*(a,b[,k])
   translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
   rotate_x/y/z(deg,shape) · mirror_x/y/z(shape) · repeat(px,py,pz[,nx,ny,nz],shape)
-  cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape)
+  cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape) · flatten(shape) or flatten(at,shape)
 
 ## Workflow
 
