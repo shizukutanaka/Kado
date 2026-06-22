@@ -3996,3 +3996,32 @@ fmt デフォルトと乖離する。fmt 強制は大規模 diff と可読性低
 > 自動 push できなかった。ファイルは作業ツリーに生成済みで内容は検証済み
 > (clippy/test/release build/no-deps すべてローカル通過)。リポジトリ管理者が
 > 手動コミットすることで有効化される。README.md は正常に反映済み。
+
+## 問234 — Plan.md §114 の必須成果物 (LICENSE/SECURITY/CONTRIBUTING) が未整備
+
+**問**: Cargo.toml は `license = "MIT"` を宣言するが **LICENSE ファイルが存在しない**
+(コンプライアンス上の実欠陥: GitHub がライセンス認識せず、crates.io 公開時に警告)。
+さらに Plan.md §114 が列挙する SECURITY.md / CONTRIBUTING.md も欠落していた。
+セキュリティを中核価値とするツールでありながらセキュリティモデルの公開文書がなく、
+std-only・決定性・手整形といった非自明な制約を伝えるコントリビュータ向け文書もなかった。
+
+**実装**:
+- `LICENSE`: MIT (Cargo.toml の宣言と一致、2026 Kado contributors)。
+- `SECURITY.md`: セキュリティモデル (外部送信ゼロ・書込サンドボックス・DSL サンドボックス・
+  リソース上限・数値の安全な縮退)、想定脅威/非脅威、脆弱性報告手順、対応方針
+  (修正は必ず回帰テストで固定)。SPEC §7 の不変条件を公開文書化。
+- `CONTRIBUTING.md`: 鉄則 (外部crate禁止・決定性・バグ修正のテスト固定・無効入力の
+  事前拒否・リソース上限)、品質ゲート、`cargo fmt` を一括適用しない理由 (意図的手整形)、
+  アーキテクチャ文書への導線。
+
+## 反映サマリ v103
+| 問 | 実装 |
+|----|------|
+| 234 | LICENSE / SECURITY.md / CONTRIBUTING.md (Plan §114 成果物) |
+
+> 総括: v103 は Plan.md §114 が列挙する必須成果物のうち未整備だった 3 点を補完した。
+> LICENSE 欠落は Cargo.toml の license 宣言と矛盾する実コンプライアンス欠陥であり優先度高。
+> SECURITY.md は本プロダクトの中核価値 (信頼できない AI 入力を扱う設計) を公開文書化し、
+> CONTRIBUTING.md は std-only・決定性・手整形という「知らないと踏む」制約を明文化した。
+> これでプロジェクトの基盤文書 (README/SPEC/LICENSE/SECURITY/CONTRIBUTING/ADR/CI) が
+> 一通り揃った。テスト数: 288 ユニット + 統合 6 = 294 合計 (変更なし)。
