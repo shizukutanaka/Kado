@@ -94,7 +94,16 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 
 - **プリミティブ**: `sphere` `cuboid` `cylinder` `torus` `cone` `capsule` `rounded_box` `ellipsoid`
 - **CSG**: `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference`
-- **変換**: `translate` `scale` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z`
+- **変換**: `translate` `scale` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z` `cut`
+
+`cut` は平面で形状を切る半空間カットです。FDM 印刷の**平坦な底面**づくり（サポート不要化）に有用:
+
+```jsonc
+// 球の下半分 (z<0) を削り、z=0 に平らな底を作る (印刷可能なドーム)
+{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0,"shape":{"op":"sphere","r":1.0}}
+```
+
+`dot(p,(nx,ny,nz)) <= offset` の側を残し、法線が指す側を切り落とします。
 
 ## アーキテクチャ
 
