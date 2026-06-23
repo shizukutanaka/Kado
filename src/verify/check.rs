@@ -342,6 +342,19 @@ pub fn validate_with_field(
         if bd_len > 1e-12 {
             let bd = build_dir * (1.0 / bd_len);
             let max_cos = (90.0_f64 - max_overhang_deg).to_radians().cos();
+            // 問237: ビルド方向への投影範囲を求める。最下層 (= ベッド接地面) は
+            // 下向きでもベッドが支えるためオーバーハングではない。flatten/cut で作った
+            // 平坦底面を誤って OVERHANG 警告する偽陽性を防ぐ。
+            let mut min_proj = f64::INFINITY;
+            let mut max_proj = f64::NEG_INFINITY;
+            for v in &mesh.vertices {
+                let pr = v.dot(bd);
+                min_proj = min_proj.min(pr);
+                max_proj = max_proj.max(pr);
+            }
+            let height = max_proj - min_proj;
+            // (a) ベッド接地許容: 平坦底面は厳密に min_proj。薄い最下層 (1%) を吸収。
+            let bed_eps = (height * 0.01).max(1e-9);
             let mut worst: f64 = 0.0;
             for tri in &mesh.triangles {
                 let a = mesh.vertices[tri[0] as usize];
@@ -354,6 +367,27 @@ pub fn validate_with_field(
                 }
                 // n̂ と bd̂ の内積: 負値 = ビルド方向と逆向き (下向き面 = オーバーハング)。
                 let nd = n.dot(bd) / len;
+                if nd >= 0.0 {
+                    continue; // 上向き・水平面はオーバーハングでない。
+                }
+                // (a) ベッド接地面 (最下層) は支持されるため除外。
+                let centroid = (a + b + c) * (1.0 / 3.0);
+                let above_bed = centroid.dot(bd) - min_proj;
+                if above_bed <= bed_eps {
+                    continue;
+                }
+                // (b) 重心の真下・ベッド直上に形状材料があれば、ベッドから材料が立ち上がって
+                //     この面を支えている → オーバーハングでない (SDF 併用時のみ)。
+                //     重心を min_proj+bed_eps の高さへ落とした点で判定する (固定ステップだと
+                //     低い面でベッド下へ突き抜けるため、ベッド直上の固定高さで標本化する)。
+                //     これにより平坦底面と壁の鋭い凸エッジ (flatten/cut の rim) の遷移三角形
+                //     (直下に底面材料あり) を支持済みと正しく扱う。物理的に正しい支持判定。
+                if let Some(field) = sdf {
+                    let sample = centroid - bd * (above_bed - bed_eps);
+                    if field.eval(sample) < 0.0 {
+                        continue;
+                    }
+                }
                 if nd < worst {
                     worst = nd;
                 }
@@ -821,6 +855,35 @@ mod tests {
         assert!(
             !r_skip.issues.iter().any(|e| e.code == "OVERHANG"),
             "max_overhang_deg=0 must disable overhang check entirely"
+        );
+    }
+
+    #[test]
+    fn flat_printable_base_is_not_flagged_as_overhang() {
+        // 問237: flatten/cut で作った平坦底面 (法線 -Z・最下層) はベッドが支えるため
+        // オーバーハングではない。以前は下向き面を一律に OVERHANG 警告する偽陽性があった。
+        // 平坦底面ドーム (球を z=0 でカット) は +Z ビルドで OVERHANG を出さないこと。
+        // flatten(at=0) ≡ cut(normal=(0,0,-1), offset=0): z>=0 を残す平坦底面ドーム。
+        // SDF を渡すと直下材料判定 (b) が rim の遷移三角形を支持済みと正しく扱う。
+        let dome = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let (lo, hi) = dome.sampling_box();
+        let mesh = polygonize(&dome, lo, hi, 32);
+        let r = validate_with_field(&mesh, Some(&dome), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r.issues.iter().any(|e| e.code == "OVERHANG"),
+            "flat base + bed-supported rim must NOT be flagged as overhang: {:?}",
+            r.issues.iter().map(|e| &e.cause).collect::<Vec<_>>()
+        );
+
+        // 偽陰性を作っていないことの対照: 平坦化していない球 (真の底面オーバーハング・
+        // 下に材料なし) は依然 OVERHANG を検出する。
+        let sphere = Sdf::sphere(1.0);
+        let (slo, shi) = sphere.sampling_box();
+        let smesh = polygonize(&sphere, slo, shi, 32);
+        let rs = validate_with_field(&smesh, Some(&sphere), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            rs.issues.iter().any(|e| e.code == "OVERHANG"),
+            "a real curved underside (un-flattened sphere) must still be flagged"
         );
     }
 
