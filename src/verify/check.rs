@@ -21,6 +21,7 @@ pub const ALL_ISSUE_CODES: &[&str] = &[
     "THIN_WALL",
     "SUSPICIOUS_SCALE",
     "OVERHANG",
+    "UNSTABLE",
 ];
 
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
@@ -407,6 +408,66 @@ pub fn validate_with_field(
                         "Rotate the model to minimize overhangs",
                     ],
                 ));
+            }
+        }
+    }
+
+    // 7. 安定性検査 (問238: 新視点「物理挙動」)。製造可能性 (DFM) とは別軸で、
+    //    「作った後に物理的に成立するか」を問う。重心 (COM) がベース接地面の
+    //    足元 (フットプリント) から外れると、印刷後/取り扱い時に転倒する。
+    //    フットプリント bbox は真の支持多角形 (凸包) の外接近似なので、「bbox の外」は
+    //    転倒の十分条件 → 偽陽性のない保守的警告になる (「内」は安定を保証しない)。
+    {
+        let bd_len = build_dir.length();
+        if bd_len > 1e-12 {
+            if let Some(com) = mesh.center_of_mass() {
+                let bd = build_dir * (1.0 / bd_len);
+                let mut min_proj = f64::INFINITY;
+                let mut max_proj = f64::NEG_INFINITY;
+                for v in &mesh.vertices {
+                    let pr = v.dot(bd);
+                    min_proj = min_proj.min(pr);
+                    max_proj = max_proj.max(pr);
+                }
+                let bed_eps = ((max_proj - min_proj) * 0.02).max(1e-9);
+                // bd に垂直な平面での横方向成分。接地頂点の横方向 bbox を支持域とする。
+                let lat = |p: Vec3| p - bd * p.dot(bd);
+                let mut lo = Vec3::splat(f64::INFINITY);
+                let mut hi = Vec3::splat(f64::NEG_INFINITY);
+                let mut n_contact = 0u32;
+                for v in &mesh.vertices {
+                    if v.dot(bd) - min_proj <= bed_eps {
+                        let l = lat(*v);
+                        lo = lo.min(l);
+                        hi = hi.max(l);
+                        n_contact += 1;
+                    }
+                }
+                if n_contact > 0 {
+                    let cl = lat(com);
+                    // フットプリント対角の 2% を境界ジッタ許容とし、明確に外れた場合のみ警告。
+                    let tol = ((hi - lo).length() * 0.02).max(1e-9);
+                    let outside = cl.x < lo.x - tol
+                        || cl.x > hi.x + tol
+                        || cl.y < lo.y - tol
+                        || cl.y > hi.y + tol
+                        || cl.z < lo.z - tol
+                        || cl.z > hi.z + tol;
+                    if outside {
+                        issues.push(KadoError::warn(
+                            "UNSTABLE",
+                            format!(
+                                "center of mass projects outside the base footprint \
+                                 (build direction [{:.2},{:.2},{:.2}]) — the part may tip over",
+                                bd.x, bd.y, bd.z
+                            ),
+                            &[
+                                "Widen the base, or lower/center the center of mass",
+                                "Reorient the part so the COM sits over the support footprint",
+                            ],
+                        ));
+                    }
+                }
             }
         }
     }
@@ -884,6 +945,36 @@ mod tests {
         assert!(
             rs.issues.iter().any(|e| e.code == "OVERHANG"),
             "a real curved underside (un-flattened sphere) must still be flagged"
+        );
+    }
+
+    #[test]
+    fn top_heavy_offset_part_is_flagged_unstable_but_centered_dome_is_not() {
+        // 問238 (新視点・物理挙動): 重心がベース足元から外れる部品は転倒する。
+        // 対称な平坦底面ドームは安定 (COM が底面中央上) → 警告なし。
+        let dome = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let (lo, hi) = dome.sampling_box();
+        let dome_mesh = polygonize(&dome, lo, hi, 32);
+        let r_dome = validate_with_field(&dome_mesh, Some(&dome), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r_dome.issues.iter().any(|e| e.code == "UNSTABLE"),
+            "centered flat-based dome must be stable: {:?}",
+            r_dome.issues.iter().map(|e| &e.cause).collect::<Vec<_>>()
+        );
+
+        // トップヘビーで偏った部品: 小さな脚 (底) の上に、横へ大きくずれた重い塊を載せる。
+        // 重心が脚のフットプリントから外れ転倒する → UNSTABLE。
+        let foot = Sdf::cuboid(Vec3::new(0.15, 0.15, 0.15)); // 原点付近の小さな脚
+        let head = Sdf::sphere(0.6).translate(Vec3::new(1.5, 0.0, 0.6)); // 横へ大きくずれた重い頭
+        let tower = foot.union(head);
+        // z=最下面で平坦化し脚を接地させる。
+        let (tlo, thi) = tower.sampling_box();
+        let tower_mesh = polygonize(&tower, tlo, thi, 48);
+        let r_tower = validate_with_field(&tower_mesh, Some(&tower), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            r_tower.issues.iter().any(|e| e.code == "UNSTABLE"),
+            "a part whose mass hangs far to one side of its base must be UNSTABLE: {:?}",
+            r_tower.issues.iter().map(|e| &e.cause).collect::<Vec<_>>()
         );
     }
 

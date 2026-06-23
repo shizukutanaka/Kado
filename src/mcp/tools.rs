@@ -140,7 +140,8 @@ pub fn tool_list() -> Value {
              OPEN_MESH (boundary edges, unprintable), NEGATIVE_VOLUME (inverted/inside-out mesh), \
              MULTIPLE_BODIES (separate shells), \
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
-             SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units). \
+             SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units), \
+             UNSTABLE (center of mass falls outside the base footprint → tips over). \
              Overhang is measured against build_dir (default +Z). \
              If your printer builds along a different axis, set build_dir to get correct results.",
             &[
@@ -692,6 +693,7 @@ Branch on issue.code to categorize results:
   THIN_WALL         — local wall < min_wall_mm (SDF-ray probe)
   OVERHANG          — surface > max_overhang_deg from horizontal (support required)
   SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
+  UNSTABLE          — center of mass outside the base footprint (part tips over)
 
 ## repeat requires explicit period when count is set
 

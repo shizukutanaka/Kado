@@ -152,8 +152,9 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `NEGATIVE_VOLUME` | error | 向き反転（体積が負） |
 | `MULTIPLE_BODIES` | warn | 複数の独立ボディ |
 | `THIN_WALL` | warn | 最小肉厚 < 閾値 |
-| `OVERHANG` | warn | オーバーハング角 > 閾値 |
+| `OVERHANG` | warn | オーバーハング角 > 閾値（ベッド接地面・直下に材料がある面は支持済みとして除外） |
 | `SUSPICIOUS_SCALE` | warn | 部品が自身の最小肉厚より小さい |
+| `UNSTABLE` | warn | 重心がベース接地面の足元から外れる（転倒する物理挙動）。製造可能性とは別軸の物理的健全性 |
 
 ---
 

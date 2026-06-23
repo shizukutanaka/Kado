@@ -84,6 +84,32 @@ impl Mesh {
         v
     }
 
+    /// 囲まれた立体の重心 (center of mass)。一様密度を仮定する (問238)。
+    ///
+    /// 発散定理と同系統: 各三角形と原点が成す四面体の符号付き体積 `v_t = a·(b×c)/6` と
+    /// その重心 `(a+b+c)/4` (原点が第4頂点) を体積重み付き平均する。
+    /// `Σ(v_t · (a+b+c)/4) / Σ(v_t)`。決定的 (固定順序の f64 加算・問5)。
+    ///
+    /// 体積が極小 (退化・空) なら `None`。`signed_volume` が負 (向き反転) でも
+    /// 比は符号が打ち消し合い正しい重心を返す。
+    pub fn center_of_mass(&self) -> Option<Vec3> {
+        let mut vol = 0.0;
+        let mut acc = Vec3::ZERO;
+        for t in &self.triangles {
+            let a = self.vertices[t[0] as usize];
+            let b = self.vertices[t[1] as usize];
+            let c = self.vertices[t[2] as usize];
+            let v_t = a.dot(b.cross(c)) / 6.0;
+            // 四面体 (原点,a,b,c) の重心 = (a+b+c)/4。
+            acc = acc + (a + b + c) * (v_t * 0.25);
+            vol += v_t;
+        }
+        if vol.abs() < 1e-12 {
+            return None;
+        }
+        Some(acc * (1.0 / vol))
+    }
+
     /// 正準メッシュの内容ダイジェスト (FNV-1a 64bit) を返す (問61)。
     ///
     /// 決定性 (問5) を**観測可能**にする: 同一バイナリ・同一arch・同一スクリプト・
@@ -202,6 +228,46 @@ mod tests {
         assert_eq!(m.signed_volume(), 0.0, "empty mesh has zero volume");
         assert!(m.bounds().is_none(), "empty mesh has no bounds");
         assert!(m.is_edge_manifold(), "empty mesh is trivially manifold (no edges)");
+        assert!(m.center_of_mass().is_none(), "empty mesh has no center of mass");
+    }
+
+    #[test]
+    fn center_of_mass_of_centered_sphere_is_origin() {
+        // 問238: 原点中心の球の重心は原点。発散定理ベースの COM が対称形状で
+        // 厳密に中心へ来ることを確認する (一様密度)。
+        use crate::core::Sdf;
+        use crate::extract::polygonize;
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 32);
+        let com = m.center_of_mass().expect("solid sphere has a center of mass");
+        assert!(com.length() < 1e-2, "centered sphere COM must be ~origin, got {com:?}");
+    }
+
+    #[test]
+    fn center_of_mass_shifts_toward_translated_mass() {
+        // 平行移動した球の重心はその中心へ移る。COM が質量分布を正しく追うことを確認。
+        use crate::core::{Sdf, Vec3 as V};
+        use crate::extract::polygonize;
+        let shifted = Sdf::sphere(0.8).translate(V::new(2.0, 0.0, 0.0));
+        let (lo, hi) = shifted.sampling_box();
+        let m = polygonize(&shifted, lo, hi, 32);
+        let com = m.center_of_mass().unwrap();
+        assert!((com.x - 2.0).abs() < 0.05, "COM.x must track the +2 shift, got {}", com.x);
+        assert!(com.y.abs() < 0.05 && com.z.abs() < 0.05, "off-axis COM must stay ~0: {com:?}");
+    }
+
+    #[test]
+    fn center_of_mass_of_hemisphere_sits_above_flat_base() {
+        // 問238: 平坦底面ドーム (上半球) の重心は底面 (z=0) より上、かつ理論値
+        // 3R/8 = 0.375 付近にあることを確認する (安定性判定の土台)。
+        use crate::core::{Sdf, Vec3 as V};
+        use crate::extract::polygonize;
+        let dome = Sdf::sphere(1.0).cut(V::new(0.0, 0.0, -1.0), 0.0);
+        let (lo, hi) = dome.sampling_box();
+        let m = polygonize(&dome, lo, hi, 48);
+        let com = m.center_of_mass().unwrap();
+        assert!(com.z > 0.0, "hemisphere COM must be above the flat base, got z={}", com.z);
+        assert!((com.z - 0.375).abs() < 0.03, "hemisphere COM.z ~ 3R/8 = 0.375, got {}", com.z);
+        assert!(com.x.abs() < 0.02 && com.y.abs() < 0.02, "axisymmetric COM lateral ~0: {com:?}");
     }
 
     #[test]
