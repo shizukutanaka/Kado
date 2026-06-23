@@ -80,6 +80,10 @@ impl KadoError {
 pub struct Report {
     /// 符号付き体積 (mm³ または 任意単位)。
     pub volume: f64,
+    /// メッシュ表面積 (mm² または 任意単位の二乗, 問244)。
+    /// FDM 造形時間・材料費の主要因。体積と並ぶ基本幾何量として公開する。
+    /// 体積と異なり開境界メッシュでも常に意味を持つ (三角形面積の単純和)。
+    pub surface_area: f64,
     /// 軸整列バウンディングボックス [min, max]。
     pub bbox: Option<(Vec3, Vec3)>,
     /// 三角形数。
@@ -131,13 +135,14 @@ impl Report {
             format!(" com=[{:.3},{:.3},{:.3}]", c.x, c.y, c.z)
         });
         format!(
-            "triangles={} manifold={} volume={:.3}{vol_note} \
+            "triangles={} manifold={} volume={:.3}{vol_note} area={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
              digest={:016x} errors={errors} warnings={warnings}{com_str}",
             self.triangle_count,
             self.is_manifold,
             self.volume,
+            self.surface_area,
             lo.x,
             lo.y,
             lo.z,
@@ -195,6 +200,7 @@ impl Report {
             ("manifold", json::b(self.is_manifold)),
             ("volume", json::n(self.volume)),
             ("volume_reliable", json::b(self.volume_reliable())),
+            ("surface_area", json::n(self.surface_area)),
             ("bbox", bbox),
             ("dims_mm", vec3(d)),
             ("center_of_mass", com_json),
@@ -230,6 +236,7 @@ pub fn validate_with_field(
     build_dir: Vec3,
 ) -> Report {
     let volume = mesh.signed_volume();
+    let surface_area = mesh.surface_area();
     let bbox = mesh.bounds();
     let (boundary_edges, nonmanifold_edges) = mesh.edge_defects();
     let is_manifold = boundary_edges == 0 && nonmanifold_edges == 0;
@@ -277,6 +284,7 @@ pub fn validate_with_field(
         ));
         return Report {
             volume,
+            surface_area,
             bbox,
             triangle_count: tri_count,
             is_manifold,
@@ -573,6 +581,7 @@ pub fn validate_with_field(
 
     Report {
         volume,
+        surface_area,
         bbox,
         triangle_count: tri_count,
         is_manifold,
@@ -592,16 +601,7 @@ fn mean_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
     if mesh.triangles.is_empty() {
         return (hi - lo).length();
     }
-    let surface_area: f64 = mesh
-        .triangles
-        .iter()
-        .map(|t| {
-            let a = mesh.vertices[t[0] as usize];
-            let b = mesh.vertices[t[1] as usize];
-            let c = mesh.vertices[t[2] as usize];
-            (b - a).cross(c - a).length() * 0.5
-        })
-        .sum();
+    let surface_area = mesh.surface_area();
     if surface_area < 1e-15 {
         return (hi - lo).length();
     }
@@ -1256,6 +1256,7 @@ mod tests {
         // この単体テストなしではガードの片側削除が無音で通る)。
         let base = Report {
             volume: 1.0,
+            surface_area: 6.0,
             bbox: Some((Vec3::ZERO, Vec3::splat(1.0))),
             triangle_count: 100,
             is_manifold: true,
@@ -1428,8 +1429,8 @@ mod tests {
         // 期待される全フィールドの存在を固定する回帰テスト。
         //
         // 対象フィールド (SPEC §5.1 / tools.rs validate description より):
-        //   レポート: ok, triangles, manifold, volume, volume_reliable, bbox,
-        //             dims_mm, center_of_mass, digest, issues
+        //   レポート: ok, triangles, manifold, volume, volume_reliable, surface_area,
+        //             bbox, dims_mm, center_of_mass, digest, issues
         //   各 issue: severity, code, cause, hints, location (v110 追加)
         use crate::mcp::json::parse;
         let sphere = Sdf::sphere(1.0);
@@ -1442,7 +1443,7 @@ mod tests {
 
         // レポートレベル全フィールド。
         for field in ["ok", "triangles", "manifold", "volume", "volume_reliable",
-                      "bbox", "dims_mm", "center_of_mass", "digest", "issues"] {
+                      "surface_area", "bbox", "dims_mm", "center_of_mass", "digest", "issues"] {
             assert!(
                 doc.get(field).is_some(),
                 "report JSON must have field '{field}'"
@@ -1510,6 +1511,54 @@ mod tests {
         assert!(
             *com_empty == crate::mcp::json::Value::Null,
             "empty mesh center_of_mass in JSON must be null"
+        );
+    }
+
+    #[test]
+    fn report_exposes_surface_area_in_json_and_summary() {
+        // 問244: validate は肉厚推定 (2V/SA) で表面積を計算しながら破棄していた。
+        // 表面積は FDM 造形時間・材料費の主要因であり、体積と並ぶ基本幾何量。
+        // Report.surface_area として公開し、AI がコスト/時間を見積もれるようにする。
+        //
+        // 正常系: 半径 1 の中実球の表面積は 4πr² ≈ 12.566。テッセレーション近似なので
+        // 真値より僅かに小さい (内接多面体) が、十分な解像度で 10% 以内。
+        use crate::mcp::json::parse;
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 48);
+        let report = validate(&mesh, 0.0, 0.0);
+
+        let exact = 4.0 * std::f64::consts::PI; // 4πr², r=1
+        assert!(
+            report.surface_area > 0.0 && report.surface_area <= exact * 1.02,
+            "sphere surface area must be positive and not exceed 4π (inscribed polyhedron), got {}",
+            report.surface_area
+        );
+        assert!(
+            (report.surface_area - exact).abs() / exact < 0.1,
+            "tessellated sphere area must be within 10% of 4π≈{exact:.3}, got {}",
+            report.surface_area
+        );
+        // Report.surface_area は Mesh::surface_area と一致 (単一の真実源)。
+        assert_eq!(report.surface_area, mesh.surface_area(), "report area must equal mesh area");
+
+        // to_json に "surface_area" キーが存在し往復可能。
+        let v = report.to_json();
+        let reparsed = parse(&v.to_string()).expect("report JSON must round-trip");
+        assert_eq!(reparsed, v, "to_json must round-trip");
+        let area = v.get("surface_area").and_then(|x| x.as_f64()).expect("surface_area must be a number");
+        assert_eq!(area, report.surface_area, "JSON surface_area must equal report value");
+
+        // summary に "area=" が含まれる。
+        assert!(report.summary().contains("area="), "summary must expose area: {}", report.summary());
+
+        // 開境界 (クリップ) でも表面積は意味を持つ (体積と異なり常に有効)。
+        let clipped = polygonize(&sphere, Vec3::new(-1.5,-1.5,-1.5), Vec3::new(1.5,1.5,0.0), 32);
+        let r_clip = validate(&clipped, 0.0, 0.0);
+        assert!(
+            r_clip.surface_area > 0.0,
+            "open mesh must still report a positive surface area, got {}",
+            r_clip.surface_area
         );
     }
 

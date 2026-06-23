@@ -84,6 +84,23 @@ impl Mesh {
         v
     }
 
+    /// 全三角形の面積和 = メッシュ表面積 (問244)。
+    ///
+    /// 各三角形 (a,b,c) の面積 `|(b-a)×(c-a)|/2` を固定順序の f64 加算で合計する
+    /// (決定的・問5/ADR-003)。FDM プリントでは表面積が造形時間・材料費の主要因であり、
+    /// 体積と並ぶ基本幾何量。`mean_wall_thickness` の 2V/SA 計算もこれを用いる
+    /// (公式の二重定義を避ける)。
+    pub fn surface_area(&self) -> f64 {
+        let mut area = 0.0;
+        for t in &self.triangles {
+            let a = self.vertices[t[0] as usize];
+            let b = self.vertices[t[1] as usize];
+            let c = self.vertices[t[2] as usize];
+            area += (b - a).cross(c - a).length() * 0.5;
+        }
+        area
+    }
+
     /// 囲まれた立体の重心 (center of mass)。一様密度を仮定する (問238)。
     ///
     /// 発散定理と同系統: 各三角形と原点が成す四面体の符号付き体積 `v_t = a·(b×c)/6` と
@@ -229,6 +246,33 @@ mod tests {
         assert!(m.bounds().is_none(), "empty mesh has no bounds");
         assert!(m.is_edge_manifold(), "empty mesh is trivially manifold (no edges)");
         assert!(m.center_of_mass().is_none(), "empty mesh has no center of mass");
+        assert_eq!(m.surface_area(), 0.0, "empty mesh has zero surface area");
+    }
+
+    #[test]
+    fn surface_area_of_unit_cube_is_six() {
+        // 問244: 一辺 2 (±1) の立方体の表面積は 6 面 × (2×2) = 24。marching tetrahedra は
+        // エッジ・コーナーを僅かに面取りするため真値より少し小さく出る (内接近似) が、
+        // 5% 以内に収束する。面積和が正で 24 を超えないこと (面取り=面積減) を確認。
+        use crate::core::Sdf;
+        use crate::extract::polygonize;
+        let m = polygonize(&Sdf::cuboid(Vec3::splat(1.0)), Vec3::splat(-1.5), Vec3::splat(1.5), 32);
+        let area = m.surface_area();
+        assert!(area <= 24.0 + 1e-6, "beveled cube area must not exceed 24, got {area}");
+        assert!((area - 24.0).abs() / 24.0 < 0.05, "±1 cube area within 5% of 24, got {area}");
+    }
+
+    #[test]
+    fn surface_area_of_sphere_approximates_four_pi() {
+        // 問244: 半径 1 の球の表面積は 4πr² ≈ 12.566。内接多面体なので真値より僅かに
+        // 小さいが、十分な解像度で 5% 以内に収束する。
+        use crate::core::Sdf;
+        use crate::extract::polygonize;
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 48);
+        let exact = 4.0 * std::f64::consts::PI;
+        assert!(m.surface_area() <= exact, "inscribed polyhedron area must not exceed 4π");
+        assert!((m.surface_area() - exact).abs() / exact < 0.05,
+            "sphere area within 5% of 4π≈{exact:.3}, got {}", m.surface_area());
     }
 
     #[test]

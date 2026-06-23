@@ -4405,3 +4405,58 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > `to_json_carries_all_schema_fields` テストにより今後のスキーマ変更時にこのドリフトを
 > 自動検出できる体制を確立した。
 > テスト数: 308 ユニット + 6 統合 = 314 合計。
+
+## 問244 — 長所短所分析: 計算済みで破棄される表面積を公開する
+
+**ソクラテス問答**:
+- *現段階の Report は volume と center_of_mass を公開している。基本幾何量で欠けているものは?*
+  → 「表面積。FDM プリントでは造形時間・材料費の主要因なのに Report に存在しない。」
+- *表面積はどこかで計算されているか?*
+  → 「`mean_wall_thickness` (2V/SA 肉厚推定) が全三角形の面積和を計算しているが、
+  比を取った後に**破棄**している。center_of_mass (問239) と全く同じ
+  『計算しているのに捨てている』パターン。」
+- *なぜ AI エージェントにとって価値があるか?*
+  → 「コスト/時間見積もりは製造の最重要質問の1つ。volume だけでは答えられない
+  (中空シェルは体積小・表面積大)。表面積を公開すれば AI が材料費・印刷時間を概算できる。」
+- *volume との違いで重要な性質は?*
+  → 「volume は閉じたメッシュでのみ意味を持つ (volume_reliable) が、表面積は
+  三角形面積の単純和なので**開境界メッシュでも常に有効**。クリップされた形状でも
+  表面積は信頼できる。」
+- *公式の二重定義を避けるには?*
+  → 「`Mesh::surface_area()` ヘルパーを新設し (signed_volume と同じ場所・同じ
+  決定的 f64 加算スタイル)、`mean_wall_thickness` もこれを呼ぶ。面積公式が
+  1箇所に集約される。」
+
+**実装**:
+- `extract/mesh.rs`: `Mesh::surface_area() -> f64` を追加 (signed_volume の隣)。
+  各三角形 `|(b-a)×(c-a)|/2` を固定順序 f64 加算で合計 (決定的・問5/ADR-003)。
+- `verify/check.rs`: `mean_wall_thickness` の面積計算を `mesh.surface_area()` 呼び出しに
+  置換 (公式の二重定義を排除)。`Report` に `surface_area: f64` フィールドを追加。
+  `validate_with_field` 冒頭で `mesh.surface_area()` を計算し両 return 経路に格納。
+  `summary()` に `area={:.3}`、`to_json()` に `("surface_area", json::n(...))` を追加。
+- `mcp/tools.rs`: validate ツール description の JSON スキーマに `surface_area` を追記。
+- `docs/SPEC.md`: §5.1 戻り値 JSON に surface_area 追加、§10 テスト数を 317 に更新。
+
+**テスト (5本)**:
+- `surface_area_of_unit_cube_is_six` (mesh): ±1 立方体 → 24 の 5% 以内
+  (marching tetrahedra のエッジ面取りで僅かに小さく、24 を超えないことも確認)。
+- `surface_area_of_sphere_approximates_four_pi` (mesh): 半径1球 → 4π≈12.566 の 5% 以内、
+  内接多面体なので真値を超えないこと。
+- 空メッシュテスト強化: `surface_area() == 0.0`。
+- `report_exposes_surface_area_in_json_and_summary` (check): Report.surface_area が
+  Mesh::surface_area と一致、JSON 往復可能、summary に area= 含む、
+  開境界メッシュでも正の表面積を返す (volume と異なり常に有効)。
+- `to_json_carries_all_schema_fields` 強化: surface_area をフィールドリストに追加。
+
+## 反映サマリ v112
+| 問 | 実装 |
+|----|------|
+| 244 | 長所短所分析「計算済みで破棄」— `Mesh::surface_area()` + `Report.surface_area` 公開 |
+
+> 総括: v112 は v108-v111 の「計算しているのに捨てている」狩りの続編。
+> center_of_mass (問239) に続き、肉厚推定の副産物だった表面積を昇格させた。
+> volume と表面積は FDM コスト/時間見積もりの2大基本量であり、AI エージェントが
+> 材料費・印刷時間を概算できるようになった。表面積は開境界でも有効という点で
+> volume_reliable の制約を受けない独立した信頼性プロファイルを持つ。
+> 公式は `Mesh::surface_area()` に集約し、mean_wall_thickness の重複を排除した。
+> テスト数: 311 ユニット + 6 統合 = 317 合計。

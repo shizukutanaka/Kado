@@ -135,7 +135,7 @@ pub fn tool_list() -> Value {
             "validate",
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, volume_reliable, \
-             bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
+             surface_area, bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
              center_of_mass:[x,y,z]|null, digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
