@@ -75,6 +75,10 @@ pub struct Report {
     pub is_manifold: bool,
     /// 正準メッシュ内容ダイジェスト (FNV-1a 64bit, 問61)。再現性検証用。
     pub digest: u64,
+    /// 一様密度を仮定した重心 (問239)。空メッシュ・退化メッシュは None。
+    /// UNSTABLE 判定の根拠数値として公開し、AI/利用者が「どこに重心があるか」を
+    /// 直接確認できるようにする。発散定理ベースの計算 (center_of_mass と同系統)。
+    pub center_of_mass: Option<Vec3>,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -109,11 +113,15 @@ impl Report {
         let d = hi - lo;
         // 体積は閉じたメッシュでのみ有効 (問65)。
         let vol_note = if self.volume_reliable() { "" } else { "(unreliable: not closed)" };
+        // 重心は存在するときのみ付加する (問239)。
+        let com_str = self.center_of_mass.map_or(String::new(), |c| {
+            format!(" com=[{:.3},{:.3},{:.3}]", c.x, c.y, c.z)
+        });
         format!(
             "triangles={} manifold={} volume={:.3}{vol_note} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
-             digest={:016x} errors={errors} warnings={warnings}",
+             digest={:016x} errors={errors} warnings={warnings}{com_str}",
             self.triangle_count,
             self.is_manifold,
             self.volume,
@@ -162,6 +170,10 @@ impl Report {
         } else {
             json::NULL
         };
+        // 重心: Some なら [x,y,z] 配列、None なら null (問239)。
+        let com_json = self
+            .center_of_mass
+            .map_or(json::NULL, vec3);
         json::obj([
             ("ok", json::b(self.is_ok())),
             ("triangles", json::n(self.triangle_count as f64)),
@@ -170,6 +182,7 @@ impl Report {
             ("volume_reliable", json::b(self.volume_reliable())),
             ("bbox", bbox),
             ("dims_mm", vec3(d)),
+            ("center_of_mass", com_json),
             ("digest", json::s(format!("{:016x}", self.digest))),
             ("issues", Value::Array(issues)),
         ])
@@ -253,6 +266,7 @@ pub fn validate_with_field(
             triangle_count: tri_count,
             is_manifold,
             digest,
+            center_of_mass: None, // 空メッシュに COM なし。
             issues,
         };
     }
@@ -417,10 +431,14 @@ pub fn validate_with_field(
     //    足元 (フットプリント) から外れると、印刷後/取り扱い時に転倒する。
     //    フットプリント bbox は真の支持多角形 (凸包) の外接近似なので、「bbox の外」は
     //    転倒の十分条件 → 偽陽性のない保守的警告になる (「内」は安定を保証しない)。
+    //
+    // COM は UNSTABLE 判定の根拠として Report にも公開する (問239)。
+    // AI/利用者が「重心がどこにあるか」を直接確認できるようにする。
+    let center_of_mass = mesh.center_of_mass();
     {
         let bd_len = build_dir.length();
         if bd_len > 1e-12 {
-            if let Some(com) = mesh.center_of_mass() {
+            if let Some(com) = center_of_mass {
                 let bd = build_dir * (1.0 / bd_len);
                 let mut min_proj = f64::INFINITY;
                 let mut max_proj = f64::NEG_INFINITY;
@@ -478,6 +496,7 @@ pub fn validate_with_field(
         triangle_count: tri_count,
         is_manifold,
         digest,
+        center_of_mass,
         issues,
     }
 }
@@ -1150,6 +1169,7 @@ mod tests {
             triangle_count: 100,
             is_manifold: true,
             digest: 42,
+            center_of_mass: None,
             issues: vec![],
         };
         // 正常系: 両条件 true → reliable。
@@ -1213,5 +1233,87 @@ mod tests {
         let empty_mesh = Mesh::default();
         let r2 = min_wall_probe(&sphere, &empty_mesh, Vec3::splat(-2.0), Vec3::splat(2.0));
         assert!(r2.is_none(), "empty mesh must return None, got {:?}", r2);
+    }
+
+    #[test]
+    fn report_exposes_center_of_mass_in_json_and_summary() {
+        // 問239: validate は COM を計算して UNSTABLE 判定に使うが、その座標を Report
+        // に公開していなかった。AI エージェントが「重心がどこか」を直接読めるよう
+        // center_of_mass フィールドを追加した。
+        //
+        // 正常系: 中実球の COM は原点付近。JSON に center_of_mass: [x,y,z]、
+        // summary に com=[...] が含まれ、かつ to_json が往復可能。
+        use crate::mcp::json::parse;
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 32);
+        let report = validate(&mesh, 0.0, 0.0);
+
+        // center_of_mass フィールドが Some であること。
+        let com = report.center_of_mass.expect("solid sphere must have a center of mass");
+        assert!(com.length() < 0.05, "centered sphere COM must be near origin, got {com:?}");
+
+        // to_json に "center_of_mass" キーが存在し、3要素配列。
+        let v = report.to_json();
+        let json_str = v.to_string();
+        let reparsed = parse(&json_str).expect("report JSON must round-trip");
+        assert_eq!(reparsed, v, "to_json must round-trip");
+        let com_arr = v.get("center_of_mass")
+            .and_then(|x| x.as_array())
+            .expect("center_of_mass must be a JSON array for a solid mesh");
+        assert_eq!(com_arr.len(), 3, "center_of_mass array must have 3 components");
+        let cx = com_arr[0].as_f64().expect("center_of_mass[0] must be a number");
+        assert!(cx.abs() < 0.05, "COM.x near 0 for centered sphere, got {cx}");
+
+        // summary に "com=" が含まれる。
+        let s = report.summary();
+        assert!(s.contains("com="), "summary must expose center_of_mass: {s}");
+
+        // 異常系: 空メッシュの COM は null。
+        use crate::extract::Mesh;
+        let empty = Mesh::default();
+        let r_empty = validate(&empty, 0.0, 0.0);
+        assert!(
+            r_empty.center_of_mass.is_none(),
+            "empty mesh must have center_of_mass = None"
+        );
+        let v_empty = r_empty.to_json();
+        let com_empty = v_empty.get("center_of_mass").expect("key must exist even if null");
+        assert!(
+            *com_empty == crate::mcp::json::Value::Null,
+            "empty mesh center_of_mass in JSON must be null"
+        );
+    }
+
+    #[test]
+    fn mesh_only_validate_flags_dome_rim_overhang_that_field_aware_suppresses() {
+        // 問240: validate(mesh, w, o) は sdf=None のため、OVERHANG チェックの
+        // (b) 段階「直下に材料あり → 支持済み除外」が機能しない。
+        // flatten/cut で作った平坦底面ドームの rim 遷移三角形は：
+        //   - field-aware (Some(&sdf)): SDF が「直下に底面材料あり」と判定 → 除外 → 警告なし
+        //   - mesh-only (None):         SDF チェック不可 → rim が OVERHANG 候補のまま → 警告あり
+        //
+        // このテストは制限 (メッシュのみでは支持判定不可) を**意図的に文書化**する。
+        // validate_with_field の SDF 引数が意味を持つことを回帰ガードする。
+        let dome = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let (lo, hi) = dome.sampling_box();
+        let mesh = polygonize(&dome, lo, hi, 32);
+
+        // field-aware: rim は支持済みと判定され OVERHANG なし (問237 で保証済み)。
+        let r_field = validate_with_field(&mesh, Some(&dome), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r_field.issues.iter().any(|e| e.code == "OVERHANG"),
+            "field-aware validate must NOT flag flat-base dome rim as overhang: {:?}",
+            r_field.issues.iter().map(|e| &e.cause).collect::<Vec<_>>()
+        );
+
+        // mesh-only: SDF がないため rim の支持判定ができず OVERHANG 警告が出る (既知制限)。
+        let r_mesh = validate(&mesh, 0.0, 45.0);
+        assert!(
+            r_mesh.issues.iter().any(|e| e.code == "OVERHANG"),
+            "mesh-only validate MUST flag flat-base dome rim as overhang \
+             (known limitation: no SDF → cannot determine support). \
+             If this fails, the rim exclusion may have been incorrectly backported to mesh-only."
+        );
     }
 }

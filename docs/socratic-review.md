@@ -4177,3 +4177,60 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > 直交する評価軸を追加した。cut/flatten が作る平坦底面と自然に接続し、重心という普遍的物理量
 > から転倒安定性を決定的に判定する。bbox 近似により偽陽性のない保守的警告とした。
 > テスト数: 298 ユニット + 統合 6 = 304 合計。
+
+## 問239 — Report に重心 (COM) を公開する
+
+**ソクラテス問答**:
+- *UNSTABLE 判定の根拠数値は AI エージェントに見えるか?* — 見えない。check.rs は
+  COM を計算して転倒判定を行うが、その座標は Report の内部変数として消費されるだけで
+  JSON にも summary にも現れない。
+- *どんな不利益があるか?* — AI/利用者は「なぜ UNSTABLE か」を再現できない。重心が
+  (1.5, 0, 0.8) にあって足元 bbox が (−0.15, −0.15)-(0.15, 0.15) だと知れれば、
+  「足元を広げる or 頭を移動する」という自己修正指示が具体的に書ける。今は「重心が外れた」
+  という事実のみ。
+- *解消方法は?* — `Report::center_of_mass: Option<Vec3>` として公開する。
+  empty/退化メッシュは None、通常の中実メッシュは Some([x,y,z])。
+  to_json に `"center_of_mass"` キーを追加し、summary に `com=[x.xxx,y.xxx,z.xxx]` を付加。
+
+**実装**:
+- `verify/check.rs`: `Report` に `center_of_mass: Option<Vec3>` フィールド追加。
+- `validate_with_field`: COM を UNSTABLE ブロック外で計算して `center_of_mass` に格納。
+  UNSTABLE チェックは `center_of_mass` を参照 (compute-once)。
+- `Report::summary()`: `Some` なら末尾に ` com=[x.xxx,y.xxx,z.xxx]` を付加。
+- `Report::to_json()`: `"center_of_mass"` キーを追加 (Some→[x,y,z]、None→null)。
+- 空メッシュの早期リターンと、手動 Report 構築テストに `center_of_mass: None` を追加。
+
+**テスト**:
+- `report_exposes_center_of_mass_in_json_and_summary`: 中実球の COM が JSON に
+  3要素配列で含まれ to_json が往復可能。summary に "com=" が含まれる。
+  空メッシュは JSON で null。
+- 既存 UNSTABLE テスト (`top_heavy_offset_part_is_flagged_unstable_but_centered_dome_is_not`)
+  は全て不変で通過。
+
+## 問240 — mesh-only OVERHANG と field-aware OVERHANG の非対称性を文書化
+
+**ソクラテス問答**:
+- *`validate()` と `validate_with_field(_, Some(&sdf), _)` の OVERHANG 結果は常に同じか?*
+  — 同じではない。問237 で追加した支持判定 (b) は `sdf=Some(...)` のときのみ実行される。
+  `validate()` = `validate_with_field(_, None, _)` は SDF がないため rim 三角形の
+  「直下に材料あり」チェックができない。
+- *これはバグか設計上の制限か?* — 設計上の制限。SDF なしにメッシュだけから「直下に材料が
+  あるか」を判定するのは原理上困難 (メッシュ交差判定が必要で高コスト)。
+  ただしテストで文書化しないと利用者が予期せぬ偽陽性で混乱する。
+- *文書化の方法?* — `mesh_only_validate_flags_dome_rim_overhang_that_field_aware_suppresses`
+  テストで「field-aware は抑制、mesh-only は警告あり」を固定する。
+  API 境界とその制限がテストで明示されることが仕様書の代わりになる。
+
+**実装**: `verify/check.rs` に上記テスト追加のみ (check.rs のロジック変更なし)。
+
+## 反映サマリ v108
+| 問 | 実装 |
+|----|------|
+| 239 | `Report::center_of_mass: Option<Vec3>` — COM を JSON/summary に公開 |
+| 240 | mesh-only vs field-aware OVERHANG 非対称性テスト (`validate` の制限を文書化) |
+
+> 総括: v108 は「情報の非対称」を解消した回。UNSTABLE の判定根拠 (COM 座標) が
+> Report 外へ漏れなかった問題を修正し、AI エージェントが自己修正ループで「重心がどこに
+> あるか」を直接参照できるようにした。あわせて validate/validate_with_field の OVERHANG
+> 挙動差を明示テストで固定し、利用者が mesh-only モードの制限を事前に理解できるようにした。
+> テスト数: 302 ユニット + 統合 6 = 308 合計。
