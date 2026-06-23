@@ -134,8 +134,13 @@ pub fn tool_list() -> Value {
         tool_def(
             "validate",
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
-             JSON report: {ok, triangles, manifold, volume, bbox, dims_mm, digest, \
-             issues:[{severity:\"error\"|\"warning\", code, cause, hints:[]}]}. \
+             JSON report: {ok, triangles, manifold, volume, volume_reliable, \
+             bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
+             center_of_mass:[x,y,z]|null, digest, \
+             issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
+             location:[x,y,z]|null}]}. \
+             location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
+             thinnest wall vertex, or center of mass for UNSTABLE) so the AI can zoom in. \
              All issue codes: EMPTY_MESH (no geometry), NON_MANIFOLD (self-intersecting faces), \
              OPEN_MESH (boundary edges, unprintable), NEGATIVE_VOLUME (inverted/inside-out mesh), \
              MULTIPLE_BODIES (separate shells), \
@@ -685,16 +690,23 @@ If your 3D printer builds along a different axis, specify build_dir:
 
 ## validate issue codes (問79)
 
+Each issue object has {severity, code, cause, hints:[], location:[x,y,z]|null}.
+location is the 3-D coordinates of the problem (null for non-spatial issues):
+  OVERHANG        → centroid of the worst-angled triangle
+  THIN_WALL       → surface vertex where the thinnest wall was probed
+  UNSTABLE        → center of mass (same as report.center_of_mass)
+  others          → null
+
 Branch on issue.code to categorize results:
   EMPTY_MESH        — no triangles (script may be outside bounding box)
   NON_MANIFOLD      — self-intersecting faces (boolean degeneracy)
   OPEN_MESH         — boundary edges present (shape not watertight; cannot print)
   NEGATIVE_VOLUME   — signed volume < 0 (mesh inverted/inside-out; check orientation)
   MULTIPLE_BODIES   — disconnected shells (may need to merge or orient separately)
-  THIN_WALL         — local wall < min_wall_mm (SDF-ray probe)
-  OVERHANG          — surface > max_overhang_deg from horizontal (support required)
+  THIN_WALL         — local wall < min_wall_mm (SDF-ray probe); location = thin vertex
+  OVERHANG          — surface > max_overhang_deg from horizontal; location = worst face centroid
   SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
-  UNSTABLE          — center of mass outside the base footprint (part tips over)
+  UNSTABLE          — center of mass outside the base footprint; location = COM coords
   HIGH_ASPECT_RATIO — build height / lateral size > 8 (sways during printing, risk of delamination)
 
 ## repeat requires explicit period when count is set

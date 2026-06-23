@@ -4344,3 +4344,64 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > それぞれ location に設定。min_wall_probe の戻り型変更 (f64 → (f64, Vec3)) は
 > 既存テストを4箇所更新するだけで完結した。
 > テスト数: 307 ユニット + 6 統合 = 313 合計。
+
+## 問243 — スキーマドリフト修正: ツール定義と実装の乖離
+
+**ソクラテス問答**:
+- *v110 で `KadoError.location` を追加したが、MCP ツール定義の validate 説明は?*
+  → 「古いまま。`location` が JSON に出力されているのにツール定義には記載がない。
+  AI エージェントが validate を呼ぶとき、スキーマを見ても location の存在を知れない。」
+- *`Report` に `center_of_mass` を v108 で追加したが、ツール説明の JSON スキーマは?*
+  → 「center_of_mass も記載なし。volume_reliable も欠落していた。」
+- *スキーマドリフトの根本問題は?*
+  → 実装 (check.rs の to_json) と文書 (tools.rs のツール説明) が別々に管理され、
+  一方を変更した際に他方を更新するリマインダーがない。
+  `issue_codes_are_fully_documented` ガードはコードが列挙されているかを見るが、
+  JSON フィールドが listed されているかは見ない。
+- *補完すべき防壁は?*
+  → `to_json_carries_all_schema_fields` テスト: SPEC §5 / ツール定義に記載した
+  全フィールドを実際の `to_json()` 出力が持つことを pin する。
+  スキーマ変更時に先に実装 → テスト失敗 → ツール定義を更新するという
+  「テストが文書を駆動する」フローが自然に成立する。
+- *具体的に何が欠落していたか?*
+  → ツール description の validate JSON スキーマ:
+  `volume_reliable` フィールドが未記載。
+  `center_of_mass` が未記載。
+  issue オブジェクトの `location` が未記載。
+  KADOSCENE_HELP カタログの issue codes セクション:
+  各 issue の location の意味 (どの座標か) が未記載。
+  SPEC.md §5.1 の validate エントリも同様に古かった。
+
+**実装**:
+- `mcp/tools.rs`: validate ツール description の JSON スキーマ文字列に
+  `volume_reliable`, `center_of_mass:[x,y,z]|null`,
+  issue オブジェクトの `location:[x,y,z]|null` を追記。
+  KADOSCENE_HELP カタログ (issue codes セクション) に location の意味テーブルを追加:
+  OVERHANG → 最悪三角形重心, THIN_WALL → プローブ最小点頂点,
+  UNSTABLE → COM, others → null。
+- `verify/check.rs`: `to_json_carries_all_schema_fields` テストを追加。
+  SPEC §5 / ツール定義に記載した全 Report フィールド
+  (ok/triangles/manifold/volume/volume_reliable/bbox/dims_mm/center_of_mass/digest/issues)
+  と全 issue フィールド (severity/code/cause/hints/location) が
+  実際の JSON 出力に存在することを assert。
+- `docs/SPEC.md`: §5.1 validate エントリを最新の JSON スキーマに更新。
+  §5.3 (新設) issue `location` フィールドの意味表を追加。
+  テスト数を 308 ユニット + 6 統合 = 314 合計に更新。
+
+**テスト**:
+- `to_json_carries_all_schema_fields`:
+  OVERHANG が出る球メッシュを polygonize し、validate を実行。
+  Report JSON の全フィールドと issue JSON の全フィールドをループ assert。
+
+## 反映サマリ v111
+| 問 | 実装 |
+|----|------|
+| 243 | スキーマドリフト修正 — ツール定義・SPEC に location/center_of_mass/volume_reliable を追記 + pin テスト |
+
+> 総括: v111 は「情報の整合性」を修正した回。v108-v110 で追加した機能 (center_of_mass,
+> location, volume_reliable) が実装済みだったにもかかわらず、ツール定義と SPEC が
+> 古いスキーマを示し続けていた。AI エージェントがツール定義を読んで validate を呼ぶと
+> 実際の出力に含まれるフィールドを「存在しない」と誤認するリスクがあった。
+> `to_json_carries_all_schema_fields` テストにより今後のスキーマ変更時にこのドリフトを
+> 自動検出できる体制を確立した。
+> テスト数: 308 ユニット + 6 統合 = 314 合計。

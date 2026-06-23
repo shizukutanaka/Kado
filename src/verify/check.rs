@@ -1422,6 +1422,48 @@ mod tests {
     }
 
     #[test]
+    fn to_json_carries_all_schema_fields() {
+        // 問243: validate の JSON レポートスキーマは MCP ツール定義と SPEC §5 で文書化されている。
+        // フィールドの追加・削除時に文書と実装がずれる「スキーマドリフト」を防ぐために、
+        // 期待される全フィールドの存在を固定する回帰テスト。
+        //
+        // 対象フィールド (SPEC §5.1 / tools.rs validate description より):
+        //   レポート: ok, triangles, manifold, volume, volume_reliable, bbox,
+        //             dims_mm, center_of_mass, digest, issues
+        //   各 issue: severity, code, cause, hints, location (v110 追加)
+        use crate::mcp::json::parse;
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 24);
+        // overhang あり → issues に OVERHANG (location = Some) が含まれることを確認。
+        let report = validate_with_field(&mesh, Some(&sphere), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        let v = report.to_json();
+        let doc = parse(&v.to_string()).expect("report JSON must parse");
+
+        // レポートレベル全フィールド。
+        for field in ["ok", "triangles", "manifold", "volume", "volume_reliable",
+                      "bbox", "dims_mm", "center_of_mass", "digest", "issues"] {
+            assert!(
+                doc.get(field).is_some(),
+                "report JSON must have field '{field}'"
+            );
+        }
+
+        // issues 配列の各要素が全フィールドを持つ。
+        let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
+        assert!(!issues.is_empty(), "sphere with overhang check must have at least one issue");
+        for issue in issues {
+            for field in ["severity", "code", "cause", "hints", "location"] {
+                assert!(
+                    issue.get(field).is_some(),
+                    "issue JSON must have field '{field}' (missing in: {})",
+                    issue.get("code").and_then(|c| c.as_str()).unwrap_or("?")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn report_exposes_center_of_mass_in_json_and_summary() {
         // 問239: validate は COM を計算して UNSTABLE 判定に使うが、その座標を Report
         // に公開していなかった。AI エージェントが「重心がどこか」を直接読めるよう
