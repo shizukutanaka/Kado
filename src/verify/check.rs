@@ -294,8 +294,14 @@ pub fn validate_with_field(
         };
     }
 
-    // 4. 負体積 (裏返し)
-    if volume < 0.0 {
+    // 4. 負体積 (裏返し)。符号付き体積は**閉じた**メッシュでのみ意味を持つ (問65/245)。
+    //    開境界 (OPEN_MESH) のメッシュでは signed_volume は発散定理の部分和にすぎず
+    //    符号は任意。ここでガードしないと、クリップされた形状が OPEN_MESH と
+    //    NEGATIVE_VOLUME を二重報告し、"mesh may be inverted" が AI を誤誘導する
+    //    (実際の修正は向き反転ではなく境界拡大)。volume_reliable() と同じ前提
+    //    (is_manifold かつ非空) でガードする。tri_count>0 は EMPTY_MESH 早期 return
+    //    で既に保証されているが、述語を volume_reliable と同一にして自己文書化する。
+    if is_manifold && tri_count > 0 && volume < 0.0 {
         issues.push(KadoError::warn(
             "NEGATIVE_VOLUME",
             format!("signed volume is negative ({volume:.3}), mesh may be inverted"),
@@ -963,6 +969,61 @@ mod tests {
                 .any(|h| h.to_lowercase().contains("enclos")
                     || h.to_lowercase().contains("bounding")),
             "OPEN_MESH hint must guide enlarging bounds, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn open_mesh_does_not_emit_spurious_negative_volume() {
+        // 問245: 開境界メッシュでは signed_volume は発散定理の部分和で符号が任意。
+        // クリップされた形状が OPEN_MESH と NEGATIVE_VOLUME を二重報告すると
+        // "mesh may be inverted" が AI を向き反転 (誤) へ誘導する。実際の修正は
+        // 境界拡大。NEGATIVE_VOLUME は閉じたメッシュ (volume_reliable) でのみ出すべき。
+        //
+        // 戦略: 同じ球を上半分でクリップした 2 通りの境界を試し、いずれも
+        //   - OPEN_MESH を出す
+        //   - NEGATIVE_VOLUME を出さない (volume が正でも負でも、開なら抑制)
+        // ことを固定する。volume の符号は境界の取り方に依存するため両方試す。
+        let s = Sdf::sphere(1.0);
+        for hi_z in [0.0_f64, -0.3, 0.3] {
+            let mesh = polygonize(
+                &s,
+                Vec3::new(-1.5, -1.5, -1.5),
+                Vec3::new(1.5, 1.5, hi_z),
+                24,
+            );
+            let r = validate(&mesh, 0.0, 0.0);
+            assert!(
+                r.issues.iter().any(|e| e.code == "OPEN_MESH"),
+                "clipped mesh (hi_z={hi_z}) must report OPEN_MESH"
+            );
+            assert!(
+                !r.issues.iter().any(|e| e.code == "NEGATIVE_VOLUME"),
+                "open mesh (hi_z={hi_z}) must NOT emit spurious NEGATIVE_VOLUME \
+                 (signed volume is meaningless on an open surface)"
+            );
+            assert!(
+                !r.volume_reliable(),
+                "open mesh volume must be flagged unreliable (consistency with the guard)"
+            );
+        }
+    }
+
+    #[test]
+    fn closed_inverted_mesh_still_emits_negative_volume() {
+        // 問245: 偽陽性ガードが真陽性を壊していないことの対照。閉じた (manifold) メッシュで
+        // 巻き順を反転させると signed_volume が負になり、NEGATIVE_VOLUME が出るべき。
+        // 球を正しく抽出してから全三角形の頂点順を反転 (b,c 入替) して内向きにする。
+        let s = Sdf::sphere(1.0);
+        let mut mesh = polygonize(&s, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        for t in &mut mesh.triangles {
+            t.swap(1, 2); // 巻き順反転 → 法線反転 → 符号付き体積が負に。
+        }
+        assert!(mesh.is_edge_manifold(), "reversing winding keeps the mesh closed");
+        assert!(mesh.signed_volume() < 0.0, "inverted winding must give negative volume");
+        let r = validate(&mesh, 0.0, 0.0);
+        assert!(
+            r.issues.iter().any(|e| e.code == "NEGATIVE_VOLUME"),
+            "a closed inverted mesh must still emit NEGATIVE_VOLUME (no false negative)"
         );
     }
 

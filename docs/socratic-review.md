@@ -4460,3 +4460,55 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > volume_reliable の制約を受けない独立した信頼性プロファイルを持つ。
 > 公式は `Mesh::surface_area()` に集約し、mean_wall_thickness の重複を排除した。
 > テスト数: 311 ユニット + 6 統合 = 317 合計。
+
+## 問245 — correctness gap: 開境界メッシュでの NEGATIVE_VOLUME 偽陽性
+
+**ソクラテス問答**:
+- *signed_volume はどんな前提で意味を持つか?*
+  → 「発散定理の和なので**閉じた**メッシュでのみ体積に等しい。開境界では
+  部分和にすぎず、符号は境界の取り方に依存する任意値。」
+- *では NEGATIVE_VOLUME 検査 (`if volume < 0.0`) は閉じているか確認しているか?*
+  → 「していない。無条件で volume の符号だけを見ている。」
+- *クリップされた (開いた) 形状を validate するとどうなるか?*
+  → 「OPEN_MESH と NEGATIVE_VOLUME が**二重報告**されうる。後者の
+  'mesh may be inverted' + 'check SDF field orientation' は AI を**向き反転**へ
+  誘導するが、実際の修正は**境界拡大**。誤誘導。」
+- *モジュールは既にこの知識を持っているか?*
+  → 「持っている。`volume_reliable() = is_manifold && triangle_count > 0` が
+  まさに『体積が信頼できる条件』を符号化し、summary/to_json は不信頼時に
+  体積を注記・抑制している。だが NEGATIVE_VOLUME の**発行**だけがこのガードを
+  無視していた。内部的に不整合。」
+- *修正は?* → NEGATIVE_VOLUME を volume_reliable と同じ前提でガードする:
+  `if is_manifold && tri_count > 0 && volume < 0.0`。
+
+**実装**:
+- `verify/check.rs` 検査 #4: `if volume < 0.0` を
+  `if is_manifold && tri_count > 0 && volume < 0.0` に変更。
+  述語を `volume_reliable()` の定義と同一にして自己文書化。コードの追加はゼロ
+  (既存コードの発火条件を絞るだけ) なので `ALL_ISSUE_CODES`・スキーマ・
+  KADOSCENE_HELP は不変、`issue_codes_are_fully_documented` は green のまま。
+- `docs/SPEC.md` §5.2: NEGATIVE_VOLUME 行に「閉じたメッシュでのみ判定」を明記。
+  併せて種別表記の既存誤り (error → 実際は warn) も修正。
+
+**テスト (2本)**:
+- `open_mesh_does_not_emit_spurious_negative_volume`:
+  球を 3 通りの高さ (hi_z ∈ {0, -0.3, 0.3}) でクリップし、いずれも OPEN_MESH を出し
+  NEGATIVE_VOLUME を出さないこと、volume_reliable=false を確認。
+  (volume の符号は境界の取り方に依存するため複数試す。)
+- `closed_inverted_mesh_still_emits_negative_volume` (真陽性対照):
+  正しく抽出した球の全三角形の巻き順を反転 (`t.swap(1,2)`) して内向きにすると
+  閉じたまま signed_volume が負になり、NEGATIVE_VOLUME が依然出ることを確認。
+  偽陽性ガードが真陽性を壊していないことの保証。
+
+## 反映サマリ v113
+| 問 | 実装 |
+|----|------|
+| 245 | correctness gap「開メッシュ NEGATIVE_VOLUME 偽陽性」— volume_reliable と同じ前提でガード |
+
+> 総括: v113 は v108-v112 の「機能追加」系列から「内部整合性の修復」へ転じた回。
+> モジュールは既に volume_reliable() で『体積が信頼できる条件』を符号化していたが、
+> NEGATIVE_VOLUME 検査だけがその知識を honor していなかった。開境界メッシュでの
+> 偽陽性は AI を向き反転 (誤) へ誘導し、境界拡大 (正) から遠ざける実害があった。
+> 1 つの if 条件を volume_reliable の定義に揃えるだけで、OPEN_MESH と
+> NEGATIVE_VOLUME の二重報告が消え、真陽性 (閉じた反転メッシュ) は保たれる。
+> テスト数: 313 ユニット + 6 統合 = 319 合計。

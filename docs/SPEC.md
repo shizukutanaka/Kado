@@ -149,7 +149,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `EMPTY_MESH` | error | 三角形ゼロ（形状が空） |
 | `OPEN_MESH` | error | 開境界（非水密） |
 | `NON_MANIFOLD` | error | 3 面以上共有エッジ（自己交差等） |
-| `NEGATIVE_VOLUME` | error | 向き反転（体積が負） |
+| `NEGATIVE_VOLUME` | warn | 向き反転（体積が負）。**閉じたメッシュでのみ判定**（開境界では signed_volume が無意味なため抑制し、OPEN_MESH のみ出す。問245） |
 | `MULTIPLE_BODIES` | warn | 複数の独立ボディ |
 | `THIN_WALL` | warn | 最小肉厚 < 閾値 |
 | `OVERHANG` | warn | オーバーハング角 > 閾値（ベッド接地面・直下に材料がある面は支持済みとして除外） |
@@ -235,7 +235,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 317 テスト（311 ユニット + 6 統合）合格。
+- `cargo test`: 319 テスト（313 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 
