@@ -22,6 +22,7 @@ pub const ALL_ISSUE_CODES: &[&str] = &[
     "SUSPICIOUS_SCALE",
     "OVERHANG",
     "UNSTABLE",
+    "HIGH_ASPECT_RATIO",
 ];
 
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
@@ -485,6 +486,55 @@ pub fn validate_with_field(
                             ],
                         ));
                     }
+                }
+            }
+        }
+    }
+
+    // 8. 高アスペクト比検査 (問241: 印刷プロセス中の揺れリスク)。
+    //    UNSTABLE (印刷後の転倒: 物理挙動) と相補的な新視点 — 製造プロセスの安定性。
+    //    FDM では高く細い形状がノズル通過時に振動し、層間剥離や転倒を引き起こす。
+    //    高さ / 横方向最大寸法 > 8 は業界ガイドラインの目安。
+    //    bd に垂直な平面での頂点群バウンディングボックスを横方向尺度とする。
+    const HIGH_ASPECT_RATIO_THRESHOLD: f64 = 8.0;
+    {
+        let bd_len = build_dir.length();
+        if bd_len > 1e-12 {
+            let bd = build_dir * (1.0 / bd_len);
+            let lat = |p: Vec3| p - bd * p.dot(bd);
+            let mut min_p = f64::INFINITY;
+            let mut max_p = f64::NEG_INFINITY;
+            let mut lat_lo = Vec3::splat(f64::INFINITY);
+            let mut lat_hi = Vec3::splat(f64::NEG_INFINITY);
+            for v in &mesh.vertices {
+                let pr = v.dot(bd);
+                min_p = min_p.min(pr);
+                max_p = max_p.max(pr);
+                let l = lat(*v);
+                lat_lo = lat_lo.min(l);
+                lat_hi = lat_hi.max(l);
+            }
+            let height = max_p - min_p;
+            // bd に垂直な平面での最大横幅 (bbox の最長辺)。
+            let lateral_max = (lat_hi - lat_lo).max_component();
+            if height > 0.0 && lateral_max > 0.0 {
+                let ratio = height / lateral_max;
+                if ratio > HIGH_ASPECT_RATIO_THRESHOLD {
+                    issues.push(KadoError::warn(
+                        "HIGH_ASPECT_RATIO",
+                        format!(
+                            "build height {height:.1} mm / lateral size {lateral_max:.1} mm = \
+                             aspect ratio {ratio:.1} (threshold {HIGH_ASPECT_RATIO_THRESHOLD:.0}) \
+                             — tall thin parts sway under the print nozzle and may delaminate \
+                             (build direction [{:.2},{:.2},{:.2}])",
+                            bd.x, bd.y, bd.z
+                        ),
+                        &[
+                            "Reorient the part to print along the longest axis (rotate 90°)",
+                            "Add a wider brim or raft for better bed adhesion",
+                            "Reduce print speed for tall thin features",
+                        ],
+                    ));
                 }
             }
         }
@@ -1282,6 +1332,68 @@ mod tests {
         assert!(
             *com_empty == crate::mcp::json::Value::Null,
             "empty mesh center_of_mass in JSON must be null"
+        );
+    }
+
+    #[test]
+    fn tall_thin_cylinder_is_flagged_high_aspect_ratio() {
+        // 問241: 半径 0.2, 半高 2.5 → 高さ 5.0 mm / 横幅 0.4 mm = 比率 12.5 > 8。
+        // 印刷中にノズルが当たると揺れて層間剥離する典型的な形状。
+        let sdf = Sdf::cylinder(0.2, 2.5);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+        let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            r.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO"),
+            "tall thin cylinder (h=5, w=0.4, ratio=12.5) must flag HIGH_ASPECT_RATIO: {:?}",
+            r.issues.iter().map(|e| (&e.code, &e.cause)).collect::<Vec<_>>()
+        );
+        let issue = r.issues.iter().find(|e| e.code == "HIGH_ASPECT_RATIO").unwrap();
+        assert!(
+            issue.cause.contains("build direction"),
+            "HIGH_ASPECT_RATIO issue must name build direction: {}",
+            issue.cause
+        );
+    }
+
+    #[test]
+    fn wide_flat_part_does_not_flag_aspect_ratio() {
+        // 問241 の対照: 扁平な形状はアスペクト比が低く HIGH_ASPECT_RATIO なし。
+        // half=(2,2,0.1) → 高さ 0.2 / 横幅 4.0 = 比率 0.05 << 8。
+        let sdf = Sdf::cuboid(Vec3::new(2.0, 2.0, 0.1));
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+        let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO"),
+            "wide flat part must NOT flag HIGH_ASPECT_RATIO: {:?}",
+            r.issues.iter().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_check_respects_build_direction() {
+        // 問241: build_dir が HIGH_ASPECT_RATIO 判定に使われていることを確認。
+        // 横長の直方体 half=(2,0.2,0.2) は印刷方向で結果が変わる:
+        //   +X ビルド: 高さ=4, 横幅≈0.4 → 比率≈10 > 8 → HIGH_ASPECT_RATIO
+        //   +Z ビルド: 高さ=0.4, 横幅≈4 → 比率≈0.1 < 8 → なし
+        // この対称性が build_dir パラメータの実際の機能を証明する。
+        let sdf = Sdf::cuboid(Vec3::new(2.0, 0.2, 0.2));
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+
+        // 長軸方向 (+X) へのビルド: 高くて細い → 警告あり。
+        let r_x = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(1.0, 0.0, 0.0));
+        assert!(
+            r_x.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO"),
+            "printing a bar along its long axis must flag HIGH_ASPECT_RATIO"
+        );
+
+        // 短軸方向 (+Z) へのビルド: 低くて広い → 警告なし。
+        let r_z = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            !r_z.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO"),
+            "printing the same bar along its short axis must NOT flag HIGH_ASPECT_RATIO"
         );
     }
 

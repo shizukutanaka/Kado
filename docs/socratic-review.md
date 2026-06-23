@@ -4234,3 +4234,56 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > あるか」を直接参照できるようにした。あわせて validate/validate_with_field の OVERHANG
 > 挙動差を明示テストで固定し、利用者が mesh-only モードの制限を事前に理解できるようにした。
 > テスト数: 302 ユニット + 統合 6 = 308 合計。
+
+## 問241 — 新視点: 製造プロセス中の安定性 (高アスペクト比と揺れリスク)
+
+**ソクラテス問答**:
+- *Kado が捉えていない印刷失敗の軸は?*
+  v107 で「印刷後の転倒 (UNSTABLE)」を追加した。しかし失敗モードはもう1つある —
+  **印刷中の失敗**。物理挙動の時間軸が違う。
+- *FDM 印刷中の最大失敗原因は?* → 高くて細い形状がノズルに当たって揺れ、
+  最終的に層間剥離または転倒する。ノズルは XY 面内を高速移動するため、
+  背の高い形状への慣性衝撃が繰り返される。
+- *これは定量化できるか?* → **高さ / 横幅比 (アスペクト比)**。
+  FDM コミュニティの経験則: 比 > 8 でリスク増大。
+  `max_proj - min_proj` (高さ) と、bd に垂直な頂点 bbox の最長辺 (横幅) の比。
+- *UNSTABLE との違いは?* → UNSTABLE = **印刷後に静置した物体が転倒する (物理挙動)**。
+  HIGH_ASPECT_RATIO = **印刷プロセス中にノズルとの動的相互作用で失敗する (製造挙動)**。
+  両者は直交する: 広い底面で UNSTABLE でない部品でも、ドーム上に細いアンテナが立つと
+  HIGH_ASPECT_RATIO になりうる。
+- *build_dir との整合性は?* → 同じ形状でも横向きに印刷すれば比が逆転する。
+  OVERHANG/UNSTABLE と同様に build_dir 依存にすることで一貫性を保つ。
+
+**実装**:
+- `verify/check.rs`: `ALL_ISSUE_CODES` に `"HIGH_ASPECT_RATIO"` 追加。
+- `validate_with_field` に検査 #8 追加 (UNSTABLE の後)。
+  各頂点を bd 方向に投影して height (max-min) と横方向 bbox を計算し、
+  `height / lateral_max > 8.0` で `HIGH_ASPECT_RATIO` 警告を出す。
+  `lat(p) = p - bd*(p·bd)` で bd に垂直な横方向成分を抽出。
+  build_dir=ZERO (閾値未満) ならスキップ (他の bd 依存チェックと同一の守衛)。
+- `mcp/tools.rs`: validate 説明と KADOSCENE_HELP カタログに HIGH_ASPECT_RATIO を追加
+  (問103 の文書ドリフト防止ガード `issue_codes_are_fully_documented` が強制)。
+
+**テスト**:
+- `tall_thin_cylinder_is_flagged_high_aspect_ratio`:
+  cylinder(r=0.2, hh=2.5) → height=5, lateral=0.4 → 比率 12.5 > 8 → 警告あり。
+- `wide_flat_part_does_not_flag_aspect_ratio`:
+  cuboid(2,2,0.1) → height=0.2, lateral=4 → 比率 0.05 < 8 → 警告なし。
+- `aspect_ratio_check_respects_build_direction`:
+  同一形状 (cuboid(2,0.2,0.2)) を +X ビルド (比率 10 > 8 → 警告) と
+  +Z ビルド (比率 0.1 < 8 → 警告なし) で対比。build_dir 依存を証明。
+
+## 反映サマリ v109
+| 問 | 実装 |
+|----|------|
+| 241 | 新視点「製造プロセス安定性」— HIGH_ASPECT_RATIO 検査 (高さ/横幅比 > 8) |
+
+> 総括: v109 はソクラテス問答で 3 つ目の「時間軸」視点を確立した回。
+> これまで Kado の DFM 検査は「できあがった形状の印刷可能性」(薄肉/オーバーハング)
+> と「印刷後の物理的自立」(UNSTABLE) を見ていた。v109 は**印刷プロセス中の動的安定性**
+> という第 3 の時間断面を追加した。UNSTABLE が「静力学」なら HIGH_ASPECT_RATIO は
+> 「動力学 (慣性衝撃)」に対応し、製造プロセスの全時間軸をカバーする:
+>   1. 印刷中 (HIGH_ASPECT_RATIO)
+>   2. 取り出し直後 (OVERHANG → 変形なし)
+>   3. 使用時 (UNSTABLE → 転倒なし)
+> テスト数: 303 ユニット + 6 統合 = 309 合計。

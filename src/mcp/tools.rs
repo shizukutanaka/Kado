@@ -141,7 +141,8 @@ pub fn tool_list() -> Value {
              MULTIPLE_BODIES (separate shells), \
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
              SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units), \
-             UNSTABLE (center of mass falls outside the base footprint → tips over). \
+             UNSTABLE (center of mass falls outside the base footprint → tips over), \
+             HIGH_ASPECT_RATIO (build height / lateral size > 8 — sways during printing). \
              Overhang is measured against build_dir (default +Z). \
              If your printer builds along a different axis, set build_dir to get correct results.",
             &[
@@ -694,6 +695,7 @@ Branch on issue.code to categorize results:
   OVERHANG          — surface > max_overhang_deg from horizontal (support required)
   SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
   UNSTABLE          — center of mass outside the base footprint (part tips over)
+  HIGH_ASPECT_RATIO — build height / lateral size > 8 (sways during printing, risk of delamination)
 
 ## repeat requires explicit period when count is set
 
