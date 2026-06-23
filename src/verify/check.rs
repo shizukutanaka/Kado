@@ -40,6 +40,11 @@ pub struct KadoError {
     pub code: &'static str,
     pub cause: String,
     pub fix_hints: Vec<String>,
+    /// 問題が特定の空間座標に関連する場合の位置ヒント (問242)。
+    /// OVERHANG: 最悪三角形の重心。THIN_WALL: プローブが最小肉厚を検出した頂点。
+    /// UNSTABLE: 重心 (= 問題の発生点)。空間的でない問題は None。
+    /// AI エージェントは `location` で「どこを直すか」を直接参照できる。
+    pub location: Option<Vec3>,
 }
 
 impl KadoError {
@@ -49,6 +54,7 @@ impl KadoError {
             code,
             cause: cause.into(),
             fix_hints: hints.iter().map(|s| s.to_string()).collect(),
+            location: None,
         }
     }
     fn warn(code: &'static str, cause: impl Into<String>, hints: &[&str]) -> KadoError {
@@ -57,7 +63,13 @@ impl KadoError {
             code,
             cause: cause.into(),
             fix_hints: hints.iter().map(|s| s.to_string()).collect(),
+            location: None,
         }
+    }
+    /// 空間位置ヒントを付加する。Builder パターン (問242)。
+    pub fn with_location(mut self, loc: Vec3) -> Self {
+        self.location = Some(loc);
+        self
     }
 }
 
@@ -163,6 +175,8 @@ impl Report {
                         "hints",
                         Value::Array(e.fix_hints.iter().map(|h| json::s(h.clone())).collect()),
                     ),
+                    // 問242: 空間位置ヒント。None なら null。
+                    ("location", e.location.map_or(json::NULL, vec3)),
                 ])
             })
             .collect();
@@ -310,14 +324,19 @@ pub fn validate_with_field(
         if let Some((lo, hi)) = bbox {
             let mean = mean_wall_thickness(mesh, lo, hi);
             let probe = sdf.and_then(|s| min_wall_probe(s, mesh, lo, hi));
-            let thin = probe.map_or(mean, |p| p.min(mean));
+            let probe_t = probe.map(|(t, _)| t);
+            let probe_loc = probe.map(|(_, loc)| loc);
+            let thin = probe_t.map_or(mean, |p| p.min(mean));
             let method = if probe.is_some() {
                 "min of 2V/SA mean and inward-ray probe"
             } else {
                 "2V/SA average"
             };
             if thin < min_wall_mm {
-                issues.push(KadoError::error(
+                // 探針が平均より薄い値を検出した場合のみ位置ヒントを付与 (問242)。
+                // 探針位置は「直す必要がある薄肉の表面点」を示す。
+                let thin_loc = probe_t.and_then(|p| if p <= mean { probe_loc } else { None });
+                let mut issue = KadoError::error(
                     "THIN_WALL",
                     format!(
                         "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
@@ -327,7 +346,11 @@ pub fn validate_with_field(
                         "Increase wall thickness via offset() or larger primitives",
                         "Reduce min_wall_mm threshold if intentional",
                     ],
-                ));
+                );
+                if let Some(loc) = thin_loc {
+                    issue = issue.with_location(loc);
+                }
+                issues.push(issue);
             }
 
             // 5.5 スケール健全性 (問62): Kado 座標は mm (1 unit = 1 mm)。最大寸法が
@@ -372,6 +395,7 @@ pub fn validate_with_field(
             // (a) ベッド接地許容: 平坦底面は厳密に min_proj。薄い最下層 (1%) を吸収。
             let bed_eps = (height * 0.01).max(1e-9);
             let mut worst: f64 = 0.0;
+            let mut worst_centroid = Vec3::ZERO; // 問242: 最悪三角形の重心。
             for tri in &mesh.triangles {
                 let a = mesh.vertices[tri[0] as usize];
                 let b = mesh.vertices[tri[1] as usize];
@@ -406,23 +430,27 @@ pub fn validate_with_field(
                 }
                 if nd < worst {
                     worst = nd;
+                    worst_centroid = centroid; // 問242: 最悪三角形の重心を更新。
                 }
             }
             if worst < -max_cos {
                 // オーバーハング角度 = 水平からの角度 = asin(-worst) (問38)。
                 let deg = (-worst).asin().to_degrees();
-                issues.push(KadoError::warn(
-                    "OVERHANG",
-                    format!(
-                        "overhang angle {deg:.1}° from horizontal exceeds {max_overhang_deg:.1}° \
-                         (build direction [{:.2},{:.2},{:.2}])",
-                        bd.x, bd.y, bd.z
-                    ),
-                    &[
-                        "Add support structures or redesign with chamfer/fillet",
-                        "Rotate the model to minimize overhangs",
-                    ],
-                ));
+                issues.push(
+                    KadoError::warn(
+                        "OVERHANG",
+                        format!(
+                            "overhang angle {deg:.1}° from horizontal exceeds {max_overhang_deg:.1}° \
+                             (build direction [{:.2},{:.2},{:.2}])",
+                            bd.x, bd.y, bd.z
+                        ),
+                        &[
+                            "Add support structures or redesign with chamfer/fillet",
+                            "Rotate the model to minimize overhangs",
+                        ],
+                    )
+                    .with_location(worst_centroid), // 問242: 最悪三角形の重心を位置ヒントとして付与。
+                );
             }
         }
     }
@@ -473,18 +501,21 @@ pub fn validate_with_field(
                         || cl.z < lo.z - tol
                         || cl.z > hi.z + tol;
                     if outside {
-                        issues.push(KadoError::warn(
-                            "UNSTABLE",
-                            format!(
-                                "center of mass projects outside the base footprint \
-                                 (build direction [{:.2},{:.2},{:.2}]) — the part may tip over",
-                                bd.x, bd.y, bd.z
-                            ),
-                            &[
-                                "Widen the base, or lower/center the center of mass",
-                                "Reorient the part so the COM sits over the support footprint",
-                            ],
-                        ));
+                        issues.push(
+                            KadoError::warn(
+                                "UNSTABLE",
+                                format!(
+                                    "center of mass projects outside the base footprint \
+                                     (build direction [{:.2},{:.2},{:.2}]) — the part may tip over",
+                                    bd.x, bd.y, bd.z
+                                ),
+                                &[
+                                    "Widen the base, or lower/center the center of mass",
+                                    "Reorient the part so the COM sits over the support footprint",
+                                ],
+                            )
+                            .with_location(com), // 問242: COM が問題の空間的起点。
+                        );
                     }
                 }
             }
@@ -585,7 +616,10 @@ fn mean_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
 ///
 /// 限界: ステップより薄い壁 (< diag/256) は跨いで見落としうる。よって検出は有効だが
 /// 非検出は薄肉皆無を保証しない (平均と同じく安全側の補助)。
-pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Option<f64> {
+/// 内向きレイ探針による最小肉厚の推定と、最小を検出した表面頂点の位置。
+/// 戻り値: `Some((thickness_mm, surface_vertex))` または `None`。
+/// surface_vertex は AI エージェントが「どこを修正するか」を特定するための空間ヒント (問242)。
+pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Option<(f64, Vec3)> {
     let diag = (hi - lo).length();
     let v = mesh.vertices.len();
     if diag <= 0.0 || v == 0 {
@@ -598,6 +632,7 @@ pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Opti
     let stride = v.div_ceil(cap);
 
     let mut min_t = f64::INFINITY;
+    let mut min_loc = Vec3::ZERO;
     let mut i = 0;
     while i < v {
         let p = mesh.vertices[i];
@@ -620,6 +655,7 @@ pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Opti
                 let cross = (t - step) + (-prev_d) / (d - prev_d) * step;
                 if cross > 0.0 && cross < min_t {
                     min_t = cross;
+                    min_loc = p; // 最小を検出した表面頂点 (問242)。
                 }
                 break;
             }
@@ -629,7 +665,7 @@ pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Opti
             prev_d = d;
         }
     }
-    min_t.is_finite().then_some(min_t)
+    min_t.is_finite().then_some((min_t, min_loc))
 }
 
 /// 中心差分による SDF 勾配 (外向き)。内向き法線は `-gradient`。
@@ -780,7 +816,7 @@ mod tests {
         let sdf = Sdf::sphere(1.0).shell(0.2);
         let (lo, hi) = sdf.sampling_box();
         let mesh = polygonize(&sdf, lo, hi, 48);
-        let t = min_wall_probe(&sdf, &mesh, lo, hi).expect("probe must return a value");
+        let (t, _loc) = min_wall_probe(&sdf, &mesh, lo, hi).expect("probe must return a value");
         assert!(
             (t - 0.2).abs() < 0.06,
             "shell thickness probe should be ~0.2, got {t}"
@@ -793,7 +829,7 @@ mod tests {
         let sdf = Sdf::sphere(1.0);
         let (lo, hi) = sdf.sampling_box();
         let mesh = polygonize(&sdf, lo, hi, 40);
-        let t = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
+        let (t, _loc) = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
         assert!(t > 1.0, "solid sphere min wall should be large (~2.0), got {t}");
     }
 
@@ -808,7 +844,7 @@ mod tests {
         let mesh = polygonize(&sdf, lo, hi, 48);
 
         let mean = mean_wall_thickness(&mesh, lo, hi);
-        let probe = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
+        let (probe, probe_loc) = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
         assert!(
             mean > 0.2,
             "2V/SA mean should be dominated by the body (>0.2), got {mean}"
@@ -816,6 +852,11 @@ mod tests {
         assert!(
             probe < 0.18,
             "probe must catch the thin fin (~0.1), got {probe}"
+        );
+        // 問242: プローブ位置がフィン領域 (|y| < 0.15) にあることを確認。
+        assert!(
+            probe_loc.y.abs() < 0.15,
+            "probe location must be in the thin fin (|y|<0.15), got {probe_loc:?}"
         );
 
         // 場併用 validate は THIN_WALL を報告し、メッシュのみは見逃す (閾値 0.2)。
@@ -1283,6 +1324,101 @@ mod tests {
         let empty_mesh = Mesh::default();
         let r2 = min_wall_probe(&sphere, &empty_mesh, Vec3::splat(-2.0), Vec3::splat(2.0));
         assert!(r2.is_none(), "empty mesh must return None, got {:?}", r2);
+    }
+
+    #[test]
+    fn overhang_issue_carries_spatial_location() {
+        // 問242: OVERHANG issue は最悪三角形の重心を location フィールドに持つ。
+        // 球 (+Z ビルド、閾値 45°) では南半球の最下点付近が最悪。
+        // 位置の z 成分が負 (下半球) であること、JSON に location が含まれることを固定する。
+        use crate::mcp::json::parse;
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 32);
+        let r = validate_with_field(&mesh, Some(&sphere), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+
+        let ov = r.issues.iter().find(|e| e.code == "OVERHANG")
+            .expect("sphere must have OVERHANG issue");
+        let loc = ov.location.expect("OVERHANG issue must carry a spatial location");
+        // 最悪オーバーハング (z = -1.0 付近) は南半球に位置する。
+        assert!(loc.z < -0.5, "OVERHANG location must be in lower hemisphere, got {loc:?}");
+        // 球は原点中心なので lateral は小さいはず。
+        assert!(loc.x.abs() < 1.5 && loc.y.abs() < 1.5, "location within sphere bounds: {loc:?}");
+
+        // JSON にも location が含まれる。
+        let json_str = r.to_json().to_string();
+        let doc = parse(&json_str).unwrap();
+        let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
+        let ov_json = issues.iter().find(|e| {
+            e.get("code").and_then(|c| c.as_str()) == Some("OVERHANG")
+        }).expect("OVERHANG must be in JSON issues");
+        let loc_arr = ov_json.get("location").and_then(|l| l.as_array())
+            .expect("OVERHANG JSON issue must have location array");
+        assert_eq!(loc_arr.len(), 3, "location must be [x,y,z]");
+        let lz = loc_arr[2].as_f64().unwrap();
+        assert!(lz < -0.5, "JSON location z must be in lower hemisphere, got {lz}");
+    }
+
+    #[test]
+    fn thin_wall_issue_carries_probe_location_in_fin() {
+        // 問242: THIN_WALL issue (SDF プローブが検出) は、最小肉厚を見つけた
+        // 表面頂点を location に持つ。フィン形状ではその点がフィン領域にある。
+        let body = Sdf::cuboid(Vec3::new(1.0, 1.0, 1.0));
+        let fin = Sdf::cuboid(Vec3::new(1.8, 0.05, 0.8));
+        let sdf = body.union(fin);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 48);
+
+        let r = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let tw = r.issues.iter().find(|e| e.code == "THIN_WALL")
+            .expect("body+fin must trigger THIN_WALL with threshold 0.2");
+        let loc = tw.location.expect("THIN_WALL (probe-detected) must carry a location");
+        // フィンの y 半幅は 0.05 → |y| < 0.15 の領域がフィン。
+        assert!(
+            loc.y.abs() < 0.15,
+            "THIN_WALL location must be in the thin fin (|y|<0.15), got {loc:?}"
+        );
+    }
+
+    #[test]
+    fn unstable_issue_carries_com_as_location() {
+        // 問242: UNSTABLE issue は重心 (COM) を location に持つ。
+        // AI エージェントが issue.location だけを見て重心位置を知れることを確認。
+        let foot = Sdf::cuboid(Vec3::new(0.15, 0.15, 0.15));
+        let head = Sdf::sphere(0.6).translate(Vec3::new(1.5, 0.0, 0.6));
+        let tower = foot.union(head);
+        let (lo, hi) = tower.sampling_box();
+        let mesh = polygonize(&tower, lo, hi, 48);
+        let r = validate_with_field(&mesh, Some(&tower), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+
+        let us = r.issues.iter().find(|e| e.code == "UNSTABLE")
+            .expect("top-heavy tower must be UNSTABLE");
+        let loc = us.location.expect("UNSTABLE issue must carry COM as location");
+        // 重心は頭 (大きな球) 側に引き寄せられるので x > 0.5。
+        assert!(loc.x > 0.5, "UNSTABLE location (COM) must be toward the heavy head, got {loc:?}");
+        // Report.center_of_mass と一致する (同一 COM)。
+        let com = r.center_of_mass.expect("report must have center_of_mass");
+        assert!((loc.x - com.x).abs() < 1e-9, "issue.location must equal report.center_of_mass");
+    }
+
+    #[test]
+    fn issues_without_spatial_context_have_null_location_in_json() {
+        // 問242: 空間的でない issue (EMPTY_MESH, OPEN_MESH 等) の JSON location は null。
+        use crate::mcp::json::{parse, Value};
+        // OPEN_MESH を誘発 (クリップ)。
+        let s = Sdf::sphere(1.0);
+        let mesh = polygonize(&s, Vec3::new(-1.5,-1.5,-1.5), Vec3::new(1.5,1.5,0.0), 24);
+        let r = validate(&mesh, 0.0, 0.0);
+        let doc = parse(&r.to_json().to_string()).unwrap();
+        let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
+        // 全 issue に location キーが存在し、OPEN_MESH は null。
+        for issue in issues {
+            let code = issue.get("code").and_then(|c| c.as_str()).unwrap_or("");
+            let loc = issue.get("location").expect("every issue JSON must have a location key");
+            if code == "OPEN_MESH" {
+                assert_eq!(*loc, Value::Null, "OPEN_MESH location must be null");
+            }
+        }
     }
 
     #[test]

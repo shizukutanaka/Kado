@@ -4287,3 +4287,60 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 >   2. 取り出し直後 (OVERHANG → 変形なし)
 >   3. 使用時 (UNSTABLE → 転倒なし)
 > テスト数: 303 ユニット + 6 統合 = 309 合計。
+
+## 問242 — 新視点: 検証問題の空間注釈 (KadoError.location)
+
+**ソクラテス問答**:
+- *OVERHANG が警告を出す。AI はどこを修正すればいいか?*
+  → 「わからない。75° の面があることは知っているが、形状全体のどこにあるかは
+  目視検査しないとわからない。」
+- *THIN_WALL プローブは最小肉厚を '探して' いるはずだが、その座標は?*
+  → 「計算しているが、戻り値は `Option<f64>` — スカラーのみ。座標を捨てている。」
+- *UNSTABLE は COM を Report に公開したが、issue オブジェクト自体は?*
+  → 「issue は cause 文字列に埋め込んでいない。AI が issue リストをループする際に
+  report フィールドを別途参照する必要がある。統一されていない。」
+- *全 issue が location を持てれば AI の自己修正ループがどう変わるか?*
+  → `for issue in issues { zoom_to(issue.location?); apply_fix(issue.code) }` と書ける。
+  issue.code だけで判断でき、code→fix→location が1オブジェクトに揃う。
+- *抽象化のレベルは?* → `KadoError` struct に `location: Option<Vec3>` を追加する。
+  空間的意味を持たない issue (EMPTY_MESH, NON_MANIFOLD 等) は None。
+  OVERHANG: 最悪三角形の重心。THIN_WALL: プローブが最小を検出した表面頂点。
+  UNSTABLE: 重心 (COM)。これらはすべてすでに計算されており、捨てていただけ。
+
+**実装**:
+- `verify/check.rs`: `KadoError` に `location: Option<Vec3>` フィールドを追加。
+  `error()`/`warn()` は `location: None` で初期化し、`with_location(Vec3) -> Self`
+  (Builder パターン) で付与できるようにする。
+- `min_wall_probe`: 戻り値を `Option<f64>` → `Option<(f64, Vec3)>` に変更。
+  `min_t` が更新されるたびに起点頂点 `p` も記録する。
+- THIN_WALL ブロック: プローブが平均より薄い値を検出した場合、
+  プローブ頂点を `THIN_WALL.location` に設定。
+- OVERHANG ループ: `worst_centroid` を追跡し、更新時に `nd < worst` と同時に
+  `worst_centroid = centroid`。`worst < -max_cos` で `OVERHANG.with_location(worst_centroid)`。
+- UNSTABLE ブロック: `UNSTABLE.with_location(com)` — COM が問題の空間的起点。
+- `Report::to_json()`: issue オブジェクトに `("location", e.location.map_or(null, vec3))` を追加。
+  全 issue に location キーが存在し、None なら null。
+
+**テスト (4本)**:
+- `overhang_issue_carries_spatial_location`: 球の OVERHANG.location が下半球 (z < -0.5) にある。
+  JSON にも location 配列が含まれること。
+- `thin_wall_issue_carries_probe_location_in_fin`: フィン形状の THIN_WALL.location が
+  フィン領域 (|y| < 0.15) にある。
+- `unstable_issue_carries_com_as_location`: トップヘビー部品の UNSTABLE.location が
+  重心と一致し x > 0.5 (頭側)。report.center_of_mass と完全一致。
+- `issues_without_spatial_context_have_null_location_in_json`: OPEN_MESH など空間的でない
+  issue の JSON location が null。全 issue に location キーが存在することも確認。
+- `probe_catches_local_thin_fin_that_mean_misses` (既存): プローブ位置もフィン内を確認するよう強化。
+
+## 反映サマリ v110
+| 問 | 実装 |
+|----|------|
+| 242 | 新視点「空間注釈」— `KadoError.location: Option<Vec3>` + OVERHANG/THIN_WALL/UNSTABLE が座標を運ぶ |
+
+> 総括: v110 は「情報の次元」を追加した回。スカラー (角度・肉厚・体積) だった
+> issue 情報に空間次元 ([x,y,z]) を追加し、AI エージェントが「どこを直すか」を
+> issue オブジェクト1つから直接知れるようにした。
+> OVERHANG は最悪三角形の重心、THIN_WALL はプローブ最小点頂点、UNSTABLE は COM を
+> それぞれ location に設定。min_wall_probe の戻り型変更 (f64 → (f64, Vec3)) は
+> 既存テストを4箇所更新するだけで完結した。
+> テスト数: 307 ユニット + 6 統合 = 313 合計。
