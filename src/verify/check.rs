@@ -510,6 +510,11 @@ pub fn validate_with_field(
             let height = max_proj - min_proj;
             // (a) ベッド接地許容: 平坦底面は厳密に min_proj。薄い最下層 (1%) を吸収。
             let bed_eps = (height * 0.01).max(1e-9);
+            // 問249: 閾値を超える下向き面の総面積。オーバーハングの「広さ」を測る。
+            // FDM/光造形の経験則 (Qiita/Zenn): 小さなオーバーハング面は無支持でも
+            // 印刷できるが、広い下向き面はサポート必須。最悪「角度」だけでなく「面積割合」を
+            // 報告し、AI が比例的に対応 (許容/再配置/サポート) できるようにする。
+            let mut overhang_area = 0.0;
             let mut worst: f64 = 0.0;
             let mut worst_centroid = Vec3::ZERO; // 問242: 最悪三角形の重心。
             for tri in &mesh.triangles {
@@ -544,6 +549,10 @@ pub fn validate_with_field(
                         continue;
                     }
                 }
+                // 問249: 閾値を超える下向き面 (= 実際に問題となるオーバーハング) の面積を加算。
+                if nd < -max_cos {
+                    overhang_area += len * 0.5; // 三角形面積 = |n|/2。
+                }
                 if nd < worst {
                     worst = nd;
                     worst_centroid = centroid; // 問242: 最悪三角形の重心を更新。
@@ -552,17 +561,26 @@ pub fn validate_with_field(
             if worst < -max_cos {
                 // オーバーハング角度 = 水平からの角度 = asin(-worst) (問38)。
                 let deg = (-worst).asin().to_degrees();
+                // 問249: オーバーハング面積が総表面積に占める割合 (広さの指標)。
+                let pct = if surface_area > 0.0 {
+                    100.0 * overhang_area / surface_area
+                } else {
+                    0.0
+                };
                 issues.push(
                     KadoError::warn(
                         "OVERHANG",
                         format!(
                             "overhang angle {deg:.1}° from horizontal exceeds {max_overhang_deg:.1}° \
+                             over {pct:.0}% of surface area \
                              (build direction [{:.2},{:.2},{:.2}])",
                             bd.x, bd.y, bd.z
                         ),
                         &[
                             "Add support structures or redesign with chamfer/fillet",
                             "Rotate the model to minimize overhangs",
+                            "Small overhang areas often print without support on tuned FDM \
+                             (~45° self-supporting, up to ~60° with margin); a large % needs support",
                         ],
                     )
                     .with_location(worst_centroid), // 問242: 最悪三角形の重心を位置ヒントとして付与。
@@ -1670,6 +1688,65 @@ mod tests {
             lz < -0.5,
             "JSON location z must be in lower hemisphere, got {lz}"
         );
+    }
+
+    #[test]
+    fn overhang_reports_area_fraction_proportional_to_extent() {
+        // 問249: OVERHANG は最悪角度に加え「総表面積に占めるオーバーハング面積の割合」を
+        // 報告する。FDM/光造形の経験則 (Qiita/Zenn) では小面積のオーバーハングは無支持でも
+        // 印刷でき、広いものはサポート必須。AI が比例的に対応できるよう広さを公開する。
+        let sphere = Sdf::sphere(1.0);
+        let (lo, hi) = sphere.sampling_box();
+        let mesh = polygonize(&sphere, lo, hi, 32);
+        // +Z ビルド・閾値 45°: 球の下半球の急な下向き面がオーバーハング。
+        let r = validate_with_field(&mesh, Some(&sphere), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        let ov = r
+            .issues
+            .iter()
+            .find(|e| e.code == "OVERHANG")
+            .expect("sphere must have OVERHANG issue");
+
+        // メッセージに "% of surface area" を含む。
+        assert!(
+            ov.cause.contains("% of surface area"),
+            "OVERHANG must report area fraction: {}",
+            ov.cause
+        );
+        // 割合を抜き出して (0, 100] に収まることを確認。
+        // フォーマット: "... exceeds 45.0° over NN% of surface area ..."
+        let pct_token = ov
+            .cause
+            .split("over ")
+            .nth(1)
+            .and_then(|s| s.split('%').next())
+            .expect("must contain 'over NN%'");
+        let pct: f64 = pct_token.trim().parse().expect("percentage must parse");
+        assert!(
+            pct > 0.0 && pct <= 100.0,
+            "overhang area fraction must be in (0,100], got {pct}"
+        );
+        // 球の下半球の急斜面はそれなりの面積を占めるはず (>10%)。
+        assert!(
+            pct > 10.0,
+            "a sphere's steep lower hemisphere should overhang a non-trivial area, got {pct}%"
+        );
+
+        // 緩い閾値 (89°) ではほぼ水平な最下点付近だけが残り、面積割合は小さくなる。
+        let r_strict =
+            validate_with_field(&mesh, Some(&sphere), 0.0, 89.0, Vec3::new(0.0, 0.0, 1.0));
+        if let Some(ov2) = r_strict.issues.iter().find(|e| e.code == "OVERHANG") {
+            let pct2: f64 = ov2
+                .cause
+                .split("over ")
+                .nth(1)
+                .and_then(|s| s.split('%').next())
+                .and_then(|s| s.trim().parse().ok())
+                .expect("strict overhang percentage must parse");
+            assert!(
+                pct2 <= pct,
+                "a stricter angle threshold must flag no more area than a looser one ({pct2}% vs {pct}%)"
+            );
+        }
     }
 
     #[test]
