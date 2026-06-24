@@ -131,7 +131,8 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 （クライアントが要求した対応版を返し、未対応なら最新を返す・問251）。
 各ツールは `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint` /
 `openWorldHint`）を宣言し、クライアント/LLM が読み取り専用ツールと状態変更ツールを
-区別できる（問251）。
+区別できる（問251）。validate レポートは `bed_contact_area`（build_dir 最下層の接地
+面積; 反り・剥がれ抵抗の指標）を測定値として公開する（問252）。
 
 ### 5.1 ツール一覧
 
@@ -139,7 +140,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 |--------|------|---------|
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 | `script` |
 | `eval` | 1 点の符号付き距離を返す | `x, y, z` |
-| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
+| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, bed_contact_area, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248）。`bed_contact_area` は造形プレート接地面積（点接地は ~0・問252） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
 | `screenshot` | シーンを PNG レンダリング（base64） | `view, width, height, samples, axes` |
 | `export` | STL/GLB/3MF をプロジェクト直下へ書き出し | `path, resolution` |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す | — |
@@ -240,7 +241,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 329 テスト（323 ユニット + 6 統合）合格。
+- `cargo test`: 330 テスト（324 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

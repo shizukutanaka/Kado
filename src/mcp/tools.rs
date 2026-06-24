@@ -137,7 +137,8 @@ pub fn tool_list() -> Value {
              JSON report: {ok, triangles, manifold, volume, volume_reliable, \
              surface_area, bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
              center_of_mass:[x,y,z]|null, measured_min_wall:number|null, \
-             body_count:int|null, cavity_count:int|null, digest, \
+             body_count:int|null, cavity_count:int|null, bed_contact_area:number|null, \
+             digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
@@ -756,6 +757,10 @@ Use these to set thresholds and interpret results (adjust per printer/material):
   resin/SLA         walls thinner-capable but ~1 mm+ is robust; ~3 mm around screw holes;
                     hollow parts need a drain hole (see ENCLOSED_CAVITY)
   report.measured_min_wall  the actual thinnest wall — compare to your nozzle to judge margin
+  bed adhesion      larger build-plate contact resists warping/peeling; small footprint + tall
+                    part risks detachment (compare report.bed_contact_area to the part size)
+  report.bed_contact_area   area touching the build plate (build_dir lowest layer); ~0 = point
+                    contact (e.g. a sphere) which needs a raft/brim or a flat-cut base
 
 ## repeat requires explicit period when count is set
 
@@ -947,9 +952,18 @@ mod tests {
         // 問251: export はファイルを書く (readOnly=false) が additive・冪等
         // (同一シーン→同一ファイル) なので destructive=false, idempotent=true。
         let ann = annotations_of("export");
-        assert_eq!(ann.get("readOnlyHint").and_then(|b| b.as_bool()), Some(false));
-        assert_eq!(ann.get("destructiveHint").and_then(|b| b.as_bool()), Some(false));
-        assert_eq!(ann.get("idempotentHint").and_then(|b| b.as_bool()), Some(true));
+        assert_eq!(
+            ann.get("readOnlyHint").and_then(|b| b.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            ann.get("destructiveHint").and_then(|b| b.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            ann.get("idempotentHint").and_then(|b| b.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]

@@ -4816,3 +4816,57 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > 参考: 2026年5月版 MCP開発ガイド, MCPサーバー実践ガイド, MCPで作るAIエージェント記憶
 > サーバー (Qiita/Zenn)。
 > テスト数: 323 ユニット + 6 統合 = 329 合計。
+
+## 問252 — Qiita/Zenn 調査: ベッド接地面積 (bed_contact_area) を公開
+
+**調査 (Qiita/Zenn)**:
+- 「接地面積を増やすことでトルクに対抗 (定着)」「裾広がり形状で接地面積を増やす」
+  (3Dプリンタ積層失敗/ラフト記事)。
+- 「ABS 等は熱収縮で第1層が剥がれる」「1層目の定着設定で剥がれを防ぐ」。
+- 共通原理: **造形プレートとの接地面積が反り・剥がれ (定着) への抵抗の主要因**。
+  接地が小さい (点接地) 部品はラフト/ブリム必須。
+
+**ソクラテス問答**:
+- *Kado は接地に関する指標を持つか?*
+  → 「UNSTABLE (COM がフットプリント bbox 外=転倒) と HIGH_ASPECT_RATIO はあるが、
+  『どれだけ造形プレートに接地しているか』を示す指標はない。」
+- *接地面積を閾値判定すべきか?*
+  → 「いいえ。『何 mm² 以上必要か』は絶対閾値で恣意的。コードベースは
+  SUSPICIOUS_SCALE で絶対閾値を避ける設計。測定値として公開し、AI が
+  形状サイズ/体積との比で判断する方が誠実。」(問244/247/248 と同じ哲学)
+- *既存の計算を再利用できるか?*
+  → 「OVERHANG のベッド除外が build_dir 最下層 (重心投影 ≤ min_proj+bed_eps) を
+  既に判定している。同じ判定で底層三角形の面積を合計すればよい。新しい幾何概念は不要。」
+- *None になるのは?* → build_dir が零ベクトル、または空メッシュ (接地の定義が無意味)。
+
+**実装** (測定値のみ・閾値判定なし):
+- `verify/check.rs`: `Report.bed_contact_area: Option<f64>` を追加。
+  ヘルパ `bed_contact_area(mesh, build_dir)`: build_dir 最下層 (OVERHANG と同じ
+  bed_eps=高さ1%) の三角形面積和を決定的に計算。`validate_with_field` で算出し
+  両 Report 経路に格納。`summary()` に `bed_contact=`、`to_json()` に
+  `bed_contact_area` (Some→数値/None→null) を公開。
+- `mcp/tools.rs`: validate スキーマに `bed_contact_area:number|null`。
+  KADOSCENE_HELP の printability 節に接地面積と定着リスクの解説を追加。
+- `docs/SPEC.md`: §5.1 戻り値 JSON 更新、§5/§10 更新、テスト数 330。
+
+**テスト (1本)**:
+- `report_exposes_bed_contact_area_proportional_to_footprint`:
+  平底ドーム (球を z=0 で cut) の接地面積が底円の面積 π≈3.14 の 8% 以内。
+  球 (点接地) はドームの 20% 未満 (点接地を正しく小さく評価)。
+  JSON 往復一致・summary に bed_contact= を含む・build_dir=0 で None/null。
+
+## 反映サマリ v120
+| 問 | 実装 |
+|----|------|
+| 252 | Qiita/Zenn 調査「接地面積が定着抵抗」— `Report.bed_contact_area` を測定値として公開 |
+
+> 総括: v120 は外部知見の取り込みと「計算済みデータの公開」(問244/247/248) の合流。
+> 調査で「造形プレートとの接地面積が反り・剥がれへの抵抗を決める」という定着の
+> 基本原理を得て、UNSTABLE (転倒) でも HIGH_ASPECT_RATIO (揺れ) でもカバーしていなかった
+> 「定着 (第1層剥がれ)」の指標を bed_contact_area として追加した。恣意的閾値を持ち込まず
+> (問244/247/248 と同じ哲学)、測定値のみを公開して AI が形状サイズとの比で
+> 「ラフト/ブリムが要るか」「平底にカットすべきか」を判断できるようにした。
+> 計算は OVERHANG のベッド判定を再利用し、新しい幾何概念を持ち込まない。
+> 参考: 3Dプリンタの積層失敗を解決した話, ラフトがお勧めな理由, 1層目定着設定
+> (Qiita/Zenn)。
+> テスト数: 324 ユニット + 6 統合 = 330 合計。

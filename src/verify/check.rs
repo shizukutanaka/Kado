@@ -124,6 +124,12 @@ pub struct Report {
     /// 内部空洞数 (問248)。同上の負成分の数。封入空洞 (排水欠陥) の構造化指標。
     /// AI が ENCLOSED_CAVITY の prose を正規表現で剥がさず直接読める。非水密・空は None。
     pub cavity_count: Option<usize>,
+    /// ベッド接地面積 (問252)。build_dir 最下層 (= 造形プレート接地面) の三角形面積和。
+    /// 接地面積は反り・剥がれへの抵抗 (定着) の主要因 (Qiita/Zenn 調査)。閾値判定はせず
+    /// 測定値のみ公開し、AI が形状サイズ/体積との比で定着リスクを判断できるようにする
+    /// (問244/247 と同じ「計算済みデータの公開」)。build_dir が零・空メッシュは None。
+    /// 球のように点接地する形状は ~0、平底は底面積に等しい。
+    pub bed_contact_area: Option<f64>,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -175,11 +181,15 @@ impl Report {
             (Some(b), Some(c)) => format!(" bodies={b} cavities={c}"),
             _ => String::new(),
         };
+        // ベッド接地面積は存在するときのみ付加する (問252)。
+        let bed_str = self
+            .bed_contact_area
+            .map_or(String::new(), |a| format!(" bed_contact={a:.3}"));
         format!(
             "triangles={} manifold={} volume={:.3}{vol_note} area={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
-             digest={:016x} errors={errors} warnings={warnings}{com_str}{wall_str}{topo_str}",
+             digest={:016x} errors={errors} warnings={warnings}{com_str}{wall_str}{topo_str}{bed_str}",
             self.triangle_count,
             self.is_manifold,
             self.volume,
@@ -241,6 +251,8 @@ impl Report {
         // 位相カウント: Some なら数値、None (非水密) なら null (問248)。
         let body_json = self.body_count.map_or(json::NULL, |n| json::n(n as f64));
         let cavity_json = self.cavity_count.map_or(json::NULL, |n| json::n(n as f64));
+        // ベッド接地面積: Some なら数値、None なら null (問252)。
+        let bed_json = self.bed_contact_area.map_or(json::NULL, json::n);
         json::obj([
             ("ok", json::b(self.is_ok())),
             ("triangles", json::n(self.triangle_count as f64)),
@@ -254,6 +266,7 @@ impl Report {
             ("measured_min_wall", wall_json),
             ("body_count", body_json),
             ("cavity_count", cavity_json),
+            ("bed_contact_area", bed_json),
             ("digest", json::s(format!("{:016x}", self.digest))),
             ("issues", Value::Array(issues)),
         ])
@@ -349,6 +362,7 @@ pub fn validate_with_field(
             measured_min_wall: None, // 空メッシュに肉厚なし。
             body_count: None,        // 空メッシュに位相なし。
             cavity_count: None,
+            bed_contact_area: None, // 空メッシュに接地なし。
             issues,
         };
     }
@@ -600,6 +614,8 @@ pub fn validate_with_field(
     // COM は UNSTABLE 判定の根拠として Report にも公開する (問239)。
     // AI/利用者が「重心がどこにあるか」を直接確認できるようにする。
     let center_of_mass = mesh.center_of_mass();
+    // 問252: ベッド接地面積 (定着/反り抵抗の指標)。build_dir 最下層の面積和。
+    let bed_contact = bed_contact_area(mesh, build_dir);
     {
         let bd_len = build_dir.length();
         if bd_len > 1e-12 {
@@ -718,6 +734,7 @@ pub fn validate_with_field(
         measured_min_wall,
         body_count,
         cavity_count,
+        bed_contact_area: bed_contact,
         issues,
     }
 }
@@ -737,6 +754,41 @@ fn mean_wall_thickness(mesh: &Mesh, lo: Vec3, hi: Vec3) -> f64 {
         return (hi - lo).length();
     }
     2.0 * mesh.signed_volume().abs() / surface_area
+}
+
+/// ベッド接地面積 (問252): build_dir 最下層 (= 造形プレート接地面) の三角形面積和。
+///
+/// 接地面積は反り・剥がれへの抵抗 (定着) の主要因 (Qiita/Zenn 調査)。OVERHANG の
+/// ベッド除外と同じ判定 (重心の build_dir 投影が最下層 + bed_eps 以内) で底層三角形を
+/// 集め、その面積を合計する。閾値判定はせず測定値のみ返す。
+/// build_dir が零ベクトル・空メッシュなら None (接地の定義が無意味)。
+/// 球のように点接地する形状は ~0、平底は底面積に等しい。決定的 (固定順序 f64 加算)。
+fn bed_contact_area(mesh: &Mesh, build_dir: Vec3) -> Option<f64> {
+    let bd_len = build_dir.length();
+    if bd_len < 1e-12 || mesh.triangles.is_empty() {
+        return None;
+    }
+    let bd = build_dir * (1.0 / bd_len);
+    let mut min_proj = f64::INFINITY;
+    let mut max_proj = f64::NEG_INFINITY;
+    for v in &mesh.vertices {
+        let pr = v.dot(bd);
+        min_proj = min_proj.min(pr);
+        max_proj = max_proj.max(pr);
+    }
+    // OVERHANG のベッド許容と同じ閾値 (高さの 1%)。薄い最下層を吸収する。
+    let bed_eps = ((max_proj - min_proj) * 0.01).max(1e-9);
+    let mut area = 0.0;
+    for tri in &mesh.triangles {
+        let a = mesh.vertices[tri[0] as usize];
+        let b = mesh.vertices[tri[1] as usize];
+        let c = mesh.vertices[tri[2] as usize];
+        let centroid = (a + b + c) * (1.0 / 3.0);
+        if centroid.dot(bd) - min_proj <= bed_eps {
+            area += (b - a).cross(c - a).length() * 0.5;
+        }
+    }
+    Some(area)
 }
 
 /// 内向きレイ探針による**局所**肉厚の最小推定 (問58)。
@@ -1582,6 +1634,7 @@ mod tests {
             measured_min_wall: None,
             body_count: None,
             cavity_count: None,
+            bed_contact_area: None,
             issues: vec![],
         };
         // 正常系: 両条件 true → reliable。
@@ -1895,6 +1948,7 @@ mod tests {
             "measured_min_wall",
             "body_count",
             "cavity_count",
+            "bed_contact_area",
             "digest",
             "issues",
         ] {
@@ -2175,6 +2229,67 @@ mod tests {
             *vc.get("body_count").expect("key must exist even if null"),
             Value::Null,
             "non-manifold body_count must be null in JSON"
+        );
+    }
+
+    #[test]
+    fn report_exposes_bed_contact_area_proportional_to_footprint() {
+        // 問252: ベッド接地面積を測定値として公開する。Qiita/Zenn 調査では接地面積が
+        // 反り・剥がれ (定着) への抵抗の主要因。平底は底面積に等しく、点接地 (球) は ~0。
+        use crate::mcp::json::{parse, Value};
+
+        // 平底ドーム (球を z=0 で cut) を +Z ビルド: 底面 (半径1の円, 面積 π≈3.14) が接地。
+        let dome = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let (lo, hi) = dome.sampling_box();
+        let dome_mesh = polygonize(&dome, lo, hi, 48);
+        let r_dome = validate(&dome_mesh, 0.0, 0.0);
+        let bed_dome = r_dome
+            .bed_contact_area
+            .expect("flat-based dome must have a bed contact area");
+        // 半径1の円の面積 π。テッセレーション近似で 8% 以内。
+        let circle = std::f64::consts::PI;
+        assert!(
+            (bed_dome - circle).abs() / circle < 0.08,
+            "flat dome base should be ~π≈{circle:.3}, got {bed_dome}"
+        );
+
+        // 球 (点接地) は接地面積が極小 (平底ドームよりはるかに小さい)。
+        let sphere_mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 48);
+        let r_sphere = validate(&sphere_mesh, 0.0, 0.0);
+        let bed_sphere = r_sphere
+            .bed_contact_area
+            .expect("sphere has a (tiny) bed contact");
+        assert!(
+            bed_sphere < bed_dome * 0.2,
+            "point-contact sphere bed area ({bed_sphere}) must be far smaller than flat base ({bed_dome})"
+        );
+
+        // JSON 往復一致 + summary に bed_contact= を含む。
+        let v = r_dome.to_json();
+        assert_eq!(parse(&v.to_string()).unwrap(), v, "to_json must round-trip");
+        assert_eq!(
+            v.get("bed_contact_area").and_then(|x| x.as_f64()),
+            Some(bed_dome),
+            "JSON bed_contact_area must equal report value"
+        );
+        assert!(
+            r_dome.summary().contains("bed_contact="),
+            "summary must expose bed_contact: {}",
+            r_dome.summary()
+        );
+
+        // build_dir=0 (オーバーハング検査スキップと同条件) では接地は未定義 → None/null。
+        let r_zero = validate_with_field(&dome_mesh, None, 0.0, 0.0, Vec3::ZERO);
+        assert!(
+            r_zero.bed_contact_area.is_none(),
+            "zero build_dir must yield no bed contact area"
+        );
+        let vz = r_zero.to_json();
+        assert_eq!(
+            *vz.get("bed_contact_area")
+                .expect("key must exist even if null"),
+            Value::Null,
+            "zero build_dir bed_contact_area must be null in JSON"
         );
     }
 
