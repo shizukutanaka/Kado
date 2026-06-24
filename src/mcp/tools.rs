@@ -231,7 +231,39 @@ fn tool_def(name: &str, description: &str, params: &[(&str, &str, &str, bool)]) 
                 m
             }),
         ),
+        ("annotations", tool_annotations(name)),
     ])
+}
+
+/// MCP ツール注釈 (問251; 2025-03-26+ 仕様)。クライアント/LLM が「副作用なしで安全に
+/// 呼べる読み取り専用ツールか」「シーン状態を変更するか」を判断できるようにする。
+/// 注釈は信頼できない助言 (untrusted hint) であり権限の保証ではない (仕様)。
+/// Kado は外部実体と相互作用しないため openWorldHint は常に false (閉世界・決定的)。
+/// destructiveHint/idempotentHint は readOnlyHint=false のときのみ意味を持つ。
+fn tool_annotations(name: &str) -> Value {
+    // (title, read_only, destructive, idempotent)
+    let (title, read_only, destructive, idempotent) = match name {
+        "eval" => ("Evaluate signed distance at a point", true, false, true),
+        "validate" => ("Validate manufacturability (DFM)", true, false, true),
+        "get_scene" => ("Get the current scene script", true, false, true),
+        "help" => ("DSL and tool reference", true, false, true),
+        "screenshot" => ("Render the scene to a PNG", true, false, true),
+        // export はファイルを書くが additive (シーン状態は不変, 同一シーン→同一ファイル)。
+        "export" => ("Export the mesh to a file", false, false, true),
+        // run_script はシーン正本を置換する (undo 可能だが additive ではない)。
+        "run_script" => ("Run a script, replacing the scene", false, true, false),
+        "undo_script" => ("Undo the last script change", false, true, false),
+        _ => (name, false, true, false),
+    };
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("title".into(), json::s(title));
+    m.insert("readOnlyHint".into(), json::b(read_only));
+    m.insert("openWorldHint".into(), json::b(false));
+    if !read_only {
+        m.insert("destructiveHint".into(), json::b(destructive));
+        m.insert("idempotentHint".into(), json::b(idempotent));
+    }
+    Value::Object(m)
 }
 
 // ── ツール実行 ────────────────────────────────────────────────────────────────
@@ -847,6 +879,78 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tool_list から指定ツールの annotations オブジェクトを取り出す。
+    fn annotations_of(name: &str) -> Value {
+        let list = tool_list();
+        let arr = list.as_array().expect("tool_list is an array");
+        let tool = arr
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
+            .unwrap_or_else(|| panic!("tool {name} not found"));
+        tool.get("annotations")
+            .cloned()
+            .unwrap_or_else(|| panic!("tool {name} has no annotations"))
+    }
+
+    #[test]
+    fn read_only_tools_declare_read_only_hint() {
+        // 問251: 副作用のないツールは readOnlyHint=true を宣言し、クライアント/LLM が
+        // 確認なしで安全に呼べることを示す。
+        for name in ["eval", "validate", "get_scene", "help", "screenshot"] {
+            let ann = annotations_of(name);
+            assert_eq!(
+                ann.get("readOnlyHint").and_then(|b| b.as_bool()),
+                Some(true),
+                "{name} must be readOnlyHint=true"
+            );
+            // 読み取り専用なら destructiveHint は意味を持たないため省略する (MCP 仕様)。
+            assert!(
+                ann.get("destructiveHint").is_none(),
+                "{name} (read-only) must omit destructiveHint"
+            );
+            // Kado は閉世界 (外部実体と相互作用しない)。
+            assert_eq!(
+                ann.get("openWorldHint").and_then(|b| b.as_bool()),
+                Some(false),
+                "{name} must be openWorldHint=false (closed world)"
+            );
+        }
+    }
+
+    #[test]
+    fn state_mutating_tools_declare_not_read_only() {
+        // 問251: シーン正本を変更する run_script/undo_script は readOnlyHint=false かつ
+        // destructiveHint=true (置換は additive ではない)、idempotentHint=false。
+        for name in ["run_script", "undo_script"] {
+            let ann = annotations_of(name);
+            assert_eq!(
+                ann.get("readOnlyHint").and_then(|b| b.as_bool()),
+                Some(false),
+                "{name} must be readOnlyHint=false"
+            );
+            assert_eq!(
+                ann.get("destructiveHint").and_then(|b| b.as_bool()),
+                Some(true),
+                "{name} must be destructiveHint=true"
+            );
+            assert_eq!(
+                ann.get("idempotentHint").and_then(|b| b.as_bool()),
+                Some(false),
+                "{name} must be idempotentHint=false"
+            );
+        }
+    }
+
+    #[test]
+    fn export_is_additive_and_idempotent() {
+        // 問251: export はファイルを書く (readOnly=false) が additive・冪等
+        // (同一シーン→同一ファイル) なので destructive=false, idempotent=true。
+        let ann = annotations_of("export");
+        assert_eq!(ann.get("readOnlyHint").and_then(|b| b.as_bool()), Some(false));
+        assert_eq!(ann.get("destructiveHint").and_then(|b| b.as_bool()), Some(false));
+        assert_eq!(ann.get("idempotentHint").and_then(|b| b.as_bool()), Some(true));
+    }
 
     #[test]
     fn sandbox_accepts_project_relative_paths() {

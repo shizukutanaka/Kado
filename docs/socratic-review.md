@@ -4759,3 +4759,60 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > マージンを評価できる。恣意的閾値をコードに持ち込まない設計哲学を維持。
 > 参考: 熱溶解積層方式 Tips, スライサーを斬る, 光造形ケース俺ルール (Qiita/Zenn)。
 > テスト数: 318 ユニット + 6 統合 = 324 合計。
+
+## 問251 — Qiita/Zenn (MCP 設計) 調査: ツール注釈とプロトコル版交渉
+
+**調査 (Qiita/Zenn の MCP 開発ガイド)**:
+- 「入力検証エラーは Tool Execution Error (isError) で返すべき。Protocol Error で返すと
+  LLM のコンテキストに届かず自己修正できない」→ Kado は問106 で既に対応済み (検証済)。
+- 「ツールには名前・説明・厳密に型付けされた入力スキーマがある」→ Kado は持つ (検証済)。
+- MCP ツール設計のベストプラクティスとして **tool annotations** (readOnlyHint 等) が
+  クライアント/LLM の安全な呼び出し判断に重要。
+
+**ソクラテス問答**:
+- *Kado の MCP エラー処理は調査の基準を満たすか?*
+  → 「満たす。全ツールエラーは isError:true で返り、未知メソッドのみ -32601。
+  run_script は issue コードと解像度を可視化し自己修正を助ける。優秀。」
+- *では不足は?* — 「ツール注釈 (annotations) がない。クライアント/LLM は eval/validate
+  /get_scene/help/screenshot が副作用なしの読み取り専用か、run_script/undo_script が
+  状態を変更するかを区別できない。」
+- *注釈は Kado の宣言版 (2024-11-05) で有効か?* — 「annotations は 2025-03-26 で標準化。
+  2024-11-05 を宣言したままでは新クライアントが認識しない。版交渉が必要。」
+- *現状の版交渉は?* — 「壊れてはいないが、クライアントの要求版を無視して常に固定版を
+  返している。仕様は『対応版を要求されたら同じ版を返す』。」
+
+**実装** (MCP 仕様準拠、後方互換):
+- `mcp/server.rs`: `SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"]` を導入。
+  `MCP_PROTOCOL_VERSION` を最新 (2025-06-18) に。`handle_initialize` が
+  クライアント要求版を読み、対応版ならそれを、未対応/未指定なら最新を返す。
+  旧クライアント (2024-11-05 要求) は同版を受け取り後方互換を保つ。
+- `mcp/tools.rs`: `tool_annotations(name)` を追加し `tool_def` が全ツールに
+  `annotations` を付与。読み取り専用 (eval/validate/get_scene/help/screenshot) は
+  readOnlyHint=true。run_script/undo_script は readOnlyHint=false・destructiveHint=true
+  (置換は additive でない)・idempotentHint=false。export は readOnly=false だが additive・
+  冪等 (同一シーン→同一ファイル)。Kado は閉世界なので openWorldHint は常に false。
+- `docs/SPEC.md`: §5 にプロトコル版交渉と annotations を明記、§10 テスト数 329。
+
+**テスト (5本)**:
+- `read_only_tools_declare_read_only_hint`: 5 ツールが readOnlyHint=true・openWorldHint=false・
+  destructiveHint 省略。
+- `state_mutating_tools_declare_not_read_only`: run_script/undo_script が readOnly=false・
+  destructive=true・idempotent=false。
+- `export_is_additive_and_idempotent`: export が readOnly=false・destructive=false・idempotent=true。
+- `initialize_negotiates_requested_protocol_version`: 2024-11-05 要求→同版 (後方互換)。
+- `initialize_falls_back_to_latest_for_unknown_version`: 未対応版要求→最新版。
+
+## 反映サマリ v119
+| 問 | 実装 |
+|----|------|
+| 251 | Qiita/Zenn (MCP 設計) 調査 — tool annotations + プロトコル版交渉 (2025-06-18/2024-11-05) |
+
+> 総括: v119 は外部知見の取り込み第3弾で、対象は DFM ではなく Kado 自身の MCP
+> インターフェース。調査は Kado のエラー設計 (isError) が既にベストプラクティス通り
+> であることを検証しつつ、tool annotations の欠落を surfaced した。annotations を
+> 全ツールに付与し、それが標準化された 2025-06-18 を主版として宣言しつつ、要求版を
+> 尊重する版交渉で旧クライアント (2024-11-05) との後方互換を保った。これで MCP
+> クライアント/LLM は「どのツールが確認なしで安全か」を機械的に判断できる。
+> 参考: 2026年5月版 MCP開発ガイド, MCPサーバー実践ガイド, MCPで作るAIエージェント記憶
+> サーバー (Qiita/Zenn)。
+> テスト数: 323 ユニット + 6 統合 = 329 合計。

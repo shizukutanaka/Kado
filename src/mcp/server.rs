@@ -1,7 +1,7 @@
 //! MCP stdio サーバー。
 //!
 //! トランスポート: Content-Length フレーミング (LSP スタイル)。
-//! プロトコル: MCP 2024-11-05 / JSON-RPC 2.0。
+//! プロトコル: MCP (2025-06-18 / 2024-11-05 を版交渉) / JSON-RPC 2.0。
 //! `run_stdio()` は stdin/stdout をブロッキングで読み書きし、
 //! 永続的に動作する (SIGPIPE または stdin EOF で終了)。
 
@@ -10,7 +10,11 @@ use std::io::{self, BufRead, Write};
 use crate::mcp::json::{self, Value};
 use crate::mcp::tools;
 
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+/// 既定 (最新) の MCP プロトコル版。クライアント未指定/未対応時に返す。
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// 対応する MCP プロトコル版 (新しい順, 問251)。tool annotations は 2025-03-26 で
+/// 標準化されたため最新版を主とし、旧クライアント互換のため 2024-11-05 も維持する。
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2024-11-05"];
 const SERVER_NAME: &str = "kado";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -112,9 +116,17 @@ fn handle(session: &mut tools::Session, msg: &Value) -> Option<Value> {
     result.map(|r| success_response(id, r))
 }
 
-fn handle_initialize(_params: &Value) -> Value {
+fn handle_initialize(params: &Value) -> Value {
+    // 問251: クライアントが要求した protocolVersion を尊重する (MCP 仕様)。
+    // 対応版なら同じ版を、未対応/未指定なら最新の対応版を返す。以前は要求を無視して
+    // 常に固定版を返していた (新クライアントが annotations を認識できなかった)。
+    let requested = params.get("protocolVersion").and_then(|v| v.as_str());
+    let version = match requested {
+        Some(r) if SUPPORTED_PROTOCOL_VERSIONS.contains(&r) => r,
+        _ => MCP_PROTOCOL_VERSION,
+    };
     json::obj([
-        ("protocolVersion", json::s(MCP_PROTOCOL_VERSION)),
+        ("protocolVersion", json::s(version)),
         (
             "serverInfo",
             json::obj([
@@ -234,6 +246,41 @@ mod tests {
             .and_then(|r| r.get("protocolVersion"))
             .and_then(|v| v.as_str());
         assert_eq!(ver, Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn initialize_negotiates_requested_protocol_version() {
+        // 問251: クライアントが対応版を要求したら同じ版を返す (MCP 仕様)。
+        // 旧クライアント (2024-11-05) との後方互換を保証する。
+        let mut s = tools::Session::new();
+        let params = json::obj([("protocolVersion", json::s("2024-11-05"))]);
+        let resp = handle(&mut s, &req("initialize", 1, Some(params))).unwrap();
+        let ver = resp
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            ver,
+            Some("2024-11-05"),
+            "server must echo a supported requested version"
+        );
+    }
+
+    #[test]
+    fn initialize_falls_back_to_latest_for_unknown_version() {
+        // 問251: 未対応版を要求されたら最新の対応版を返す (仕様)。
+        let mut s = tools::Session::new();
+        let params = json::obj([("protocolVersion", json::s("1999-01-01"))]);
+        let resp = handle(&mut s, &req("initialize", 1, Some(params))).unwrap();
+        let ver = resp
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            ver,
+            Some(MCP_PROTOCOL_VERSION),
+            "unknown requested version must fall back to the latest supported"
+        );
     }
 
     #[test]

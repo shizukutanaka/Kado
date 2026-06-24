@@ -127,7 +127,11 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 ## 5. MCP サーバ（道具）
 
 トランスポートは **stdio + Content-Length フレーミング**（LSP スタイル）。
-プロトコルは JSON-RPC 2.0、`protocolVersion = 2024-11-05`。
+プロトコルは JSON-RPC 2.0。`protocolVersion` は **2025-06-18 / 2024-11-05 を版交渉**
+（クライアントが要求した対応版を返し、未対応なら最新を返す・問251）。
+各ツールは `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint` /
+`openWorldHint`）を宣言し、クライアント/LLM が読み取り専用ツールと状態変更ツールを
+区別できる（問251）。
 
 ### 5.1 ツール一覧
 
@@ -236,7 +240,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 324 テスト（318 ユニット + 6 統合）合格。
+- `cargo test`: 329 テスト（323 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 
