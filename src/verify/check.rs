@@ -460,6 +460,8 @@ pub fn validate_with_field(
                         &[
                             "Increase wall thickness via offset() or larger primitives",
                             "Reduce min_wall_mm threshold if intentional",
+                            "Rule of thumb: min printable wall ≈ nozzle diameter (~0.4 mm FDM); \
+                             aim for ≥2× nozzle (~0.8 mm) for strength; resin walls thicker (~1 mm+)",
                         ],
                     );
                     if let Some(loc) = thin_loc {
@@ -1065,6 +1067,32 @@ mod tests {
         assert!(
             !mesh_only.issues.iter().any(|e| e.code == "THIN_WALL"),
             "mesh-only mean check misses the thin fin (demonstrates added value)"
+        );
+    }
+
+    #[test]
+    fn thin_wall_hint_carries_nozzle_grounded_guidance() {
+        // 問250: Qiita/Zenn 調査で「最小造形肉厚 ≈ ノズル径 (~0.4mm)、強度には 2× 推奨」
+        // という実務知見を得た。THIN_WALL のヒントにこの現実世界の目標値を載せ、AI が
+        // 「どこまで厚くすべきか」を判断できるようにする。
+        let body = Sdf::cuboid(Vec3::new(1.0, 1.0, 1.0));
+        let fin = Sdf::cuboid(Vec3::new(1.8, 0.05, 0.8));
+        let sdf = body.union(fin);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 48);
+        let r = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0, Vec3::new(0.0, 0.0, 1.0));
+
+        let tw = r
+            .issues
+            .iter()
+            .find(|e| e.code == "THIN_WALL")
+            .expect("thin fin must be flagged");
+        assert!(
+            tw.fix_hints
+                .iter()
+                .any(|h| h.to_lowercase().contains("nozzle")),
+            "THIN_WALL hints must include nozzle-grounded printability guidance, got {:?}",
+            tw.fix_hints
         );
     }
 

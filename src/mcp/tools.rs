@@ -162,7 +162,9 @@ pub fn tool_list() -> Value {
                 (
                     "min_wall_mm",
                     "number",
-                    "Minimum wall thickness threshold (0 to skip, default: 0.5)",
+                    "Minimum wall thickness threshold in mm (0 to skip, default: 0.5). \
+                     Rule of thumb: set to ~1.25× nozzle diameter (0.5 mm suits a 0.4 mm FDM \
+                     nozzle); resin/SLA can go thinner but ~1 mm walls are more robust",
                     false,
                 ),
                 (
@@ -711,6 +713,17 @@ Branch on issue.code to categorize results:
   UNSTABLE          — center of mass outside the base footprint; location = COM coords
   HIGH_ASPECT_RATIO — build height / lateral size > 8 (sways during printing, risk of delamination)
   ENCLOSED_CAVITY   — info: fully-sealed internal void (traps resin/support; add a drain hole for SLA)
+
+## printability rules of thumb (問250; FDM/resin community practice)
+
+Use these to set thresholds and interpret results (adjust per printer/material):
+  min wall          ≈ nozzle diameter (commonly 0.4 mm FDM); aim ≥2× nozzle (~0.8 mm) for strength
+  min hole/pin      ≳ nozzle diameter; small holes print undersized — design holes oversized
+  feature width     prefer multiples of nozzle width (0.8 mm FDM prints cleaner than 1.0 mm)
+  overhang          ≤45° self-supporting; up to ~60° with tuning; beyond needs support
+  resin/SLA         walls thinner-capable but ~1 mm+ is robust; ~3 mm around screw holes;
+                    hollow parts need a drain hole (see ENCLOSED_CAVITY)
+  report.measured_min_wall  the actual thinnest wall — compare to your nozzle to judge margin
 
 ## repeat requires explicit period when count is set
 
