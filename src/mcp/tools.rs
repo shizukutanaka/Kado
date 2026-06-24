@@ -141,6 +141,9 @@ pub fn tool_list() -> Value {
              digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
+             Units: 1 coordinate unit = 1 mm, so volume is mm³, surface_area mm², \
+             bed_contact_area mm². Estimate material: mass_g = volume/1000 × density \
+             (PLA~1.24, ABS~1.04, PETG~1.27, resin~1.1 g/cm³) — see help for cost/infill notes. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
              thinnest wall vertex, or center of mass for UNSTABLE) so the AI can zoom in. \
              All issue codes: EMPTY_MESH (no geometry), NON_MANIFOLD (self-intersecting faces), \
@@ -761,6 +764,19 @@ Use these to set thresholds and interpret results (adjust per printer/material):
                     part risks detachment (compare report.bed_contact_area to the part size)
   report.bed_contact_area   area touching the build plate (build_dir lowest layer); ~0 = point
                     contact (e.g. a sphere) which needs a raft/brim or a flat-cut base
+
+## material, weight & cost estimation (問253)
+
+Coordinates are millimeters (1 unit = 1 mm), so report.volume is in mm³ and
+report.surface_area in mm². To estimate filament/resin use from a validate report:
+  solid mass (g)    = volume / 1000 × density        (mm³→cm³ is /1000)
+  density (g/cm³)   PLA ~1.24, ABS ~1.04, PETG ~1.27, Nylon ~1.14, resin ~1.10
+  cost              ≈ mass_g × price_per_gram (e.g. ~2.4 yen/g for 2400 yen/kg PLA)
+  IMPORTANT         report.volume is the SOLID volume — an UPPER BOUND on material.
+                    FDM prints are usually 15–30% infill + a few perimeters, so actual
+                    filament is far less; multiply by your infill fraction for a real
+                    estimate. A thin shell uses ≈ surface_area × wall_thickness of material.
+                    print time also scales with volume/infill and surface_area (perimeters).
 
 ## repeat requires explicit period when count is set
 
@@ -1426,6 +1442,29 @@ mod tests {
         assert!(
             eval_any(r#"{"op":"smooth_union","a":{"op":"sphere","r":1.0},"b":{"op":"sphere","r":1.0},"k":0.0}"#).is_err(),
             "evaluator must reject smooth k<=0 as help claims"
+        );
+    }
+
+    #[test]
+    fn help_documents_material_and_unit_estimation() {
+        // 問253: report.volume の単位 (mm³) は内部コメントにしかなく AI 出力に無かった。
+        // help が単位と材料/質量/コスト見積もりの式を述べ、AI が volume から
+        // フィラメント/レジン量を概算できることを保証する。
+        let help = KADOSCENE_HELP;
+        // 単位の明示 (mm³) と質量式。
+        assert!(
+            help.contains("mm³") && help.contains("density"),
+            "help must state volume unit (mm³) and the mass formula"
+        );
+        // 代表的な密度 (PLA) が含まれる。
+        assert!(
+            help.contains("PLA"),
+            "help must list common filament densities (e.g. PLA)"
+        );
+        // solid volume は上限であるという正直な注意 (infill)。
+        assert!(
+            help.to_lowercase().contains("infill"),
+            "help must note solid volume is an upper bound (infill caveat)"
         );
     }
 

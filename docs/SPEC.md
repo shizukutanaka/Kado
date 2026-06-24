@@ -120,7 +120,9 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 - `body_components` は反復呼び出しで決定的（HashMap 反復順に非依存）。
 
 ### 4.4 単位とスケール
-- 座標 1 単位 = 1 mm。検証レポートは `dims_mm` を明示。
+- 座標 1 単位 = 1 mm。検証レポートは `dims_mm` を明示。`volume` は mm³、`surface_area`/
+  `bed_contact_area` は mm²。材料/質量見積もり: `mass_g = volume/1000 × density`
+  （PLA~1.24 等）を help が案内する（問253）。solid volume は infill 前の上限値。
 
 ---
 
@@ -241,7 +243,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 330 テスト（324 ユニット + 6 統合）合格。
+- `cargo test`: 331 テスト（325 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 
