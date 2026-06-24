@@ -23,6 +23,7 @@ pub const ALL_ISSUE_CODES: &[&str] = &[
     "OVERHANG",
     "UNSTABLE",
     "HIGH_ASPECT_RATIO",
+    "ENCLOSED_CAVITY",
 ];
 
 // ── 構造化エラー ──────────────────────────────────────────────────────────────
@@ -60,6 +61,18 @@ impl KadoError {
     fn warn(code: &'static str, cause: impl Into<String>, hints: &[&str]) -> KadoError {
         KadoError {
             severity: Severity::Warning,
+            code,
+            cause: cause.into(),
+            fix_hints: hints.iter().map(|s| s.to_string()).collect(),
+            location: None,
+        }
+    }
+    /// 情報レベル (問246)。`is_ok()` を倒さない (Error でない)。製造上の事実を
+    /// 通知するが「誤り」とは断定しない用途 (例: 封入空洞 — 意図的な中空シェルと
+    /// メッシュからは区別できないため Warning ではなく Info)。
+    fn info(code: &'static str, cause: impl Into<String>, hints: &[&str]) -> KadoError {
+        KadoError {
+            severity: Severity::Info,
             code,
             cause: cause.into(),
             fix_hints: hints.iter().map(|s| s.to_string()).collect(),
@@ -326,6 +339,29 @@ pub fn validate_with_field(
                 &[
                     "If a single part was intended, bridge the gap (overlap shapes or add a connector)",
                     "If multiple parts are intended, this warning can be ignored",
+                ],
+            ));
+        }
+        // 4.6 封入空洞検出 (問246): 外部に開口のない完全密閉の内部空洞。
+        //     SLA/レジンでは未硬化樹脂が、FDM では除去不能なサポート/空気が閉じ込められる。
+        //     **重要**: メッシュ単体では「意図的な中空シェル (排水穴は別所にある)」と
+        //     「密閉トラップ」を区別できない (どちらも外殻+内殻の水密形状)。よって
+        //     Warning ではなく Info とし、is_ok() を倒さず事実だけを通知する。
+        //     MULTIPLE_BODIES が bodies>1 でしか発火しないため、bodies=1/cavities=1 の
+        //     単一中実ボディの内部ボイドは従来まったく報告されていなかった (情報の欠落)。
+        if cavities > 0 {
+            issues.push(KadoError::info(
+                "ENCLOSED_CAVITY",
+                format!(
+                    "watertight mesh has {cavities} fully-enclosed internal cavit{} with no \
+                     opening to the outside — trapped uncured resin (SLA) or unremovable \
+                     support (FDM). Verify a drain/vent hole exists for the chosen process",
+                    if cavities == 1 { "y" } else { "ies" }
+                ),
+                &[
+                    "For SLA/resin, add a drain hole connecting the cavity to the outer surface",
+                    "For FDM, ensure internal voids do not trap support material",
+                    "If an intentional hollow shell with an existing drain, this notice can be ignored",
                 ],
             ));
         }
@@ -813,6 +849,43 @@ mod tests {
         assert!(
             !r.issues.iter().any(|e| e.code == "MULTIPLE_BODIES"),
             "hollow shell is one body + one cavity, must NOT warn"
+        );
+    }
+
+    #[test]
+    fn enclosed_cavity_flagged_as_info_not_error() {
+        // 問246: 封入空洞 (排水穴のない完全密閉ボイド) を ENCLOSED_CAVITY で通知する。
+        // 単一中実ボディ + 内部ボイド (bodies=1, cavities=1) は MULTIPLE_BODIES が
+        // bodies>1 でしか発火しないため従来まったく報告されていなかった。
+        //
+        // メッシュ単体では意図的な中空シェルと密閉トラップを区別できないため、
+        // Severity::Info (is_ok を倒さない) で「事実の通知」に留める。
+        let shell = Sdf::sphere(1.0).shell(0.25);
+        let (lo, hi) = shell.sampling_box();
+        let r = validate(&polygonize(&shell, lo, hi, 48), 0.0, 0.0);
+
+        let cavity = r
+            .issues
+            .iter()
+            .find(|e| e.code == "ENCLOSED_CAVITY")
+            .expect("sealed shell cavity must emit ENCLOSED_CAVITY");
+        // Info であること: is_ok() を倒さない (Error でない)。
+        assert_eq!(cavity.severity, Severity::Info, "ENCLOSED_CAVITY must be Info, not Error/Warning");
+        assert!(r.is_ok(), "an Info-level cavity notice must not make the report fail (is_ok stays true)");
+        // ヒントに drain (排水穴) が含まれ AI に修正方向を示す。
+        assert!(
+            cavity.fix_hints.iter().any(|h| h.to_lowercase().contains("drain")),
+            "ENCLOSED_CAVITY hint must mention a drain hole, got {:?}",
+            cavity.fix_hints
+        );
+
+        // 対照: 中実球 (空洞なし) は ENCLOSED_CAVITY を出さない。
+        let solid = Sdf::sphere(1.0);
+        let (lo, hi) = solid.sampling_box();
+        let r2 = validate(&polygonize(&solid, lo, hi, 24), 0.0, 0.0);
+        assert!(
+            !r2.issues.iter().any(|e| e.code == "ENCLOSED_CAVITY"),
+            "a solid (cavity-free) sphere must NOT emit ENCLOSED_CAVITY"
         );
     }
 

@@ -156,6 +156,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `SUSPICIOUS_SCALE` | warn | 部品が自身の最小肉厚より小さい |
 | `UNSTABLE` | warn | 重心がベース接地面の足元から外れる（転倒する物理挙動）。`issue.location` = COM 座標 |
 | `HIGH_ASPECT_RATIO` | warn | ビルド高さ / 横方向最大寸法 > 8（FDM 印刷中の揺れリスク）。UNSTABLE と相補的な製造プロセス安定性軸 |
+| `ENCLOSED_CAVITY` | info | 外部に開口のない完全密閉の内部空洞（SLA で未硬化樹脂・FDM で除去不能サポートを閉じ込める）。中空シェルと密閉トラップはメッシュ上区別不能のため Info（`is_ok` を倒さない・問246） |
 
 ### 5.3 issue の `location` フィールド（問242/243）
 
@@ -235,7 +236,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 319 テスト（313 ユニット + 6 統合）合格。
+- `cargo test`: 320 テスト（314 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

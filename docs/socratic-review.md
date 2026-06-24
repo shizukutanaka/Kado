@@ -4512,3 +4512,55 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > 1 つの if 条件を volume_reliable の定義に揃えるだけで、OPEN_MESH と
 > NEGATIVE_VOLUME の二重報告が消え、真陽性 (閉じた反転メッシュ) は保たれる。
 > テスト数: 313 ユニット + 6 統合 = 319 合計。
+
+## 問246 — 新検査: 封入空洞 (ENCLOSED_CAVITY) — 捨てていた cavity count を欠陥検出へ
+
+**ソクラテス問答**:
+- *`mesh.body_components()` は `(bodies, cavities)` を返すが、cavities はどう使われているか?*
+  → 「MULTIPLE_BODIES の説明文に埋め込まれるだけ。しかもそれは `bodies > 1` の
+  ときしか発火しない。**単一中実ボディ + 内部ボイド (bodies=1, cavities=1) は
+  まったく報告されない**。」
+- *単一ボディの内部に密閉空洞があると製造上どうなるか?*
+  → 「SLA/レジン: 外部に開口がなければ未硬化樹脂が永久に閉じ込められる
+  (部品は排水穴必須)。FDM: 除去できないサポート/空気が残る。製造致命的だが
+  現状は不可視。」
+- *では `cavities > 0` で警告すればよいか?* — **危険**。
+  → 「中空シェル (`sphere.shell()`) は意図的に bodies=1/cavities=1 になる。
+  既存の `multiple_bodies_warns_but_hollow_shell_does_not` テストと eval-set の
+  'hollow rounded enclosure' タスクはシェルが**良性**である契約に依存している。
+  素朴な `cavities > 0` 警告はこのシェルを誤検出する。」
+- *メッシュ単体で『密閉トラップ』と『排水穴のある意図的中空』を区別できるか?*
+  → 「できない。どちらも外殻+内殻の水密形状でトポロジ同一。**情報不足**。」
+- *では正直な落としどころは?*
+  → 「`Severity::Info` で『事実の通知』に留める。is_ok() を倒さず (Error でない)、
+  『N 個の封入空洞がある。選んだプロセスで排水穴を確認せよ』と伝える。
+  誤りと断定しないので偽陽性 (誤エラー) にならず、かつ従来ゼロだった情報を
+  厳密に増やす。」
+
+**実装**:
+- `verify/check.rs`: `KadoError::info()` コンストラクタを追加 (Severity::Info)。
+  `ALL_ISSUE_CODES` に `"ENCLOSED_CAVITY"` 追加。検査 4.6 を 4.5 (MULTIPLE_BODIES)
+  の隣に追加: 同じ `is_manifold` ブロック内で既算出の `cavities > 0` を見て
+  ENCLOSED_CAVITY を Info で push。ヒントに排水穴 (drain hole) の追加を案内。
+- `mcp/tools.rs`: validate description の issue codes 列挙と KADOSCENE_HELP カタログに
+  ENCLOSED_CAVITY を追加 (`issue_codes_are_fully_documented` 文書ガードが強制)。
+- `docs/SPEC.md`: §5.2 に ENCLOSED_CAVITY 行 (info) を追加、§10 テスト数 320 に更新。
+
+**テスト (1本)**:
+- `enclosed_cavity_flagged_as_info_not_error`:
+  中空シェル → ENCLOSED_CAVITY が出る・severity=Info・is_ok()=true・
+  ヒントに "drain" を含む。対照として中実球は ENCLOSED_CAVITY を出さない。
+
+## 反映サマリ v114
+| 問 | 実装 |
+|----|------|
+| 246 | 新検査「封入空洞」— ENCLOSED_CAVITY (Info) で捨てていた cavity count を SLA/FDM 排水欠陥検出へ |
+
+> 総括: v114 は「計算済みで破棄」狩り (問239/244) と「偽陽性の honest な扱い」(問245)
+> の合流点。body_components の cavity count は MULTIPLE_BODIES の文中に埋もれ、
+> 単一ボディの内部ボイドは完全に不可視だった。これを ENCLOSED_CAVITY として昇格しつつ、
+> 中空シェルと密閉トラップがメッシュ上区別不能という**情報の限界**を直視し、
+> Warning ではなく Info を選んだ。「検出できないものを誤検出しない」— DFM 検査の
+> 誠実性を保ちながら新しい欠陥軸 (プロセス依存の排水要件) を AI に提示する。
+> 新しい Severity::Info の実用初例でもある。
+> テスト数: 314 ユニット + 6 統合 = 320 合計。
