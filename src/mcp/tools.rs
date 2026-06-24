@@ -136,7 +136,7 @@ pub fn tool_list() -> Value {
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, volume_reliable, \
              surface_area, bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
-             center_of_mass:[x,y,z]|null, digest, \
+             center_of_mass:[x,y,z]|null, measured_min_wall:number|null, digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
@@ -734,9 +734,7 @@ fn tool_get_scene(session: &Session) -> ToolResult {
         "undo_available=false"
     };
     match &session.script {
-        Some(script) => ToolResult::text(format!(
-            "script={script}\n{bounds_info}\n{undo_info}"
-        )),
+        Some(script) => ToolResult::text(format!("script={script}\n{bounds_info}\n{undo_info}")),
         // 問83: デフォルトシーンは Rust コードで定義され、対応するスクリプト文字列がない。
         // AI がデフォルトシーンを再現したい場合のため、等価な DSL 文字列を案内する。
         None => ToolResult::text(format!(
@@ -853,8 +851,14 @@ mod tests {
         assert!(sandbox_write_path("").is_err());
         // 問139: 空文字列は拒否されるが、空白のみも拒否されなければならない。
         // trim() → empty() で検査するため "   " も Err になる。
-        assert!(sandbox_write_path("   ").is_err(), "whitespace-only path must be rejected");
-        assert!(sandbox_write_path("\t\n").is_err(), "whitespace-only path must be rejected");
+        assert!(
+            sandbox_write_path("   ").is_err(),
+            "whitespace-only path must be rejected"
+        );
+        assert!(
+            sandbox_write_path("\t\n").is_err(),
+            "whitespace-only path must be rejected"
+        );
     }
 
     #[test]
@@ -894,17 +898,35 @@ mod tests {
         let r0 = call_tool(&mut s, "get_scene", &json::obj([]));
         assert!(!r0.is_error, "get_scene must succeed on default scene");
         let t0 = r0.content[0].get("text").and_then(|v| v.as_str()).unwrap();
-        assert!(t0.contains("undo_available=false"), "default scene must report undo unavailable: {t0}");
-        assert!(t0.contains("sampling_bounds="), "must report sampling bounds: {t0}");
+        assert!(
+            t0.contains("undo_available=false"),
+            "default scene must report undo unavailable: {t0}"
+        );
+        assert!(
+            t0.contains("sampling_bounds="),
+            "must report sampling bounds: {t0}"
+        );
 
         // run_script でシーン更新 → script= に反映、undo_available=true。
         let run = json::obj([("script", json::s(r#"{"op":"sphere","r":1.5}"#))]);
-        assert!(!call_tool(&mut s, "run_script", &run).is_error, "run_script must succeed");
+        assert!(
+            !call_tool(&mut s, "run_script", &run).is_error,
+            "run_script must succeed"
+        );
         let r1 = call_tool(&mut s, "get_scene", &json::obj([]));
         let t1 = r1.content[0].get("text").and_then(|v| v.as_str()).unwrap();
-        assert!(t1.contains("sphere"), "get_scene must echo current script: {t1}");
-        assert!(t1.contains("1.5"), "get_scene must include script params: {t1}");
-        assert!(t1.contains("undo_available=true"), "after run_script undo must be available: {t1}");
+        assert!(
+            t1.contains("sphere"),
+            "get_scene must echo current script: {t1}"
+        );
+        assert!(
+            t1.contains("1.5"),
+            "get_scene must include script params: {t1}"
+        );
+        assert!(
+            t1.contains("undo_available=true"),
+            "after run_script undo must be available: {t1}"
+        );
     }
 
     #[test]
@@ -930,8 +952,14 @@ mod tests {
         let bad = json::obj([("view", json::s("diagonal"))]);
         let rb = call_tool(&mut s, "screenshot", &bad);
         assert!(rb.is_error, "unknown view must produce an explicit error");
-        let txt = rb.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(txt.contains("unknown view"), "error must name the problem: {txt}");
+        let txt = rb.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            txt.contains("unknown view"),
+            "error must name the problem: {txt}"
+        );
     }
 
     #[test]
@@ -967,7 +995,11 @@ mod tests {
         );
         // 1 要素も同様。
         let one = json::obj([("build_dir", json::arr([json::n(1.0)]))]);
-        assert_eq!(arg_build_dir(&one), Vec3::new(0.0, 0.0, 1.0), "1-element must fall back to +Z");
+        assert_eq!(
+            arg_build_dir(&one),
+            Vec3::new(0.0, 0.0, 1.0),
+            "1-element must fall back to +Z"
+        );
         // 完全な 3 要素はそのまま使われる (回帰: 正常経路を壊さない)。
         let three = json::obj([(
             "build_dir",
@@ -995,10 +1027,7 @@ mod tests {
         // 同一解像度の validate と同じ digest になる (ツール間整合)。
         let mut session = Session::new();
         let fname = "kado-test-export-q91.stl";
-        let args = json::obj([
-            ("path", json::s(fname)),
-            ("resolution", json::n(24.0)),
-        ]);
+        let args = json::obj([("path", json::s(fname)), ("resolution", json::n(24.0))]);
         let r = call_tool(&mut session, "export", &args);
         // テスト後の後始末 (成否に関わらず削除)。
         let _cleanup = std::fs::remove_file(fname);
@@ -1113,10 +1142,7 @@ mod tests {
         let r = call_tool(&mut s, "run_script", &args);
         // スクリプト自体は有効なので is_error=false。
         assert!(!r.is_error, "valid script must not set is_error");
-        let text = r.content[0]
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap();
+        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
         assert!(
             text.contains("EMPTY_MESH"),
             "run_script must surface EMPTY_MESH in response, got: {text}"
@@ -1188,7 +1214,12 @@ mod tests {
             }
             // 結果がエラーでも良いが、「unknown tool」だけは出てはならない
             // (= リストにあるのにディスパッチされていない)。
-            let text = r.content.first().and_then(|c| c.get("text")).and_then(|v| v.as_str()).unwrap_or("");
+            let text = r
+                .content
+                .first()
+                .and_then(|c| c.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             assert!(
                 !text.contains("unknown tool"),
                 "advertised tool '{name}' must be dispatched by call_tool, got: {text}"
@@ -1308,7 +1339,11 @@ mod tests {
         // 出力長は常に 4 の倍数 (パディングで埋まる)。
         for n in 0..20usize {
             let data = vec![0xABu8; n];
-            assert_eq!(base64_encode(&data).len() % 4, 0, "base64 length must be a multiple of 4 (n={n})");
+            assert_eq!(
+                base64_encode(&data).len() % 4,
+                0,
+                "base64 length must be a multiple of 4 (n={n})"
+            );
         }
     }
 
@@ -1320,19 +1355,31 @@ mod tests {
         let data: Vec<u8> = (0u8..=255).cycle().take(1000).collect();
         let b64 = base64_encode(&data);
         // 長さは 4 の倍数。
-        assert_eq!(b64.len() % 4, 0, "length must be multiple of 4 for 1000-byte input");
+        assert_eq!(
+            b64.len() % 4,
+            0,
+            "length must be multiple of 4 for 1000-byte input"
+        );
         // 期待長: ceil(1000/3)*4 = 334*4 = 1336。
         assert_eq!(b64.len(), 1336, "expected length 1336 for 1000 bytes");
         // すべての文字が Base64 アルファベット内 (A-Z, a-z, 0-9, +, /, =)。
         for &ch in b64.as_bytes() {
             assert!(
-                ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == b'+' || ch == b'/' || ch == b'=',
-                "invalid Base64 character: {}", ch as char
+                ch.is_ascii_alphabetic()
+                    || ch.is_ascii_digit()
+                    || ch == b'+'
+                    || ch == b'/'
+                    || ch == b'=',
+                "invalid Base64 character: {}",
+                ch as char
             );
         }
         // 末尾のパディング文字 '=' は出力末尾のみに現れる (中間に = はない)。
         let trimmed = b64.trim_end_matches('=');
-        assert!(!trimmed.contains('='), "padding '=' must only appear at end");
+        assert!(
+            !trimmed.contains('='),
+            "padding '=' must only appear at end"
+        );
         // 決定性: 同一入力で同一出力。
         assert_eq!(base64_encode(&data), b64, "base64 must be deterministic");
     }
@@ -1375,7 +1422,13 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default();
-        for bad in ["OPEN_MESH", "NON_MANIFOLD", "EMPTY_MESH", "NEGATIVE_VOLUME", "MULTIPLE_BODIES"] {
+        for bad in [
+            "OPEN_MESH",
+            "NON_MANIFOLD",
+            "EMPTY_MESH",
+            "NEGATIVE_VOLUME",
+            "MULTIPLE_BODIES",
+        ] {
             assert!(
                 !codes.contains(&bad),
                 "default scene must not have structural issue {bad}; got {codes:?}"
@@ -1394,7 +1447,10 @@ mod tests {
         let digest_via_fresh_session = || -> String {
             let mut s = Session::new();
             let run = json::obj([("script", json::s(script))]);
-            assert!(!call_tool(&mut s, "run_script", &run).is_error, "script must be valid");
+            assert!(
+                !call_tool(&mut s, "run_script", &run).is_error,
+                "script must be valid"
+            );
             let val = json::obj([("resolution", json::n(36.0))]);
             let r = call_tool(&mut s, "validate", &val);
             let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
@@ -1421,9 +1477,18 @@ mod tests {
         let read = |s: &mut Session| -> String {
             let r = call_tool(s, "validate", &val);
             let t = r.content[0].get("text").and_then(|v| v.as_str()).unwrap();
-            parse(t).unwrap().get("digest").and_then(|x| x.as_str()).unwrap().to_string()
+            parse(t)
+                .unwrap()
+                .get("digest")
+                .and_then(|x| x.as_str())
+                .unwrap()
+                .to_string()
         };
-        assert_eq!(read(&mut s), read(&mut s), "validate must be non-mutating/repeatable");
+        assert_eq!(
+            read(&mut s),
+            read(&mut s),
+            "validate must be non-mutating/repeatable"
+        );
     }
 
     #[test]
@@ -1452,7 +1517,11 @@ mod tests {
         let mut s = Session::new();
         let run = json::obj([("script", json::s("sphere(1.0)"))]);
         assert!(!call_tool(&mut s, "run_script", &run).is_error);
-        let q = json::obj([("x", json::n(2.0)), ("y", json::n(0.0)), ("z", json::n(0.0))]);
+        let q = json::obj([
+            ("x", json::n(2.0)),
+            ("y", json::n(0.0)),
+            ("z", json::n(0.0)),
+        ]);
         let r = call_tool(&mut s, "eval", &q);
         let d: f64 = r.content[0]
             .get("text")
@@ -1492,15 +1561,30 @@ mod tests {
         assert!(!r.is_error, "first undo must succeed");
         // デフォルトシーンのf(0)は sphere-cuboid smooth_union で負 (内部)。
         let d_restored = s.scene.eval(Vec3::ZERO);
-        assert!(d_restored < 0.0, "undo must restore a scene with negative SDF at origin");
+        assert!(
+            d_restored < 0.0,
+            "undo must restore a scene with negative SDF at origin"
+        );
         // undo 応答に "undo ok" が含まれる。
-        let text = r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(text.contains("undo ok"), "undo response must say 'undo ok': {text}");
+        let text = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains("undo ok"),
+            "undo response must say 'undo ok': {text}"
+        );
 
         // (4) 2回目の undo → エラー (single-level)。
         let r = call_tool(&mut s, "undo_script", &json::obj([]));
-        assert!(r.is_error, "second undo must return error (single-level undo exhausted)");
-        let err = r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            r.is_error,
+            "second undo must return error (single-level undo exhausted)"
+        );
+        let err = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         assert!(
             err.contains("nothing to undo"),
             "double undo error must say 'nothing to undo': {err}"
@@ -1528,11 +1612,17 @@ mod tests {
         assert!(
             r.is_error,
             "bad script must return is_error=true, got text: {}",
-            r.content[0].get("text").and_then(|v| v.as_str()).unwrap_or("(no text)")
+            r.content[0]
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no text)")
         );
         // scene は sphere のまま変わっていない。
         let d_sphere = s.scene.eval(Vec3::ZERO);
-        assert!((d_sphere - (-1.5)).abs() < 1e-9, "failed script must not change scene");
+        assert!(
+            (d_sphere - (-1.5)).abs() < 1e-9,
+            "failed script must not change scene"
+        );
 
         // (4) undo → default_scene に戻る (prev_scene は sphere 前のものが残っている)。
         let r = call_tool(&mut s, "undo_script", &json::obj([]));
@@ -1554,7 +1644,11 @@ mod tests {
         let max_req = json::obj([("samples", json::n(4.0))]);
 
         // デフォルト: samples=2
-        assert_eq!(arg_samples(&no_req, 512, 512), 2, "default samples must be 2");
+        assert_eq!(
+            arg_samples(&no_req, 512, 512),
+            2,
+            "default samples must be 2"
+        );
 
         // 代表的な大寸法での不変条件確認。
         for (w, h) in [

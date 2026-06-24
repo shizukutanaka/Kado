@@ -88,8 +88,7 @@ impl KadoError {
 
 // ── 検証レポート ──────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Report {
     /// 符号付き体積 (mm³ または 任意単位)。
     pub volume: f64,
@@ -109,6 +108,13 @@ pub struct Report {
     /// UNSTABLE 判定の根拠数値として公開し、AI/利用者が「どこに重心があるか」を
     /// 直接確認できるようにする。発散定理ベースの計算 (center_of_mass と同系統)。
     pub center_of_mass: Option<Vec3>,
+    /// 測定された最小肉厚 (mm, 問247)。2V/SA 平均と内向きレイ探針 (SDF があるとき)
+    /// の小さい方。**閾値 (min_wall_mm 引数) と独立に常に測定値を公開する**。
+    /// THIN_WALL は閾値を下回るときしか出ないため、合格時の「あとどれだけ薄くできるか」
+    /// (マージン) は従来取得できなかった。AI の肉厚最適化ループ用 (問244 surface_area
+    /// と同じ「計算済みデータの公開」)。空・退化・bbox 無しメッシュは None。
+    /// 注意: これは安価な近似で、非検出が薄肉皆無を保証しない (min_wall_probe と同様)。
+    pub measured_min_wall: Option<f64>,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -142,16 +148,24 @@ impl Report {
         // 寸法を明示する (問62: 単位はミリメートル, 1 unit = 1 mm)。
         let d = hi - lo;
         // 体積は閉じたメッシュでのみ有効 (問65)。
-        let vol_note = if self.volume_reliable() { "" } else { "(unreliable: not closed)" };
+        let vol_note = if self.volume_reliable() {
+            ""
+        } else {
+            "(unreliable: not closed)"
+        };
         // 重心は存在するときのみ付加する (問239)。
         let com_str = self.center_of_mass.map_or(String::new(), |c| {
             format!(" com=[{:.3},{:.3},{:.3}]", c.x, c.y, c.z)
         });
+        // 測定肉厚は存在するときのみ付加する (問247)。
+        let wall_str = self
+            .measured_min_wall
+            .map_or(String::new(), |w| format!(" min_wall={w:.3}"));
         format!(
             "triangles={} manifold={} volume={:.3}{vol_note} area={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
-             digest={:016x} errors={errors} warnings={warnings}{com_str}",
+             digest={:016x} errors={errors} warnings={warnings}{com_str}{wall_str}",
             self.triangle_count,
             self.is_manifold,
             self.volume,
@@ -182,11 +196,14 @@ impl Report {
                 json::obj([
                     // 問82: Debug 形式 "Error"/"Warning" (PascalCase) の代わりに
                     // 小文字 "error"/"warning" を使う。AI が文字列比較しやすい標準形式。
-                    ("severity", json::s(match e.severity {
-                        Severity::Error => "error",
-                        Severity::Warning => "warning",
-                        Severity::Info => "info",
-                    })),
+                    (
+                        "severity",
+                        json::s(match e.severity {
+                            Severity::Error => "error",
+                            Severity::Warning => "warning",
+                            Severity::Info => "info",
+                        }),
+                    ),
                     ("code", json::s(e.code)),
                     ("cause", json::s(e.cause.clone())),
                     (
@@ -204,9 +221,9 @@ impl Report {
             json::NULL
         };
         // 重心: Some なら [x,y,z] 配列、None なら null (問239)。
-        let com_json = self
-            .center_of_mass
-            .map_or(json::NULL, vec3);
+        let com_json = self.center_of_mass.map_or(json::NULL, vec3);
+        // 測定最小肉厚: Some なら数値、None なら null (問247)。
+        let wall_json = self.measured_min_wall.map_or(json::NULL, json::n);
         json::obj([
             ("ok", json::b(self.is_ok())),
             ("triangles", json::n(self.triangle_count as f64)),
@@ -217,6 +234,7 @@ impl Report {
             ("bbox", bbox),
             ("dims_mm", vec3(d)),
             ("center_of_mass", com_json),
+            ("measured_min_wall", wall_json),
             ("digest", json::s(format!("{:016x}", self.digest))),
             ("issues", Value::Array(issues)),
         ])
@@ -231,7 +249,13 @@ impl Report {
 /// `max_overhang_deg` は最大オーバーハング角度 (度; 0以下でスキップ)。
 /// ビルド方向は +Z (= デフォルト: 重力と反対方向)。
 pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report {
-    validate_with_field(mesh, None, min_wall_mm, max_overhang_deg, Vec3::new(0.0, 0.0, 1.0))
+    validate_with_field(
+        mesh,
+        None,
+        min_wall_mm,
+        max_overhang_deg,
+        Vec3::new(0.0, 0.0, 1.0),
+    )
 }
 
 /// SDF 場を併用して検証する。`sdf` を渡すと肉厚チェックに**内向きレイ探針**
@@ -302,7 +326,8 @@ pub fn validate_with_field(
             triangle_count: tri_count,
             is_manifold,
             digest,
-            center_of_mass: None, // 空メッシュに COM なし。
+            center_of_mass: None,    // 空メッシュに COM なし。
+            measured_min_wall: None, // 空メッシュに肉厚なし。
             issues,
         };
     }
@@ -367,40 +392,54 @@ pub fn validate_with_field(
         }
     }
 
-    // 5. 肉厚チェック。2V/SA 平均 (問23) と、SDF があれば内向きレイ探針 (問58) の
-    //    小さい方を採る。探針は局所的な薄肉を捉え、平均が太い本体に支配されて
-    //    リブの薄さを見逃す弱点を補う。なお「閾値以上 = 薄肉なし」は依然非保証。
+    // 肉厚測定 (問23/58/247): 2V/SA 平均と内向きレイ探針の小さい方。閾値と独立に
+    //   常に1度だけ測定し (探針は多数のレイマーチで高価なため二重実行しない)、
+    //   measured_min_wall として公開すると同時に THIN_WALL 判定にも再利用する。
+    //   空メッシュは EMPTY_MESH で早期 return 済みなので、ここでは bbox=Some⇔非空。
+    let wall = bbox.and_then(|(lo, hi)| {
+        if tri_count == 0 {
+            return None;
+        }
+        let mean = mean_wall_thickness(mesh, lo, hi);
+        let probe = sdf.and_then(|s| min_wall_probe(s, mesh, lo, hi));
+        let thin = probe.map(|(t, _)| t).map_or(mean, |p| p.min(mean));
+        Some((thin, mean, probe))
+    });
+    let measured_min_wall = wall.map(|(thin, _, _)| thin);
+
+    // 5. 肉厚チェック。測定値 (上で算出) が閾値を下回れば THIN_WALL。探針は局所的な
+    //    薄肉を捉え、平均が太い本体に支配されてリブの薄さを見逃す弱点を補う。
+    //    なお「閾値以上 = 薄肉なし」は依然非保証。
     if min_wall_mm > 0.0 {
         if let Some((lo, hi)) = bbox {
-            let mean = mean_wall_thickness(mesh, lo, hi);
-            let probe = sdf.and_then(|s| min_wall_probe(s, mesh, lo, hi));
-            let probe_t = probe.map(|(t, _)| t);
-            let probe_loc = probe.map(|(_, loc)| loc);
-            let thin = probe_t.map_or(mean, |p| p.min(mean));
-            let method = if probe.is_some() {
-                "min of 2V/SA mean and inward-ray probe"
-            } else {
-                "2V/SA average"
-            };
-            if thin < min_wall_mm {
-                // 探針が平均より薄い値を検出した場合のみ位置ヒントを付与 (問242)。
-                // 探針位置は「直す必要がある薄肉の表面点」を示す。
-                let thin_loc = probe_t.and_then(|p| if p <= mean { probe_loc } else { None });
-                let mut issue = KadoError::error(
-                    "THIN_WALL",
-                    format!(
-                        "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
+            if let Some((thin, mean, probe)) = wall {
+                let probe_t = probe.map(|(t, _)| t);
+                let probe_loc = probe.map(|(_, loc)| loc);
+                let method = if probe.is_some() {
+                    "min of 2V/SA mean and inward-ray probe"
+                } else {
+                    "2V/SA average"
+                };
+                if thin < min_wall_mm {
+                    // 探針が平均より薄い値を検出した場合のみ位置ヒントを付与 (問242)。
+                    // 探針位置は「直す必要がある薄肉の表面点」を示す。
+                    let thin_loc = probe_t.and_then(|p| if p <= mean { probe_loc } else { None });
+                    let mut issue = KadoError::error(
+                        "THIN_WALL",
+                        format!(
+                            "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
                          ({method}; a pass does not guarantee no local thin features)"
-                    ),
-                    &[
-                        "Increase wall thickness via offset() or larger primitives",
-                        "Reduce min_wall_mm threshold if intentional",
-                    ],
-                );
-                if let Some(loc) = thin_loc {
-                    issue = issue.with_location(loc);
+                        ),
+                        &[
+                            "Increase wall thickness via offset() or larger primitives",
+                            "Reduce min_wall_mm threshold if intentional",
+                        ],
+                    );
+                    if let Some(loc) = thin_loc {
+                        issue = issue.with_location(loc);
+                    }
+                    issues.push(issue);
                 }
-                issues.push(issue);
             }
 
             // 5.5 スケール健全性 (問62): Kado 座標は mm (1 unit = 1 mm)。最大寸法が
@@ -629,6 +668,7 @@ pub fn validate_with_field(
         is_manifold,
         digest,
         center_of_mass,
+        measured_min_wall,
         issues,
     }
 }
@@ -736,10 +776,22 @@ mod tests {
         assert!(r.to_json().to_string().contains("\"volume_reliable\":true"));
 
         // z=0 でクリップして開境界を作る。
-        let open = polygonize(&s, Vec3::new(-1.5, -1.5, -1.5), Vec3::new(1.5, 1.5, 0.0), 24);
+        let open = polygonize(
+            &s,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
         let r = validate(&open, 0.0, 0.0);
-        assert!(!r.volume_reliable(), "open mesh volume must be flagged unreliable");
-        assert!(r.summary().contains("unreliable"), "summary must warn: {}", r.summary());
+        assert!(
+            !r.volume_reliable(),
+            "open mesh volume must be flagged unreliable"
+        );
+        assert!(
+            r.summary().contains("unreliable"),
+            "summary must warn: {}",
+            r.summary()
+        );
     }
 
     #[test]
@@ -779,7 +831,10 @@ mod tests {
         // 問62: 要約に dims_mm が含まれ、実寸 (= bbox の幅) を反映する。
         let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
         let s = validate(&mesh, 0.0, 0.0).summary();
-        assert!(s.contains("dims_mm="), "summary must expose physical dims: {s}");
+        assert!(
+            s.contains("dims_mm="),
+            "summary must expose physical dims: {s}"
+        );
         // 半径1の球 → 約 2x2x2 mm。
         assert!(s.contains("dims_mm=[2."), "diameter ~2mm expected: {s}");
     }
@@ -797,7 +852,9 @@ mod tests {
         let parts: Vec<&str> = body.split('x').collect();
         assert_eq!(parts.len(), 3, "dims_mm must have 3 components: {body}");
         for part in parts {
-            let dot = part.find('.').unwrap_or_else(|| panic!("each dim must have a decimal point: {part}"));
+            let dot = part
+                .find('.')
+                .unwrap_or_else(|| panic!("each dim must have a decimal point: {part}"));
             let decimals = &part[dot + 1..];
             assert_eq!(
                 decimals.len(),
@@ -870,11 +927,21 @@ mod tests {
             .find(|e| e.code == "ENCLOSED_CAVITY")
             .expect("sealed shell cavity must emit ENCLOSED_CAVITY");
         // Info であること: is_ok() を倒さない (Error でない)。
-        assert_eq!(cavity.severity, Severity::Info, "ENCLOSED_CAVITY must be Info, not Error/Warning");
-        assert!(r.is_ok(), "an Info-level cavity notice must not make the report fail (is_ok stays true)");
+        assert_eq!(
+            cavity.severity,
+            Severity::Info,
+            "ENCLOSED_CAVITY must be Info, not Error/Warning"
+        );
+        assert!(
+            r.is_ok(),
+            "an Info-level cavity notice must not make the report fail (is_ok stays true)"
+        );
         // ヒントに drain (排水穴) が含まれ AI に修正方向を示す。
         assert!(
-            cavity.fix_hints.iter().any(|h| h.to_lowercase().contains("drain")),
+            cavity
+                .fix_hints
+                .iter()
+                .any(|h| h.to_lowercase().contains("drain")),
             "ENCLOSED_CAVITY hint must mention a drain hole, got {:?}",
             cavity.fix_hints
         );
@@ -909,7 +976,10 @@ mod tests {
         let (lo, hi) = sdf.sampling_box();
         let mesh = polygonize(&sdf, lo, hi, 40);
         let (t, _loc) = min_wall_probe(&sdf, &mesh, lo, hi).unwrap();
-        assert!(t > 1.0, "solid sphere min wall should be large (~2.0), got {t}");
+        assert!(
+            t > 1.0,
+            "solid sphere min wall should be large (~2.0), got {t}"
+        );
     }
 
     #[test]
@@ -1009,7 +1079,7 @@ mod tests {
             let deg: f64 = e
                 .cause
                 .split_whitespace()
-                .nth(2)  // "overhang angle XX.X° ..."
+                .nth(2) // "overhang angle XX.X° ..."
                 .map(|s| s.trim_end_matches('°'))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(999.0);
@@ -1091,8 +1161,14 @@ mod tests {
         for t in &mut mesh.triangles {
             t.swap(1, 2); // 巻き順反転 → 法線反転 → 符号付き体積が負に。
         }
-        assert!(mesh.is_edge_manifold(), "reversing winding keeps the mesh closed");
-        assert!(mesh.signed_volume() < 0.0, "inverted winding must give negative volume");
+        assert!(
+            mesh.is_edge_manifold(),
+            "reversing winding keeps the mesh closed"
+        );
+        assert!(
+            mesh.signed_volume() < 0.0,
+            "inverted winding must give negative volume"
+        );
         let r = validate(&mesh, 0.0, 0.0);
         assert!(
             r.issues.iter().any(|e| e.code == "NEGATIVE_VOLUME"),
@@ -1123,12 +1199,16 @@ mod tests {
         let r_x = validate_with_field(&mesh, None, 0.0, 45.0, Vec3::new(1.0, 0.0, 0.0));
 
         // 両ビルドとも OVERHANG を検出する (球は全方向に南半球を持つ)。
-        let ov_z = r_z.issues.iter().find(|e| e.code == "OVERHANG").expect(
-            "+Z build must detect sphere underside overhang",
-        );
-        let ov_x = r_x.issues.iter().find(|e| e.code == "OVERHANG").expect(
-            "+X build must detect sphere -X-facing overhang",
-        );
+        let ov_z = r_z
+            .issues
+            .iter()
+            .find(|e| e.code == "OVERHANG")
+            .expect("+Z build must detect sphere underside overhang");
+        let ov_x = r_x
+            .issues
+            .iter()
+            .find(|e| e.code == "OVERHANG")
+            .expect("+X build must detect sphere -X-facing overhang");
 
         // 問68 の核心: エラーメッセージが build_dir ベクトルを含む。
         assert!(
@@ -1199,7 +1279,8 @@ mod tests {
         let dome = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
         let (lo, hi) = dome.sampling_box();
         let dome_mesh = polygonize(&dome, lo, hi, 32);
-        let r_dome = validate_with_field(&dome_mesh, Some(&dome), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let r_dome =
+            validate_with_field(&dome_mesh, Some(&dome), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
         assert!(
             !r_dome.issues.iter().any(|e| e.code == "UNSTABLE"),
             "centered flat-based dome must be stable: {:?}",
@@ -1214,7 +1295,13 @@ mod tests {
         // z=最下面で平坦化し脚を接地させる。
         let (tlo, thi) = tower.sampling_box();
         let tower_mesh = polygonize(&tower, tlo, thi, 48);
-        let r_tower = validate_with_field(&tower_mesh, Some(&tower), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let r_tower = validate_with_field(
+            &tower_mesh,
+            Some(&tower),
+            0.0,
+            0.0,
+            Vec3::new(0.0, 0.0, 1.0),
+        );
         assert!(
             r_tower.issues.iter().any(|e| e.code == "UNSTABLE"),
             "a part whose mass hangs far to one side of its base must be UNSTABLE: {:?}",
@@ -1239,39 +1326,54 @@ mod tests {
         type MeshFactory = Box<dyn Fn() -> crate::extract::Mesh>;
         let shapes_params: &[(&str, MeshFactory)] = &[
             // EMPTY_MESH: 非重複 smooth_intersection
-            ("empty", Box::new(|| {
-                let a = Sdf::sphere(1.0);
-                let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
-                let (lo, hi) = a.clone().smooth_intersection(b.clone(), 0.3).sampling_box();
-                crate::extract::polygonize(&a.smooth_intersection(b, 0.3), lo, hi, 8)
-            })),
+            (
+                "empty",
+                Box::new(|| {
+                    let a = Sdf::sphere(1.0);
+                    let b = Sdf::sphere(1.0).translate(Vec3::new(10.0, 0.0, 0.0));
+                    let (lo, hi) = a.clone().smooth_intersection(b.clone(), 0.3).sampling_box();
+                    crate::extract::polygonize(&a.smooth_intersection(b, 0.3), lo, hi, 8)
+                }),
+            ),
             // OPEN_MESH: クリップ
-            ("open", Box::new(|| {
-                crate::extract::polygonize(
-                    &Sdf::sphere(1.0),
-                    Vec3::new(-1.5, -1.5, -1.5),
-                    Vec3::new(1.5, 1.5, 0.0),
-                    24,
-                )
-            })),
+            (
+                "open",
+                Box::new(|| {
+                    crate::extract::polygonize(
+                        &Sdf::sphere(1.0),
+                        Vec3::new(-1.5, -1.5, -1.5),
+                        Vec3::new(1.5, 1.5, 0.0),
+                        24,
+                    )
+                }),
+            ),
             // THIN_WALL + 通常: 穴あき球
-            ("thinwall", Box::new(|| {
-                let m = Sdf::sphere(1.0).difference(Sdf::cylinder(0.9, 2.0));
-                let (lo, hi) = m.sampling_box();
-                crate::extract::polygonize(&m, lo, hi, 40)
-            })),
+            (
+                "thinwall",
+                Box::new(|| {
+                    let m = Sdf::sphere(1.0).difference(Sdf::cylinder(0.9, 2.0));
+                    let (lo, hi) = m.sampling_box();
+                    crate::extract::polygonize(&m, lo, hi, 40)
+                }),
+            ),
             // SUSPICIOUS_SCALE: 極小形状
-            ("tiny", Box::new(|| {
-                let tiny = Sdf::sphere(0.1);
-                let (lo, hi) = tiny.sampling_box();
-                crate::extract::polygonize(&tiny, lo, hi, 16)
-            })),
+            (
+                "tiny",
+                Box::new(|| {
+                    let tiny = Sdf::sphere(0.1);
+                    let (lo, hi) = tiny.sampling_box();
+                    crate::extract::polygonize(&tiny, lo, hi, 16)
+                }),
+            ),
             // 正常: 球
-            ("ok", Box::new(|| {
-                let s = Sdf::sphere(1.0);
-                let (lo, hi) = s.sampling_box();
-                crate::extract::polygonize(&s, lo, hi, 24)
-            })),
+            (
+                "ok",
+                Box::new(|| {
+                    let s = Sdf::sphere(1.0);
+                    let (lo, hi) = s.sampling_box();
+                    crate::extract::polygonize(&s, lo, hi, 24)
+                }),
+            ),
         ];
 
         const VALID_VALUES: &[&str] = &["error", "warning", "info"];
@@ -1338,8 +1440,14 @@ mod tests {
         let r_long = validate_with_field(&mesh, None, 0.5, 45.0, Vec3::new(0.0, 0.0, 1.0));
 
         // 基本指標: 全て同一でなければならない。
-        assert_eq!(r_short.triangle_count, r_long.triangle_count, "triangle_count must match");
-        assert_eq!(r_short.is_manifold, r_long.is_manifold, "is_manifold must match");
+        assert_eq!(
+            r_short.triangle_count, r_long.triangle_count,
+            "triangle_count must match"
+        );
+        assert_eq!(
+            r_short.is_manifold, r_long.is_manifold,
+            "is_manifold must match"
+        );
         assert_eq!(r_short.digest, r_long.digest, "digest must match");
         // issues の数と code も同一。
         assert_eq!(
@@ -1396,18 +1504,27 @@ mod tests {
             is_manifold: true,
             digest: 42,
             center_of_mass: None,
+            measured_min_wall: None,
             issues: vec![],
         };
         // 正常系: 両条件 true → reliable。
         assert!(base.volume_reliable(), "both conditions true → reliable");
         // is_manifold だけ true, triangle_count=0 → unreliable (triangle_count > 0 ガード)。
         assert!(
-            !Report { triangle_count: 0, ..base.clone() }.volume_reliable(),
+            !Report {
+                triangle_count: 0,
+                ..base.clone()
+            }
+            .volume_reliable(),
             "triangle_count=0 with is_manifold=true must be unreliable"
         );
         // triangle_count > 0 だけ true, is_manifold=false → unreliable。
         assert!(
-            !Report { is_manifold: false, ..base }.volume_reliable(),
+            !Report {
+                is_manifold: false,
+                ..base
+            }
+            .volume_reliable(),
             "non-manifold with triangle_count>0 must be unreliable"
         );
     }
@@ -1429,14 +1546,23 @@ mod tests {
         // sdf(p+h) - sdf(p-h) を各軸で計算: 約 2h * ∂d/∂x_i。
         // x方向: (|1+h|-1) - (|1-h|-1) = h - (-h) = 2h ≈ 2e-4 (for exact sphere).
         // 長さ ≈ 2e-4 (x成分のみ非ゼロ)。
-        assert!(len > 1e-6, "gradient at sphere surface must be nonzero: len={len}");
+        assert!(
+            len > 1e-6,
+            "gradient at sphere surface must be nonzero: len={len}"
+        );
         assert!(len.is_finite(), "gradient must be finite: len={len}");
         // x 方向が主成分 (球面外向き法線 = +x 方向)。
         let gx_frac = g.x.abs() / len;
-        assert!(gx_frac > 0.99, "gradient at (1,0,0) must point mostly in x-direction: gx_frac={gx_frac}");
+        assert!(
+            gx_frac > 0.99,
+            "gradient at (1,0,0) must point mostly in x-direction: gx_frac={gx_frac}"
+        );
         // 内部点 (0,0,0) でも有限。
         let g_center = sdf_gradient(&sphere, Vec3::ZERO);
-        assert!(g_center.length().is_finite(), "gradient at center must be finite");
+        assert!(
+            g_center.length().is_finite(),
+            "gradient at center must be finite"
+        );
     }
 
     #[test]
@@ -1453,7 +1579,11 @@ mod tests {
             m
         };
         let r1 = min_wall_probe(&sphere, &non_empty, Vec3::ZERO, Vec3::ZERO);
-        assert!(r1.is_none(), "zero-extent bbox must return None, got {:?}", r1);
+        assert!(
+            r1.is_none(),
+            "zero-extent bbox must return None, got {:?}",
+            r1
+        );
 
         // ケース2: v == 0 (頂点なし) → None。
         let empty_mesh = Mesh::default();
@@ -1472,26 +1602,43 @@ mod tests {
         let mesh = polygonize(&sphere, lo, hi, 32);
         let r = validate_with_field(&mesh, Some(&sphere), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
 
-        let ov = r.issues.iter().find(|e| e.code == "OVERHANG")
+        let ov = r
+            .issues
+            .iter()
+            .find(|e| e.code == "OVERHANG")
             .expect("sphere must have OVERHANG issue");
-        let loc = ov.location.expect("OVERHANG issue must carry a spatial location");
+        let loc = ov
+            .location
+            .expect("OVERHANG issue must carry a spatial location");
         // 最悪オーバーハング (z = -1.0 付近) は南半球に位置する。
-        assert!(loc.z < -0.5, "OVERHANG location must be in lower hemisphere, got {loc:?}");
+        assert!(
+            loc.z < -0.5,
+            "OVERHANG location must be in lower hemisphere, got {loc:?}"
+        );
         // 球は原点中心なので lateral は小さいはず。
-        assert!(loc.x.abs() < 1.5 && loc.y.abs() < 1.5, "location within sphere bounds: {loc:?}");
+        assert!(
+            loc.x.abs() < 1.5 && loc.y.abs() < 1.5,
+            "location within sphere bounds: {loc:?}"
+        );
 
         // JSON にも location が含まれる。
         let json_str = r.to_json().to_string();
         let doc = parse(&json_str).unwrap();
         let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
-        let ov_json = issues.iter().find(|e| {
-            e.get("code").and_then(|c| c.as_str()) == Some("OVERHANG")
-        }).expect("OVERHANG must be in JSON issues");
-        let loc_arr = ov_json.get("location").and_then(|l| l.as_array())
+        let ov_json = issues
+            .iter()
+            .find(|e| e.get("code").and_then(|c| c.as_str()) == Some("OVERHANG"))
+            .expect("OVERHANG must be in JSON issues");
+        let loc_arr = ov_json
+            .get("location")
+            .and_then(|l| l.as_array())
             .expect("OVERHANG JSON issue must have location array");
         assert_eq!(loc_arr.len(), 3, "location must be [x,y,z]");
         let lz = loc_arr[2].as_f64().unwrap();
-        assert!(lz < -0.5, "JSON location z must be in lower hemisphere, got {lz}");
+        assert!(
+            lz < -0.5,
+            "JSON location z must be in lower hemisphere, got {lz}"
+        );
     }
 
     #[test]
@@ -1505,9 +1652,14 @@ mod tests {
         let mesh = polygonize(&sdf, lo, hi, 48);
 
         let r = validate_with_field(&mesh, Some(&sdf), 0.2, 0.0, Vec3::new(0.0, 0.0, 1.0));
-        let tw = r.issues.iter().find(|e| e.code == "THIN_WALL")
+        let tw = r
+            .issues
+            .iter()
+            .find(|e| e.code == "THIN_WALL")
             .expect("body+fin must trigger THIN_WALL with threshold 0.2");
-        let loc = tw.location.expect("THIN_WALL (probe-detected) must carry a location");
+        let loc = tw
+            .location
+            .expect("THIN_WALL (probe-detected) must carry a location");
         // フィンの y 半幅は 0.05 → |y| < 0.15 の領域がフィン。
         assert!(
             loc.y.abs() < 0.15,
@@ -1526,14 +1678,25 @@ mod tests {
         let mesh = polygonize(&tower, lo, hi, 48);
         let r = validate_with_field(&mesh, Some(&tower), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
 
-        let us = r.issues.iter().find(|e| e.code == "UNSTABLE")
+        let us = r
+            .issues
+            .iter()
+            .find(|e| e.code == "UNSTABLE")
             .expect("top-heavy tower must be UNSTABLE");
-        let loc = us.location.expect("UNSTABLE issue must carry COM as location");
+        let loc = us
+            .location
+            .expect("UNSTABLE issue must carry COM as location");
         // 重心は頭 (大きな球) 側に引き寄せられるので x > 0.5。
-        assert!(loc.x > 0.5, "UNSTABLE location (COM) must be toward the heavy head, got {loc:?}");
+        assert!(
+            loc.x > 0.5,
+            "UNSTABLE location (COM) must be toward the heavy head, got {loc:?}"
+        );
         // Report.center_of_mass と一致する (同一 COM)。
         let com = r.center_of_mass.expect("report must have center_of_mass");
-        assert!((loc.x - com.x).abs() < 1e-9, "issue.location must equal report.center_of_mass");
+        assert!(
+            (loc.x - com.x).abs() < 1e-9,
+            "issue.location must equal report.center_of_mass"
+        );
     }
 
     #[test]
@@ -1542,14 +1705,21 @@ mod tests {
         use crate::mcp::json::{parse, Value};
         // OPEN_MESH を誘発 (クリップ)。
         let s = Sdf::sphere(1.0);
-        let mesh = polygonize(&s, Vec3::new(-1.5,-1.5,-1.5), Vec3::new(1.5,1.5,0.0), 24);
+        let mesh = polygonize(
+            &s,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
         let r = validate(&mesh, 0.0, 0.0);
         let doc = parse(&r.to_json().to_string()).unwrap();
         let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
         // 全 issue に location キーが存在し、OPEN_MESH は null。
         for issue in issues {
             let code = issue.get("code").and_then(|c| c.as_str()).unwrap_or("");
-            let loc = issue.get("location").expect("every issue JSON must have a location key");
+            let loc = issue
+                .get("location")
+                .expect("every issue JSON must have a location key");
             if code == "OPEN_MESH" {
                 assert_eq!(*loc, Value::Null, "OPEN_MESH location must be null");
             }
@@ -1576,8 +1746,20 @@ mod tests {
         let doc = parse(&v.to_string()).expect("report JSON must parse");
 
         // レポートレベル全フィールド。
-        for field in ["ok", "triangles", "manifold", "volume", "volume_reliable",
-                      "surface_area", "bbox", "dims_mm", "center_of_mass", "digest", "issues"] {
+        for field in [
+            "ok",
+            "triangles",
+            "manifold",
+            "volume",
+            "volume_reliable",
+            "surface_area",
+            "bbox",
+            "dims_mm",
+            "center_of_mass",
+            "measured_min_wall",
+            "digest",
+            "issues",
+        ] {
             assert!(
                 doc.get(field).is_some(),
                 "report JSON must have field '{field}'"
@@ -1586,7 +1768,10 @@ mod tests {
 
         // issues 配列の各要素が全フィールドを持つ。
         let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
-        assert!(!issues.is_empty(), "sphere with overhang check must have at least one issue");
+        assert!(
+            !issues.is_empty(),
+            "sphere with overhang check must have at least one issue"
+        );
         for issue in issues {
             for field in ["severity", "code", "cause", "hints", "location"] {
                 assert!(
@@ -1613,24 +1798,42 @@ mod tests {
         let report = validate(&mesh, 0.0, 0.0);
 
         // center_of_mass フィールドが Some であること。
-        let com = report.center_of_mass.expect("solid sphere must have a center of mass");
-        assert!(com.length() < 0.05, "centered sphere COM must be near origin, got {com:?}");
+        let com = report
+            .center_of_mass
+            .expect("solid sphere must have a center of mass");
+        assert!(
+            com.length() < 0.05,
+            "centered sphere COM must be near origin, got {com:?}"
+        );
 
         // to_json に "center_of_mass" キーが存在し、3要素配列。
         let v = report.to_json();
         let json_str = v.to_string();
         let reparsed = parse(&json_str).expect("report JSON must round-trip");
         assert_eq!(reparsed, v, "to_json must round-trip");
-        let com_arr = v.get("center_of_mass")
+        let com_arr = v
+            .get("center_of_mass")
             .and_then(|x| x.as_array())
             .expect("center_of_mass must be a JSON array for a solid mesh");
-        assert_eq!(com_arr.len(), 3, "center_of_mass array must have 3 components");
-        let cx = com_arr[0].as_f64().expect("center_of_mass[0] must be a number");
-        assert!(cx.abs() < 0.05, "COM.x near 0 for centered sphere, got {cx}");
+        assert_eq!(
+            com_arr.len(),
+            3,
+            "center_of_mass array must have 3 components"
+        );
+        let cx = com_arr[0]
+            .as_f64()
+            .expect("center_of_mass[0] must be a number");
+        assert!(
+            cx.abs() < 0.05,
+            "COM.x near 0 for centered sphere, got {cx}"
+        );
 
         // summary に "com=" が含まれる。
         let s = report.summary();
-        assert!(s.contains("com="), "summary must expose center_of_mass: {s}");
+        assert!(
+            s.contains("com="),
+            "summary must expose center_of_mass: {s}"
+        );
 
         // 異常系: 空メッシュの COM は null。
         use crate::extract::Mesh;
@@ -1641,7 +1844,9 @@ mod tests {
             "empty mesh must have center_of_mass = None"
         );
         let v_empty = r_empty.to_json();
-        let com_empty = v_empty.get("center_of_mass").expect("key must exist even if null");
+        let com_empty = v_empty
+            .get("center_of_mass")
+            .expect("key must exist even if null");
         assert!(
             *com_empty == crate::mcp::json::Value::Null,
             "empty mesh center_of_mass in JSON must be null"
@@ -1674,25 +1879,98 @@ mod tests {
             report.surface_area
         );
         // Report.surface_area は Mesh::surface_area と一致 (単一の真実源)。
-        assert_eq!(report.surface_area, mesh.surface_area(), "report area must equal mesh area");
+        assert_eq!(
+            report.surface_area,
+            mesh.surface_area(),
+            "report area must equal mesh area"
+        );
 
         // to_json に "surface_area" キーが存在し往復可能。
         let v = report.to_json();
         let reparsed = parse(&v.to_string()).expect("report JSON must round-trip");
         assert_eq!(reparsed, v, "to_json must round-trip");
-        let area = v.get("surface_area").and_then(|x| x.as_f64()).expect("surface_area must be a number");
-        assert_eq!(area, report.surface_area, "JSON surface_area must equal report value");
+        let area = v
+            .get("surface_area")
+            .and_then(|x| x.as_f64())
+            .expect("surface_area must be a number");
+        assert_eq!(
+            area, report.surface_area,
+            "JSON surface_area must equal report value"
+        );
 
         // summary に "area=" が含まれる。
-        assert!(report.summary().contains("area="), "summary must expose area: {}", report.summary());
+        assert!(
+            report.summary().contains("area="),
+            "summary must expose area: {}",
+            report.summary()
+        );
 
         // 開境界 (クリップ) でも表面積は意味を持つ (体積と異なり常に有効)。
-        let clipped = polygonize(&sphere, Vec3::new(-1.5,-1.5,-1.5), Vec3::new(1.5,1.5,0.0), 32);
+        let clipped = polygonize(
+            &sphere,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            32,
+        );
         let r_clip = validate(&clipped, 0.0, 0.0);
         assert!(
             r_clip.surface_area > 0.0,
             "open mesh must still report a positive surface area, got {}",
             r_clip.surface_area
+        );
+    }
+
+    #[test]
+    fn report_exposes_measured_min_wall_regardless_of_threshold() {
+        // 問247: 探針は実測の最小肉厚を計算するが、従来は THIN_WALL が閾値を下回る
+        // ときの説明文中にしか現れず、合格時には捨てられていた。measured_min_wall を
+        // 閾値と独立に常に公開し、AI が「あとどれだけ薄くできるか」を読めるようにする。
+        use crate::mcp::json::{parse, Value};
+
+        // 厚さ 0.2 のシェル。min_wall_mm=0 (チェックなし) でも実測値が出ること。
+        let shell = Sdf::sphere(1.0).shell(0.2);
+        let (lo, hi) = shell.sampling_box();
+        let mesh = polygonize(&shell, lo, hi, 48);
+        let report = validate_with_field(&mesh, Some(&shell), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+
+        // 閾値 0 でも measured_min_wall は Some で、シェル厚 ≈ 0.2 を測る。
+        let w = report
+            .measured_min_wall
+            .expect("measured_min_wall must be present even with threshold 0");
+        assert!(
+            (w - 0.2).abs() < 0.08,
+            "measured min wall should be ~0.2 (shell), got {w}"
+        );
+
+        // to_json に measured_min_wall 数値が存在し往復可能、報告値と一致。
+        let v = report.to_json();
+        assert_eq!(parse(&v.to_string()).unwrap(), v, "to_json must round-trip");
+        let jw = v
+            .get("measured_min_wall")
+            .and_then(|x| x.as_f64())
+            .expect("JSON measured_min_wall must be a number");
+        assert_eq!(jw, w, "JSON value must equal report field");
+
+        // summary に min_wall= が含まれる。
+        assert!(
+            report.summary().contains("min_wall="),
+            "summary must expose min_wall: {}",
+            report.summary()
+        );
+
+        // 空メッシュは None / null。
+        use crate::extract::Mesh;
+        let r_empty = validate(&Mesh::default(), 0.0, 0.0);
+        assert!(
+            r_empty.measured_min_wall.is_none(),
+            "empty mesh has no measured wall"
+        );
+        let ve = r_empty.to_json();
+        assert_eq!(
+            *ve.get("measured_min_wall")
+                .expect("key must exist even if null"),
+            Value::Null,
+            "empty mesh measured_min_wall must be null in JSON"
         );
     }
 
@@ -1707,9 +1985,16 @@ mod tests {
         assert!(
             r.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO"),
             "tall thin cylinder (h=5, w=0.4, ratio=12.5) must flag HIGH_ASPECT_RATIO: {:?}",
-            r.issues.iter().map(|e| (&e.code, &e.cause)).collect::<Vec<_>>()
+            r.issues
+                .iter()
+                .map(|e| (&e.code, &e.cause))
+                .collect::<Vec<_>>()
         );
-        let issue = r.issues.iter().find(|e| e.code == "HIGH_ASPECT_RATIO").unwrap();
+        let issue = r
+            .issues
+            .iter()
+            .find(|e| e.code == "HIGH_ASPECT_RATIO")
+            .unwrap();
         assert!(
             issue.cause.contains("build direction"),
             "HIGH_ASPECT_RATIO issue must name build direction: {}",

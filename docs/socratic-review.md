@@ -4564,3 +4564,50 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > 誠実性を保ちながら新しい欠陥軸 (プロセス依存の排水要件) を AI に提示する。
 > 新しい Severity::Info の実用初例でもある。
 > テスト数: 314 ユニット + 6 統合 = 320 合計。
+
+## 問247 — 計算済みで破棄: 実測最小肉厚 (measured_min_wall) を常時公開
+
+**ソクラテス問答**:
+- *肉厚チェックは実測値を計算しているが、合格した部品の肉厚はどこで読めるか?*
+  → 「読めない。`thin = min(2V/SA 平均, 内向きレイ探針)` は閾値ブロック内で計算され、
+  `thin < min_wall_mm` のときの THIN_WALL 説明文にしか現れない。合格時は破棄。」
+- *合格時の肉厚は AI にとって価値があるか?*
+  → 「ある。『あとどれだけ薄くできるか (マージン)』は一次的な製造質問。材料を
+  削りつつ閾値を割らないよう肉厚を最適化する AI ループはこの値なしには盲目。」
+- *さらに、閾値が出ても AI は数値をどう得るか?*
+  → 「prose を正規表現で剥がす必要がある。surface_area (問244)・center_of_mass
+  (問239) と同じ『計算済みデータが構造化されていない』パターン。」
+- *コストは?* — 探針は多数のレイマーチで高価。二重実行は避けたい。
+  → 「測定を閾値ブロックの**外へ巻き上げ**て1度だけ実行し、measured_min_wall に
+  格納すると同時に THIN_WALL 判定にも再利用する。探針呼び出しは従来通り1回。」
+
+**実装**:
+- `verify/check.rs`: `Report` に `measured_min_wall: Option<f64>` を追加。
+  肉厚測定 (mean + probe) を `if min_wall_mm > 0.0` ガードの外へ巻き上げ、
+  bbox=Some かつ非空のとき常に1度だけ算出 (`wall` タプル)。THIN_WALL ブロックは
+  `wall` を再利用 (probe を二重呼び出ししない)。`measured_min_wall` は `wall.0`。
+  両 Report 構築経路 (空メッシュ早期 return=None / 最終 return) に追加。
+  `summary()` に `min_wall=` (Some 時のみ)、`to_json()` に `measured_min_wall`
+  (Some→数値, None→null) を追加。
+- `mcp/tools.rs`: validate スキーマに `measured_min_wall:number|null` を追記。
+- `docs/SPEC.md`: §5.1 戻り値 JSON に measured_min_wall、§10 テスト数 321 に更新。
+- スキーマドリフト pin (`to_json_carries_all_schema_fields`) に measured_min_wall 追加。
+
+**テスト (1本)**:
+- `report_exposes_measured_min_wall_regardless_of_threshold`:
+  厚さ 0.2 シェルを min_wall_mm=0 (チェックなし) で validate → measured_min_wall が
+  Some で ≈0.2、JSON 数値が往復一致、summary に min_wall= を含む。
+  空メッシュは None / JSON null。
+
+## 反映サマリ v115
+| 問 | 実装 |
+|----|------|
+| 247 | 計算済みで破棄「実測最小肉厚」— `Report.measured_min_wall` を閾値と独立に常時公開 |
+
+> 総括: v115 は問239 (COM)・問244 (表面積) に続く「計算済みで破棄」狩りの第3弾。
+> 肉厚は唯一、閾値を割ったときだけ prose に現れる**条件付き可視**の指標だった。
+> 測定を閾値ガードの外へ巻き上げることで (a) 合格部品でもマージンが読め、
+> (b) prose 正規表現が不要になり、(c) 探針コストは1回のまま保たれた。
+> これは純粋な測定値であり判定ではないため偽陽性リスクはゼロ。AI の肉厚最適化
+> ループ (削れるだけ削って閾値直前で止める) を初めて可能にする。
+> テスト数: 315 ユニット + 6 統合 = 321 合計。
