@@ -115,6 +115,15 @@ pub struct Report {
     /// と同じ「計算済みデータの公開」)。空・退化・bbox 無しメッシュは None。
     /// 注意: これは安価な近似で、非検出が薄肉皆無を保証しない (min_wall_probe と同様)。
     pub measured_min_wall: Option<f64>,
+    /// 中実ボディ数 (問248)。連結成分を符号付き体積で分類した正成分の数
+    /// (`Mesh::body_components`)。MULTIPLE_BODIES は bodies>1 でしか出ず、単一ボディの
+    /// 場合はどこにも数が現れなかった。閾値・発火と独立に位相を公開する
+    /// (問239/244/247 と同じ「計算済みデータの公開」)。非水密・空メッシュは None
+    /// (向き分類が無意味なため)。
+    pub body_count: Option<usize>,
+    /// 内部空洞数 (問248)。同上の負成分の数。封入空洞 (排水欠陥) の構造化指標。
+    /// AI が ENCLOSED_CAVITY の prose を正規表現で剥がさず直接読める。非水密・空は None。
+    pub cavity_count: Option<usize>,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -161,11 +170,16 @@ impl Report {
         let wall_str = self
             .measured_min_wall
             .map_or(String::new(), |w| format!(" min_wall={w:.3}"));
+        // 位相カウントは水密のときのみ付加する (問248)。
+        let topo_str = match (self.body_count, self.cavity_count) {
+            (Some(b), Some(c)) => format!(" bodies={b} cavities={c}"),
+            _ => String::new(),
+        };
         format!(
             "triangles={} manifold={} volume={:.3}{vol_note} area={:.3} \
              bbox=[{:.3},{:.3},{:.3}]-[{:.3},{:.3},{:.3}] \
              dims_mm=[{:.3}x{:.3}x{:.3}] \
-             digest={:016x} errors={errors} warnings={warnings}{com_str}{wall_str}",
+             digest={:016x} errors={errors} warnings={warnings}{com_str}{wall_str}{topo_str}",
             self.triangle_count,
             self.is_manifold,
             self.volume,
@@ -224,6 +238,9 @@ impl Report {
         let com_json = self.center_of_mass.map_or(json::NULL, vec3);
         // 測定最小肉厚: Some なら数値、None なら null (問247)。
         let wall_json = self.measured_min_wall.map_or(json::NULL, json::n);
+        // 位相カウント: Some なら数値、None (非水密) なら null (問248)。
+        let body_json = self.body_count.map_or(json::NULL, |n| json::n(n as f64));
+        let cavity_json = self.cavity_count.map_or(json::NULL, |n| json::n(n as f64));
         json::obj([
             ("ok", json::b(self.is_ok())),
             ("triangles", json::n(self.triangle_count as f64)),
@@ -235,6 +252,8 @@ impl Report {
             ("dims_mm", vec3(d)),
             ("center_of_mass", com_json),
             ("measured_min_wall", wall_json),
+            ("body_count", body_json),
+            ("cavity_count", cavity_json),
             ("digest", json::s(format!("{:016x}", self.digest))),
             ("issues", Value::Array(issues)),
         ])
@@ -328,6 +347,8 @@ pub fn validate_with_field(
             digest,
             center_of_mass: None,    // 空メッシュに COM なし。
             measured_min_wall: None, // 空メッシュに肉厚なし。
+            body_count: None,        // 空メッシュに位相なし。
+            cavity_count: None,
             issues,
         };
     }
@@ -350,8 +371,14 @@ pub fn validate_with_field(
     // 4.5 複数ボディ検出 (問60): 水密でも独立した中実成分が複数あれば「単一造形物」でない。
     //     成分を符号付き体積で分類し、正=ボディ・負=空洞。空洞 (中空シェル) は正常なので
     //     ボディ数>1 のときのみ警告する (分割は意図的なこともあるため Error でなく Warning)。
+    //     位相カウント (問248) は発火と独立に Report へ公開する。非水密では向き分類が
+    //     無意味なため None のまま (= 「計測不能」を null で表す)。
+    let mut body_count = None;
+    let mut cavity_count = None;
     if is_manifold {
         let (bodies, cavities) = mesh.body_components();
+        body_count = Some(bodies);
+        cavity_count = Some(cavities);
         if bodies > 1 {
             issues.push(KadoError::warn(
                 "MULTIPLE_BODIES",
@@ -669,6 +696,8 @@ pub fn validate_with_field(
         digest,
         center_of_mass,
         measured_min_wall,
+        body_count,
+        cavity_count,
         issues,
     }
 }
@@ -1505,6 +1534,8 @@ mod tests {
             digest: 42,
             center_of_mass: None,
             measured_min_wall: None,
+            body_count: None,
+            cavity_count: None,
             issues: vec![],
         };
         // 正常系: 両条件 true → reliable。
@@ -1757,6 +1788,8 @@ mod tests {
             "dims_mm",
             "center_of_mass",
             "measured_min_wall",
+            "body_count",
+            "cavity_count",
             "digest",
             "issues",
         ] {
@@ -1971,6 +2004,72 @@ mod tests {
                 .expect("key must exist even if null"),
             Value::Null,
             "empty mesh measured_min_wall must be null in JSON"
+        );
+    }
+
+    #[test]
+    fn report_exposes_body_and_cavity_counts() {
+        // 問248: body_components() の (bodies, cavities) は MULTIPLE_BODIES/ENCLOSED_CAVITY
+        // の prose にしか現れず、AI は正規表現で数を剥がす必要があった。位相カウントを
+        // Report に構造化フィールドとして公開する (問239/244/247 と同じパターン)。
+        use crate::mcp::json::{parse, Value};
+
+        // 離れた2球 → 2ボディ・0空洞。
+        let two = Sdf::sphere(0.6)
+            .translate(Vec3::new(-1.2, 0.0, 0.0))
+            .union(Sdf::sphere(0.6).translate(Vec3::new(1.2, 0.0, 0.0)));
+        let (lo, hi) = two.sampling_box();
+        let r = validate(&polygonize(&two, lo, hi, 40), 0.0, 0.0);
+        assert_eq!(r.body_count, Some(2), "two disjoint spheres = 2 bodies");
+        assert_eq!(r.cavity_count, Some(0), "two solid spheres have no cavity");
+
+        // JSON 往復一致 + summary に bodies=/cavities= を含む。
+        let v = r.to_json();
+        assert_eq!(parse(&v.to_string()).unwrap(), v, "to_json must round-trip");
+        assert_eq!(
+            v.get("body_count").and_then(|x| x.as_f64()),
+            Some(2.0),
+            "JSON body_count must be 2"
+        );
+        assert_eq!(
+            v.get("cavity_count").and_then(|x| x.as_f64()),
+            Some(0.0),
+            "JSON cavity_count must be 0"
+        );
+        assert!(
+            r.summary().contains("bodies=2") && r.summary().contains("cavities=0"),
+            "summary must expose topology counts: {}",
+            r.summary()
+        );
+
+        // 中空シェル → 1ボディ・1空洞。
+        let shell = Sdf::sphere(1.0).shell(0.25);
+        let (lo, hi) = shell.sampling_box();
+        let rs = validate(&polygonize(&shell, lo, hi, 48), 0.0, 0.0);
+        assert_eq!(rs.body_count, Some(1), "hollow shell = 1 body");
+        assert_eq!(rs.cavity_count, Some(1), "hollow shell = 1 cavity");
+
+        // 非水密 (クリップ) → 位相は計測不能なので None / JSON null。
+        let clipped = polygonize(
+            &Sdf::sphere(1.0),
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
+        let rc = validate(&clipped, 0.0, 0.0);
+        assert!(
+            rc.body_count.is_none(),
+            "non-manifold mesh: body_count undefined"
+        );
+        assert!(
+            rc.cavity_count.is_none(),
+            "non-manifold mesh: cavity_count undefined"
+        );
+        let vc = rc.to_json();
+        assert_eq!(
+            *vc.get("body_count").expect("key must exist even if null"),
+            Value::Null,
+            "non-manifold body_count must be null in JSON"
         );
     }
 

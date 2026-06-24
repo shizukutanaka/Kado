@@ -4611,3 +4611,50 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > これは純粋な測定値であり判定ではないため偽陽性リスクはゼロ。AI の肉厚最適化
 > ループ (削れるだけ削って閾値直前で止める) を初めて可能にする。
 > テスト数: 315 ユニット + 6 統合 = 321 合計。
+
+## 問248 — 計算済みで破棄: 位相カウント (body_count / cavity_count) を構造化公開
+
+**ソクラテス問答**:
+- *`body_components()` は `(bodies, cavities)` の正確な整数を返すが、AI はどう読むか?*
+  → 「読めない。数は MULTIPLE_BODIES と ENCLOSED_CAVITY の英語 prose に埋め込まれ、
+  AI は `"contains N separate solid bodies"` を正規表現で剥がす必要がある。」
+- *さらに弱点は?* — 「MULTIPLE_BODIES は bodies>1 でしか出ない。単一ボディの場合は
+  数がどこにも現れない。ENCLOSED_CAVITY も Info で、cavities は文中のみ。」
+- *これは既知のパターンか?* — 「center_of_mass (問239)・surface_area (問244)・
+  measured_min_wall (問247) と同一。issue 用に計算した値を構造化フィールドへ昇格する。」
+- *非水密メッシュでの扱いは?* — 「向き (符号付き体積) による正/負分類は閉じた
+  メッシュでのみ意味を持つ。非水密では body_components は (0,0) を返すが、これは
+  『ボディゼロ』ではなく『計測不能』。volume_reliable (問65/245) と同じ精神で
+  `None` (JSON null) として『計測不能』を明示すべき。」
+
+**実装**:
+- `verify/check.rs`: `Report` に `body_count: Option<usize>` と
+  `cavity_count: Option<usize>` を追加。検査 4.5 の `if is_manifold` ブロックの外に
+  `let mut body_count = None; let mut cavity_count = None;` を宣言し、水密時のみ
+  `Some(bodies)/Some(cavities)` を設定 (非水密は None=計測不能)。両 Report 構築経路
+  (空メッシュ早期 return / 最終 return) に追加。`summary()` に水密時のみ
+  `bodies=N cavities=M`、`to_json()` に `body_count`/`cavity_count`
+  (Some→整数, None→null) を追加。
+- `mcp/tools.rs`: validate スキーマに `body_count:int|null, cavity_count:int|null`。
+- `docs/SPEC.md`: §5.1 戻り値 JSON 更新、§10 テスト数 322 に更新。
+- スキーマドリフト pin (`to_json_carries_all_schema_fields`) に両フィールド追加。
+
+**テスト (1本)**:
+- `report_exposes_body_and_cavity_counts`:
+  離れた2球 → body_count=Some(2)/cavity_count=Some(0)、JSON 往復一致、
+  summary に bodies=2 cavities=0。中空シェル → Some(1)/Some(1)。
+  非水密 (クリップ) → 両者 None / JSON null。
+
+## 反映サマリ v116
+| 問 | 実装 |
+|----|------|
+| 248 | 計算済みで破棄「位相カウント」— `Report.body_count`/`cavity_count` を構造化公開 |
+
+> 総括: v116 は「計算済みで破棄」狩りの第4弾 (問239/244/247 に続く)。
+> body_components の整数カウントは2つの issue の prose にしか現れず、しかも
+> MULTIPLE_BODIES は bodies>1 でしか発火しないため単一ボディの位相は完全に
+> 不可視だった。これを構造化フィールドへ昇格し、AI が正規表現なしで位相
+> (何個の中実体・何個の内部空洞) を読めるようにした。非水密メッシュでは向き分類が
+> 無意味なため None (JSON null) で「計測不能」を明示し、volume_reliable と同じ
+> 「信頼できないなら正直に null」の精神を貫いた。
+> テスト数: 316 ユニット + 6 統合 = 322 合計。

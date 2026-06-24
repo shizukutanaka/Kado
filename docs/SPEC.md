@@ -135,7 +135,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 |--------|------|---------|
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 | `script` |
 | `eval` | 1 点の符号付き距離を返す | `x, y, z` |
-| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
+| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
 | `screenshot` | シーンを PNG レンダリング（base64） | `view, width, height, samples, axes` |
 | `export` | STL/GLB/3MF をプロジェクト直下へ書き出し | `path, resolution` |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す | — |
@@ -236,7 +236,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 321 テスト（315 ユニット + 6 統合）合格。
+- `cargo test`: 322 テスト（316 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

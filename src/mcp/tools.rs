@@ -136,7 +136,8 @@ pub fn tool_list() -> Value {
             "Validate the current scene mesh for manufacturability (DFM). Returns a structured \
              JSON report: {ok, triangles, manifold, volume, volume_reliable, \
              surface_area, bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
-             center_of_mass:[x,y,z]|null, measured_min_wall:number|null, digest, \
+             center_of_mass:[x,y,z]|null, measured_min_wall:number|null, \
+             body_count:int|null, cavity_count:int|null, digest, \
              issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
