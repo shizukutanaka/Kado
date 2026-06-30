@@ -4968,3 +4968,92 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > Qiita/Zenn でこの区別は FDM 印刷の基礎知識として頻出しており、
 > Kado が AI へ渡す情報として欠落していた視点を補完。
 > テスト数: 325 ユニット + 6 統合 = 331 合計。
+
+---
+
+## 問255 — HIGH_ASPECT_RATIO の location 欠落
+
+*GitHub 非多様体修復ツール調査 + コード読解 (v123)*
+
+**問い:**
+「OVERHANG, THIN_WALL, UNSTABLE はすべて `issue.location` を持ち、
+AI が空間的に問題箇所を参照できる。なぜ HIGH_ASPECT_RATIO だけ location = null なのか？
+AI は『背が高い』と言われても『どの部位を補強するか』が分からない。」
+
+*ソクラテス式問答:*
+- *HIGH_ASPECT_RATIO の最も危険な部位はどこか?*
+  → 「ビルド方向最上部 — ノズルが当たったとき揺れが最大になる先端部。
+  下部は構造的に安定している。補強 (ブリム/ラフト/方向変更) が効く起点は上部。」
+- *最上部をどう定量化するか?*
+  → 「ビルド方向への射影で上位 10% の頂点群の重心。決定的で実装が単純。
+  全頂点が密に分布するシリンダーでも数十頂点が上位 10% に入り、重心が収束する。」
+
+**実装**:
+- `src/verify/check.rs`: HIGH_ASPECT_RATIO 発火時に上位 10% 頂点の重心を `with_location()` で付与。
+- `docs/SPEC.md`: §5.3 location テーブルに HIGH_ASPECT_RATIO 行を追加。
+- テスト: `high_aspect_ratio_issue_carries_spatial_location` — z > 1.8 (シリンダー上部) を確認。
+
+---
+
+## 問256 — SUSPICIOUS_SCALE 発火時の THIN_WALL 二重報告
+
+*コード読解によるノイズ問題の発見 (v123)*
+
+**問い:**
+「部品の最大寸法が min_wall_mm より小さいとき、SUSPICIOUS_SCALE (warn) と THIN_WALL (error) が
+両方発火する。AI は『薄い』と『スケールミス』を別々の問題として扱い、実際には
+スケールを直すだけで薄肉も消えるのに二重修正を試みる。なぜ抑制しないのか？」
+
+*ソクラテス式問答:*
+- *どちらが根本原因か?*
+  → 「SUSPICIOUS_SCALE が根本原因 — 部品全体が間違ったスケールで作られている。
+  THIN_WALL はその必然的な帰結にすぎない。根本修正 (スケール変更) で THIN_WALL も消える。」
+- *抑制の安全性は?*
+  → 「SUSPICIOUS_SCALE は `max_dim < min_wall_mm` — 部品全体の最大寸法が閾値以下。
+  この条件下では THIN_WALL が追加の情報を持たない。SUSPICIOUS_SCALE のヒントが修正を案内する。」
+
+**実装**:
+- `src/verify/check.rs`: SUSPICIOUS_SCALE チェックを THIN_WALL の前に移動し、
+  `is_suspicious_scale` フラグで THIN_WALL を条件付きスキップ (問62/256)。
+- `docs/SPEC.md`: §5.2 THIN_WALL/SUSPICIOUS_SCALE 行に抑制関係を明記。
+- テスト: `suspicious_scale_suppresses_thin_wall_noise` — sub-threshold 球で確認。
+
+---
+
+## 問257 — NON_MANIFOLD の location 欠落
+
+*GitHub 非多様体修復ツール調査 (MeshRepairFor3DPrinting 等) (v123)*
+
+**問い:**
+「Blender の非多様体修復ツールは『offending elements をハイライト』することで
+ユーザが修正箇所を特定できる。Kado の NON_MANIFOLD issue は location = null で、
+AI はメッシュのどこに問題があるか分からない。」
+
+*ソクラテス式問答:*
+- *どのエッジを location にするか? 非多様体エッジは複数ある場合も。*
+  → 「最小頂点インデックスのエッジ — 決定的かつ実装が単純。HashMap 走査後に最小キーを選ぶ。
+  全エッジをリストするよりも、代表的な 1 点で AI の注意を引くほうが効果的。」
+- *HashMap の反復順序が非決定的では?*
+  → 「走査の順序は非決定的だが、最小キーの選択は決定的。`best` を最小に更新するだけ。」
+
+**実装**:
+- `src/extract/mesh.rs`: `first_nonmanifold_edge_midpoint()` を追加 (問257/ADR-003)。
+- `src/verify/check.rs`: NON_MANIFOLD 発火時に `with_location()` で付与。
+- `docs/SPEC.md`: §5.3 location テーブルに NON_MANIFOLD 行を追加。
+- テスト (mesh.rs): `first_nonmanifold_edge_midpoint_is_deterministic_and_correct`。
+- テスト (check.rs): `non_manifold_issue_carries_spatial_location`。
+
+## 反映サマリ v123
+| 問 | 実装 |
+|----|------|
+| 255 | HIGH_ASPECT_RATIO に location (上位10%重心) を付与 |
+| 256 | SUSPICIOUS_SCALE 発火時に THIN_WALL を抑制 (二重報告ノイズ解消) |
+| 257 | NON_MANIFOLD に location (最小インデックス非多様体エッジ中点) を付与 |
+
+> 総括: v123 は「空間的 issue には全て location を」の一貫性と「二重報告ノイズを除去」の
+> 2 つの軸で改善。GitHub の非多様体修復ツール (MeshRepairFor3DPrinting 等) が
+> 「offending elements をハイライト」するのと同じ考え方を location フィールドで実現。
+> SUSPICIOUS_SCALE+THIN_WALL の二重発火は AI が「スケール修正 + 肉厚修正」を別々に
+> 試みる実害があったが、根本原因 (SUSPICIOUS_SCALE) の修正で THIN_WALL が消えることを
+> 明示することで AI の修正戦略を改善した。
+> テスト数: 329 ユニット + 6 統合 = 335 合計。

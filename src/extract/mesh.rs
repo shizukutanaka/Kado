@@ -72,6 +72,33 @@ impl Mesh {
         (boundary, nonmanifold)
     }
 
+    /// 非多様体エッジ (3面以上共有) が存在する場合、最小頂点インデックスのエッジ中点を返す。
+    /// なければ `None`。HashMap 走査後に最小キーを選ぶため決定的 (問257/ADR-003)。
+    pub fn first_nonmanifold_edge_midpoint(&self) -> Option<Vec3> {
+        let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in &self.triangles {
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+        let mut best: Option<(u32, u32)> = None;
+        for (&(a, b), &c) in &counts {
+            if c > 2 {
+                best = Some(match best {
+                    None => (a, b),
+                    Some(curr) if (a, b) < curr => (a, b),
+                    Some(curr) => curr,
+                });
+            }
+        }
+        best.map(|(a, b)| {
+            let va = self.vertices[a as usize];
+            let vb = self.vertices[b as usize];
+            (va + vb) * 0.5
+        })
+    }
+
     /// 符号付き体積 (発散定理)。メッシュの向きが外向きに揃っている前提。
     pub fn signed_volume(&self) -> f64 {
         let mut v = 0.0;
@@ -238,14 +265,30 @@ mod tests {
         // 問141: from_soup(&[]) は空の Mesh を返す (パニックしない)。
         // body_components/signed_volume/bounds など全ての下流関数がこの状態を受け入れる。
         let m = Mesh::from_soup(&[]);
-        assert!(m.vertices.is_empty(), "empty soup must yield empty vertex list");
-        assert!(m.triangles.is_empty(), "empty soup must yield empty triangle list");
+        assert!(
+            m.vertices.is_empty(),
+            "empty soup must yield empty vertex list"
+        );
+        assert!(
+            m.triangles.is_empty(),
+            "empty soup must yield empty triangle list"
+        );
         // 下流関数が empty mesh を正しく処理する。
-        assert_eq!(m.body_components(), (0, 0), "empty mesh has no bodies or cavities");
+        assert_eq!(
+            m.body_components(),
+            (0, 0),
+            "empty mesh has no bodies or cavities"
+        );
         assert_eq!(m.signed_volume(), 0.0, "empty mesh has zero volume");
         assert!(m.bounds().is_none(), "empty mesh has no bounds");
-        assert!(m.is_edge_manifold(), "empty mesh is trivially manifold (no edges)");
-        assert!(m.center_of_mass().is_none(), "empty mesh has no center of mass");
+        assert!(
+            m.is_edge_manifold(),
+            "empty mesh is trivially manifold (no edges)"
+        );
+        assert!(
+            m.center_of_mass().is_none(),
+            "empty mesh has no center of mass"
+        );
         assert_eq!(m.surface_area(), 0.0, "empty mesh has zero surface area");
     }
 
@@ -256,10 +299,21 @@ mod tests {
         // 5% 以内に収束する。面積和が正で 24 を超えないこと (面取り=面積減) を確認。
         use crate::core::Sdf;
         use crate::extract::polygonize;
-        let m = polygonize(&Sdf::cuboid(Vec3::splat(1.0)), Vec3::splat(-1.5), Vec3::splat(1.5), 32);
+        let m = polygonize(
+            &Sdf::cuboid(Vec3::splat(1.0)),
+            Vec3::splat(-1.5),
+            Vec3::splat(1.5),
+            32,
+        );
         let area = m.surface_area();
-        assert!(area <= 24.0 + 1e-6, "beveled cube area must not exceed 24, got {area}");
-        assert!((area - 24.0).abs() / 24.0 < 0.05, "±1 cube area within 5% of 24, got {area}");
+        assert!(
+            area <= 24.0 + 1e-6,
+            "beveled cube area must not exceed 24, got {area}"
+        );
+        assert!(
+            (area - 24.0).abs() / 24.0 < 0.05,
+            "±1 cube area within 5% of 24, got {area}"
+        );
     }
 
     #[test]
@@ -270,9 +324,15 @@ mod tests {
         use crate::extract::polygonize;
         let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 48);
         let exact = 4.0 * std::f64::consts::PI;
-        assert!(m.surface_area() <= exact, "inscribed polyhedron area must not exceed 4π");
-        assert!((m.surface_area() - exact).abs() / exact < 0.05,
-            "sphere area within 5% of 4π≈{exact:.3}, got {}", m.surface_area());
+        assert!(
+            m.surface_area() <= exact,
+            "inscribed polyhedron area must not exceed 4π"
+        );
+        assert!(
+            (m.surface_area() - exact).abs() / exact < 0.05,
+            "sphere area within 5% of 4π≈{exact:.3}, got {}",
+            m.surface_area()
+        );
     }
 
     #[test]
@@ -282,8 +342,13 @@ mod tests {
         use crate::core::Sdf;
         use crate::extract::polygonize;
         let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 32);
-        let com = m.center_of_mass().expect("solid sphere has a center of mass");
-        assert!(com.length() < 1e-2, "centered sphere COM must be ~origin, got {com:?}");
+        let com = m
+            .center_of_mass()
+            .expect("solid sphere has a center of mass");
+        assert!(
+            com.length() < 1e-2,
+            "centered sphere COM must be ~origin, got {com:?}"
+        );
     }
 
     #[test]
@@ -295,8 +360,15 @@ mod tests {
         let (lo, hi) = shifted.sampling_box();
         let m = polygonize(&shifted, lo, hi, 32);
         let com = m.center_of_mass().unwrap();
-        assert!((com.x - 2.0).abs() < 0.05, "COM.x must track the +2 shift, got {}", com.x);
-        assert!(com.y.abs() < 0.05 && com.z.abs() < 0.05, "off-axis COM must stay ~0: {com:?}");
+        assert!(
+            (com.x - 2.0).abs() < 0.05,
+            "COM.x must track the +2 shift, got {}",
+            com.x
+        );
+        assert!(
+            com.y.abs() < 0.05 && com.z.abs() < 0.05,
+            "off-axis COM must stay ~0: {com:?}"
+        );
     }
 
     #[test]
@@ -309,9 +381,20 @@ mod tests {
         let (lo, hi) = dome.sampling_box();
         let m = polygonize(&dome, lo, hi, 48);
         let com = m.center_of_mass().unwrap();
-        assert!(com.z > 0.0, "hemisphere COM must be above the flat base, got z={}", com.z);
-        assert!((com.z - 0.375).abs() < 0.03, "hemisphere COM.z ~ 3R/8 = 0.375, got {}", com.z);
-        assert!(com.x.abs() < 0.02 && com.y.abs() < 0.02, "axisymmetric COM lateral ~0: {com:?}");
+        assert!(
+            com.z > 0.0,
+            "hemisphere COM must be above the flat base, got z={}",
+            com.z
+        );
+        assert!(
+            (com.z - 0.375).abs() < 0.03,
+            "hemisphere COM.z ~ 3R/8 = 0.375, got {}",
+            com.z
+        );
+        assert!(
+            com.x.abs() < 0.02 && com.y.abs() < 0.02,
+            "axisymmetric COM lateral ~0: {com:?}"
+        );
     }
 
     #[test]
@@ -329,7 +412,11 @@ mod tests {
         );
         // 解像度差も反映される。
         let d = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 24);
-        assert_ne!(a.digest(), d.digest(), "different resolution must change digest");
+        assert_ne!(
+            a.digest(),
+            d.digest(),
+            "different resolution must change digest"
+        );
     }
 
     #[test]
@@ -446,12 +533,58 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         ]]);
-        assert_eq!(tri.triangles.len(), 1, "single triangle soup must yield 1 triangle");
+        assert_eq!(
+            tri.triangles.len(),
+            1,
+            "single triangle soup must yield 1 triangle"
+        );
         let (boundary, nonmanifold) = tri.edge_defects();
-        assert_eq!(boundary, 3, "single triangle must have 3 boundary edges, got {boundary}");
-        assert_eq!(nonmanifold, 0, "single triangle has no shared edges → no non-manifold, got {nonmanifold}");
+        assert_eq!(
+            boundary, 3,
+            "single triangle must have 3 boundary edges, got {boundary}"
+        );
+        assert_eq!(
+            nonmanifold, 0,
+            "single triangle has no shared edges → no non-manifold, got {nonmanifold}"
+        );
         // is_edge_manifold は boundary==0 かつ nonmanifold==0 のときのみ true。
         // 単一三角形は boundary=3 なので is_edge_manifold は false (開境界あり)。
-        assert!(!tri.is_edge_manifold(), "single open triangle must NOT be edge-manifold (has 3 boundary edges)");
+        assert!(
+            !tri.is_edge_manifold(),
+            "single open triangle must NOT be edge-manifold (has 3 boundary edges)"
+        );
+    }
+
+    #[test]
+    fn first_nonmanifold_edge_midpoint_is_deterministic_and_correct() {
+        // 問257: 3枚の三角形がエッジ (v0,v1) を共有するメッシュで、
+        // first_nonmanifold_edge_midpoint が最小インデックスのエッジ中点 (0.5,0,0) を返す。
+        let mut mesh = Mesh::default();
+        mesh.vertices = vec![
+            Vec3::new(0.0, 0.0, 0.0),  // v0
+            Vec3::new(1.0, 0.0, 0.0),  // v1
+            Vec3::new(0.0, 1.0, 0.0),  // v2
+            Vec3::new(0.0, 0.0, 1.0),  // v3
+            Vec3::new(0.0, -1.0, 0.0), // v4
+        ];
+        mesh.triangles = vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]];
+        let mid = mesh
+            .first_nonmanifold_edge_midpoint()
+            .expect("3-shared-edge mesh must return Some");
+        assert!(
+            (mid.x - 0.5).abs() < 1e-9 && mid.y.abs() < 1e-9 && mid.z.abs() < 1e-9,
+            "midpoint of edge (v0,v1) must be (0.5,0,0), got {:?}",
+            mid
+        );
+        // 非多様体エッジがない正常なメッシュでは None。
+        let clean = Mesh::from_soup(&[[
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ]]);
+        assert!(
+            clean.first_nonmanifold_edge_midpoint().is_none(),
+            "manifold mesh must return None"
+        );
     }
 }

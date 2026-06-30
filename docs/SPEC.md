@@ -158,9 +158,9 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `NON_MANIFOLD` | error | 3 面以上共有エッジ（自己交差等） |
 | `NEGATIVE_VOLUME` | warn | 向き反転（体積が負）。**閉じたメッシュでのみ判定**（開境界では signed_volume が無意味なため抑制し、OPEN_MESH のみ出す。問245） |
 | `MULTIPLE_BODIES` | warn | 複数の独立ボディ |
-| `THIN_WALL` | warn | 最小肉厚 < 閾値 |
+| `THIN_WALL` | warn | 最小肉厚 < 閾値。`SUSPICIOUS_SCALE` が発火した場合は抑制される（問256: スケールミス修正が優先） |
 | `OVERHANG` | warn | オーバーハング角 > 閾値（ベッド接地面・直下に材料がある面は支持済みとして除外）。最悪角度に加え総表面積に占めるオーバーハング**面積割合**を報告し、AI が比例的に対応できる（問249）。fix_hints に**ブリッジ vs カンチレバーの区別**を案内：両端支持の水平天井（ブリッジ）は数 mm の短スパンならサポート不要；一端支持（カンチレバー）や長スパンは要サポート（問254） |
-| `SUSPICIOUS_SCALE` | warn | 部品が自身の最小肉厚より小さい |
+| `SUSPICIOUS_SCALE` | warn | 部品全体が `min_wall_mm` より小さい（単位/スケールの誤りが濃厚）。発火時は `THIN_WALL` を抑制する（問256） |
 | `UNSTABLE` | warn | 重心がベース接地面の足元から外れる（転倒する物理挙動）。`issue.location` = COM 座標 |
 | `HIGH_ASPECT_RATIO` | warn | ビルド高さ / 横方向最大寸法 > 8（FDM 印刷中の揺れリスク）。UNSTABLE と相補的な製造プロセス安定性軸 |
 | `ENCLOSED_CAVITY` | info | 外部に開口のない完全密閉の内部空洞（SLA で未硬化樹脂・FDM で除去不能サポートを閉じ込める）。中空シェルと密閉トラップはメッシュ上区別不能のため Info（`is_ok` を倒さない・問246） |
@@ -174,6 +174,8 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `OVERHANG` | 最悪三角形の重心座標 |
 | `THIN_WALL` | プローブが最小肉厚を検出した表面頂点 |
 | `UNSTABLE` | 重心（COM）座標 = `Report.center_of_mass` と同一 |
+| `NON_MANIFOLD` | 最小頂点インデックスの非多様体エッジ中点（決定的・問257） |
+| `HIGH_ASPECT_RATIO` | ビルド方向最上位 10% の頂点重心（揺れの起点・問255） |
 | その他 | `null`（空間的意味を持たない issue） |
 
 ---
@@ -243,7 +245,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 331 テスト（325 ユニット + 6 統合）合格。
+- `cargo test`: 335 テスト（329 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

@@ -330,8 +330,11 @@ pub fn validate_with_field(
     }
 
     // 2. 非多様体接合 (致命的): 3面以上が同一エッジを共有 (自己交差・座標一致)。
+    //    問257: AI が「どのエッジか」を空間的に参照できるよう、最小インデックスの非多様体
+    //    エッジ中点を location として付与する (決定的: HashMap 走査後に最小キーを選択)。
     if nonmanifold_edges > 0 {
-        issues.push(KadoError::error(
+        let nm_loc = mesh.first_nonmanifold_edge_midpoint();
+        let mut issue = KadoError::error(
             "NON_MANIFOLD",
             format!(
                 "{nonmanifold_edges} non-manifold edge(s) shared by >2 faces \
@@ -341,7 +344,11 @@ pub fn validate_with_field(
                 "Increase mesh resolution (higher res value)",
                 "Separate coincident or self-intersecting geometry in the SDF tree",
             ],
-        ));
+        );
+        if let Some(loc) = nm_loc {
+            issue = issue.with_location(loc);
+        }
+        issues.push(issue);
     }
 
     // 3. 空メッシュ
@@ -451,45 +458,16 @@ pub fn validate_with_field(
     // 5. 肉厚チェック。測定値 (上で算出) が閾値を下回れば THIN_WALL。探針は局所的な
     //    薄肉を捉え、平均が太い本体に支配されてリブの薄さを見逃す弱点を補う。
     //    なお「閾値以上 = 薄肉なし」は依然非保証。
+    //    問256: SUSPICIOUS_SCALE を先に評価する。部品全体がスケールミスなら THIN_WALL は
+    //    当然の帰結であり二重報告はノイズになる。AI にはスケール修正を優先させる。
     if min_wall_mm > 0.0 {
         if let Some((lo, hi)) = bbox {
-            if let Some((thin, mean, probe)) = wall {
-                let probe_t = probe.map(|(t, _)| t);
-                let probe_loc = probe.map(|(_, loc)| loc);
-                let method = if probe.is_some() {
-                    "min of 2V/SA mean and inward-ray probe"
-                } else {
-                    "2V/SA average"
-                };
-                if thin < min_wall_mm {
-                    // 探針が平均より薄い値を検出した場合のみ位置ヒントを付与 (問242)。
-                    // 探針位置は「直す必要がある薄肉の表面点」を示す。
-                    let thin_loc = probe_t.and_then(|p| if p <= mean { probe_loc } else { None });
-                    let mut issue = KadoError::error(
-                        "THIN_WALL",
-                        format!(
-                            "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
-                         ({method}; a pass does not guarantee no local thin features)"
-                        ),
-                        &[
-                            "Increase wall thickness via offset() or larger primitives",
-                            "Reduce min_wall_mm threshold if intentional",
-                            "Rule of thumb: min printable wall ≈ nozzle diameter (~0.4 mm FDM); \
-                             aim for ≥2× nozzle (~0.8 mm) for strength; resin walls thicker (~1 mm+)",
-                        ],
-                    );
-                    if let Some(loc) = thin_loc {
-                        issue = issue.with_location(loc);
-                    }
-                    issues.push(issue);
-                }
-            }
-
-            // 5.5 スケール健全性 (問62): Kado 座標は mm (1 unit = 1 mm)。最大寸法が
+            // 5.5 スケール健全性 (問62/256): Kado 座標は mm (1 unit = 1 mm)。最大寸法が
             //     ユーザ自身の最小肉厚閾値すら下回るなら、形状全体が1壁より小さい =
             //     ほぼ確実に単位/スケールの誤り。絶対値でなく閾値相対なので恣意的でない。
             let max_dim = (hi - lo).max_component();
-            if max_dim > 0.0 && max_dim < min_wall_mm {
+            let is_suspicious_scale = max_dim > 0.0 && max_dim < min_wall_mm;
+            if is_suspicious_scale {
                 issues.push(KadoError::warn(
                     "SUSPICIOUS_SCALE",
                     format!(
@@ -502,6 +480,42 @@ pub fn validate_with_field(
                         "Verify intended size: the whole part is currently sub-wall-thickness",
                     ],
                 ));
+            }
+
+            // THIN_WALL: SUSPICIOUS_SCALE が発火した場合はスキップ (問256)。
+            if !is_suspicious_scale {
+                if let Some((thin, mean, probe)) = wall {
+                    let probe_t = probe.map(|(t, _)| t);
+                    let probe_loc = probe.map(|(_, loc)| loc);
+                    let method = if probe.is_some() {
+                        "min of 2V/SA mean and inward-ray probe"
+                    } else {
+                        "2V/SA average"
+                    };
+                    if thin < min_wall_mm {
+                        // 探針が平均より薄い値を検出した場合のみ位置ヒントを付与 (問242)。
+                        // 探針位置は「直す必要がある薄肉の表面点」を示す。
+                        let thin_loc =
+                            probe_t.and_then(|p| if p <= mean { probe_loc } else { None });
+                        let mut issue = KadoError::error(
+                            "THIN_WALL",
+                            format!(
+                                "estimated wall thickness {thin:.3} < {min_wall_mm:.3} \
+                             ({method}; a pass does not guarantee no local thin features)"
+                            ),
+                            &[
+                                "Increase wall thickness via offset() or larger primitives",
+                                "Reduce min_wall_mm threshold if intentional",
+                                "Rule of thumb: min printable wall ≈ nozzle diameter (~0.4 mm FDM); \
+                                 aim for ≥2× nozzle (~0.8 mm) for strength; resin walls thicker (~1 mm+)",
+                            ],
+                        );
+                        if let Some(loc) = thin_loc {
+                            issue = issue.with_location(loc);
+                        }
+                        issues.push(issue);
+                    }
+                }
             }
         }
     }
@@ -706,7 +720,18 @@ pub fn validate_with_field(
             if height > 0.0 && lateral_max > 0.0 {
                 let ratio = height / lateral_max;
                 if ratio > HIGH_ASPECT_RATIO_THRESHOLD {
-                    issues.push(KadoError::warn(
+                    // 問255: location = ビルド方向最上位 10% の頂点重心 (揺れの起点)。
+                    // AI が「どの部位を補強・方向変更すべきか」を空間的に参照できる。
+                    let top_thresh = max_p - height * 0.1;
+                    let mut top_sum = Vec3::ZERO;
+                    let mut top_cnt = 0usize;
+                    for v in &mesh.vertices {
+                        if v.dot(bd) >= top_thresh {
+                            top_sum = top_sum + *v;
+                            top_cnt += 1;
+                        }
+                    }
+                    let mut issue = KadoError::warn(
                         "HIGH_ASPECT_RATIO",
                         format!(
                             "build height {height:.1} mm / lateral size {lateral_max:.1} mm = \
@@ -720,7 +745,11 @@ pub fn validate_with_field(
                             "Add a wider brim or raft for better bed adhesion",
                             "Reduce print speed for tall thin features",
                         ],
-                    ));
+                    );
+                    if top_cnt > 0 {
+                        issue = issue.with_location(top_sum * (1.0 / top_cnt as f64));
+                    }
+                    issues.push(issue);
                 }
             }
         }
@@ -2404,6 +2433,84 @@ mod tests {
             "mesh-only validate MUST flag flat-base dome rim as overhang \
              (known limitation: no SDF → cannot determine support). \
              If this fails, the rim exclusion may have been incorrectly backported to mesh-only."
+        );
+    }
+
+    #[test]
+    fn high_aspect_ratio_issue_carries_spatial_location() {
+        // 問255: HIGH_ASPECT_RATIO issue がビルド方向最上部10%の重心を location として持つ。
+        // 半径 0.2, 半高 2.5 → 高さ 5.0 / 横幅 0.4 = 比率 12.5 > 8 → HIGH_ASPECT_RATIO。
+        // +Z ビルドで max_p ≈ 2.5。location.z は max_p - height*0.1 ≈ 2.0 より上にある。
+        let sdf = Sdf::cylinder(0.2, 2.5);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+        let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let issue = r
+            .issues
+            .iter()
+            .find(|e| e.code == "HIGH_ASPECT_RATIO")
+            .expect("tall thin cylinder must flag HIGH_ASPECT_RATIO");
+        let loc = issue
+            .location
+            .expect("HIGH_ASPECT_RATIO must carry spatial location (問255)");
+        // location は最上部10%にある: z ≥ max_p - height*0.1 ≈ 2.5 - 0.5 = 2.0。
+        assert!(
+            loc.z > 1.8,
+            "HIGH_ASPECT_RATIO location must be near top of cylinder (z > 1.8), got z={}",
+            loc.z
+        );
+    }
+
+    #[test]
+    fn suspicious_scale_suppresses_thin_wall_noise() {
+        // 問256: 部品全体が min_wall_mm より小さいとき SUSPICIOUS_SCALE が発火し、
+        // THIN_WALL は抑制される (二重報告はノイズ; スケール修正が優先)。
+        // 半径 0.01 mm の球 (最大寸法 ≈ 0.02 mm) に min_wall_mm=0.5 を課す。
+        let sdf = Sdf::sphere(0.01);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 16);
+        let r = validate_with_field(&mesh, None, 0.5, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            r.issues.iter().any(|e| e.code == "SUSPICIOUS_SCALE"),
+            "sub-threshold sphere must emit SUSPICIOUS_SCALE"
+        );
+        assert!(
+            !r.issues.iter().any(|e| e.code == "THIN_WALL"),
+            "THIN_WALL must be suppressed when SUSPICIOUS_SCALE fires (問256), \
+             got issues: {:?}",
+            r.issues.iter().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn non_manifold_issue_carries_spatial_location() {
+        // 問257: 3枚の三角形がエッジ (v0,v1) を共有 → NON_MANIFOLD issue が
+        // そのエッジの中点 (0.5, 0, 0) を location として持つ。
+        use crate::extract::Mesh;
+        let mut mesh = Mesh::default();
+        mesh.vertices = vec![
+            Vec3::new(0.0, 0.0, 0.0),  // v0
+            Vec3::new(1.0, 0.0, 0.0),  // v1
+            Vec3::new(0.0, 1.0, 0.0),  // v2
+            Vec3::new(0.0, 0.0, 1.0),  // v3
+            Vec3::new(0.0, -1.0, 0.0), // v4
+        ];
+        // エッジ (0,1) を 3 枚が共有 → 非多様体。
+        mesh.triangles = vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]];
+        let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let nm = r
+            .issues
+            .iter()
+            .find(|e| e.code == "NON_MANIFOLD")
+            .expect("3-shared-edge mesh must emit NON_MANIFOLD");
+        let loc = nm
+            .location
+            .expect("NON_MANIFOLD must carry spatial location (問257)");
+        // エッジ (v0,v1) の中点は (0.5, 0, 0)。
+        assert!(
+            (loc.x - 0.5).abs() < 1e-9 && loc.y.abs() < 1e-9 && loc.z.abs() < 1e-9,
+            "NON_MANIFOLD location must be midpoint of edge (v0,v1) = (0.5,0,0), got {:?}",
+            loc
         );
     }
 }
