@@ -597,6 +597,9 @@ pub fn validate_with_field(
                             "Rotate the model to minimize overhangs",
                             "Small overhang areas often print without support on tuned FDM \
                              (~45° self-supporting, up to ~60° with margin); a large % needs support",
+                            "A near-90° flat ceiling supported at both ends is a BRIDGE, not a \
+                             cantilever — short bridges (a few mm) print without support; only long \
+                             unsupported spans or one-sided overhangs need it",
                         ],
                     )
                     .with_location(worst_centroid), // 問242: 最悪三角形の重心を位置ヒントとして付与。
@@ -1828,6 +1831,16 @@ mod tests {
                 "a stricter angle threshold must flag no more area than a looser one ({pct2}% vs {pct}%)"
             );
         }
+
+        // 問254: OVERHANG ヒントは bridge (両端支持) と cantilever の区別を案内し、
+        // AI が印刷可能な短いブリッジを過剰にサポートしないようにする。
+        assert!(
+            ov.fix_hints
+                .iter()
+                .any(|h| h.to_lowercase().contains("bridge")),
+            "OVERHANG hints must mention the bridge vs cantilever distinction, got {:?}",
+            ov.fix_hints
+        );
     }
 
     #[test]

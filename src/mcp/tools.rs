@@ -757,6 +757,10 @@ Use these to set thresholds and interpret results (adjust per printer/material):
   min hole/pin      ≳ nozzle diameter; small holes print undersized — design holes oversized
   feature width     prefer multiples of nozzle width (0.8 mm FDM prints cleaner than 1.0 mm)
   overhang          ≤45° self-supporting; up to ~60° with tuning; beyond needs support
+  bridge vs overhang  a flat ceiling supported at BOTH ends is a bridge (spans a gap) — short
+                    bridges (a few mm) print without support; a one-sided cantilever or a long
+                    span sags. validate's OVERHANG flags both flat ceilings and cantilevers as
+                    steep angles; judge by span length (dims_mm) whether support is truly needed
   resin/SLA         walls thinner-capable but ~1 mm+ is robust; ~3 mm around screw holes;
                     hollow parts need a drain hole (see ENCLOSED_CAVITY)
   report.measured_min_wall  the actual thinnest wall — compare to your nozzle to judge margin

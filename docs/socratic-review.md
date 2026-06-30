@@ -4918,3 +4918,53 @@ SDF は validate_with_field の既存 `sdf` 引数を利用 (MCP validate / CLI 
 > 上限であるという正直さを明記して AI の過大見積もりを防いだ。
 > 参考: フィラメント使用量/コスト計算, 出力時間 (Qiita/Zenn)。
 > テスト数: 325 ユニット + 6 統合 = 331 合計。
+
+---
+
+## 問254 — ブリッジ vs カンチレバーの区別を OVERHANG ヒントに追加
+
+*Qiita / Zenn / FDM コミュニティ調査 (v122)*
+
+**問い:**
+「Kado の OVERHANG チェックは水平天井（90°）を一律にオーバーハングとして警告する。
+しかし FDM では『両端から支えられた水平架橋』(**ブリッジ**) と
+『片端支持のカンチレバー』は根本的に異なる。
+短いブリッジはサポートなしで印刷できるのに、なぜ Kado はそれを区別しないのか？」
+
+*ソクラテス式問答:*
+- *区別が必要な理由は?*
+  → 「AI がオーバーハング警告を受け取ると、ブリッジ形状でも『サポートを追加してください』と
+  AIユーザーへ指示してしまう。適切なブリッジは数 mm の短スパンならサポート不要であり、
+  サポートを追加するとその後の除去作業が増え品質が下がる。」
+- *なぜ自動分類できないのか?*
+  → 「ブリッジ判定には『対辺がどこか』という文脈的な形状解析が必要で、SDF の局所情報だけでは困難。
+  AI が dims_mm を使ってスパン長を判断するほうが実際的。」
+- *なぜ今まで hints で案内しなかったのか?*
+  → 「OVERHANG の fix_hints は3本しかなく、ブリッジの概念が欠落していた。
+  Qiita/Zenn で『ブリッジ = サポート不要の水平架橋』が頻出する事実をもとに追加する。」
+
+**実装** (コードのロジック変更なし・ガイダンス転写):
+- `src/verify/check.rs`: OVERHANG の `fix_hints` に第4ヒントを追加:
+  「A near-90° flat ceiling supported at both ends is a BRIDGE, not a cantilever —
+  short bridges (a few mm) print without support; only long unsupported spans or
+  one-sided overhangs need it」
+- `src/mcp/tools.rs`: KADOSCENE_HELP の「printability rules of thumb」節に
+  `bridge vs overhang` 項を新設（ブリッジの定義・短スパン則・dims_mm での判断指針）。
+- `docs/SPEC.md`: §5.2 OVERHANG 行に問254 の記述を追記。
+
+**テスト (既存テストへアサーション追加)**:
+- `overhang_reports_area_fraction_proportional_to_extent` テストに:
+  `ov.fix_hints.iter().any(|h| h.to_lowercase().contains("bridge"))` アサーションを追加。
+  テスト数は変わらず 325 ユニット + 6 統合 = 331。
+
+## 反映サマリ v122
+| 問 | 実装 |
+|----|------|
+| 254 | Qiita/Zenn 調査「ブリッジ≠カンチレバー」— OVERHANG ヒントに bridge/cantilever 区別を追加 |
+
+> 総括: v122 は OVERHANG の hint 品質問題を surfaced した。
+> コードで自動分類する代わりに、AI が dims_mm からスパン長を判断できるよう
+> ブリッジ概念を OVERHANG fix_hints と KADOSCENE_HELP に転写した。
+> Qiita/Zenn でこの区別は FDM 印刷の基礎知識として頻出しており、
+> Kado が AI へ渡す情報として欠落していた視点を補完。
+> テスト数: 325 ユニット + 6 統合 = 331 合計。
