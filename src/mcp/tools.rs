@@ -833,12 +833,16 @@ fn arg_build_dir(args: &Value) -> Vec3 {
         // 問85: 要素数が 3 未満なら z=1.0 のサイレント補完をせずに +Z デフォルトへ
         // フォールバックする。[1,0] を渡して x-build を意図したAIが対角 [1,0,1] で
         // オーバーハング解析される誤りを防ぐ。
+        // 問263: 要素数が3以上でも、非数値要素 (文字列・真偽値・null 等) を
+        // `unwrap_or(0.0)` で0扱いにすると [1,0,"up"] が静かに [1,0,0] という
+        // 別のビルド方向になり、AI の意図しない軸でオーバーハング解析されてしまう
+        // (問85 と同じ「部分的な誤り訂正」の危険)。全要素が数値のときのみ採用し、
+        // 1つでも数値でなければ配列全体が短すぎる場合と同じ +Z デフォルトへ倒す。
         if arr.len() >= 3 {
-            Vec3::new(
-                arr[0].as_f64().unwrap_or(0.0),
-                arr[1].as_f64().unwrap_or(0.0),
-                arr[2].as_f64().unwrap_or(0.0),
-            )
+            match (arr[0].as_f64(), arr[1].as_f64(), arr[2].as_f64()) {
+                (Some(x), Some(y), Some(z)) => Vec3::new(x, y, z),
+                _ => Vec3::new(0.0, 0.0, 1.0),
+            }
         } else {
             Vec3::new(0.0, 0.0, 1.0)
         }
@@ -1161,6 +1165,32 @@ mod tests {
             arg_build_dir(&three),
             Vec3::new(1.0, 0.0, 0.0),
             "valid 3-element build_dir must be used verbatim"
+        );
+    }
+
+    #[test]
+    fn arg_build_dir_array_with_non_numeric_element_falls_back_to_plus_z() {
+        // 問263: 3要素あっても1つが非数値 (文字列) なら、unwrap_or(0.0) で
+        // その要素だけ0扱いにして [1,0,"up"] → [1,0,0] のような別方向を静かに
+        // 作らず、問85/183 と同じ +Z デフォルトへ倒す。
+        let mixed = json::obj([(
+            "build_dir",
+            json::arr([json::n(1.0), json::n(0.0), json::s("up")]),
+        )]);
+        assert_eq!(
+            arg_build_dir(&mixed),
+            Vec3::new(0.0, 0.0, 1.0),
+            "build_dir with a non-numeric element must fall back to +Z, not zero-fill it"
+        );
+        // null/bool 要素も同様。
+        let with_null = json::obj([(
+            "build_dir",
+            json::arr([json::n(1.0), json::NULL, json::n(0.0)]),
+        )]);
+        assert_eq!(
+            arg_build_dir(&with_null),
+            Vec3::new(0.0, 0.0, 1.0),
+            "build_dir with a null element must fall back to +Z"
         );
     }
 
