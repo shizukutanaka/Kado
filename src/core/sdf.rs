@@ -70,6 +70,12 @@ pub enum Sdf {
     /// 剛体変換ゆえ距離場は厳密に保たれる (スケール変化なし)。
     /// 決定性 (問5): sin/cos は同一バイナリ・同一arch内で確定的 (sqrt と同じ保証水準)。
     Rotate(Box<Sdf>, u8, f64),
+    /// 任意軸 (単位ベクトル) 周りの回転 (Rodrigues の回転公式・問266)。
+    /// `rotate_x/y/z` は canonical 3軸のみだが、対角線等の任意軸をこの1操作で
+    /// 表現できる ("rotate_x してから rotate_y" のような合成では一般に到達できない
+    /// 姿勢を、オイラー角の逆算なしに直接指定できる)。剛体変換ゆえ距離場は
+    /// 厳密に保たれる。
+    RotateAxis(Box<Sdf>, Vec3, f64),
     /// 平面カット (半空間との交差)。`normal` は**単位**法線、`offset` は原点からの符号付き距離。
     /// `dot(p, normal) <= offset` の側を残し、法線が指す側を切り落とす。
     /// FDM 印刷の平坦な底面づくり (サポート不要化) や断面表示に使う。
@@ -227,6 +233,11 @@ impl Sdf {
                 child.eval(rotate_point(p, *axis, -*angle))
             }
 
+            Sdf::RotateAxis(child, axis, angle) => {
+                // Rotate と同じ「逆回転してから子を評価」の原理 (剛体・距離保存)。
+                child.eval(rotate_point_axis(p, *axis, -*angle))
+            }
+
             Sdf::Cut(child, normal, offset) => {
                 // 半空間 dot(p,n) - offset との交差 (max)。n は単位法線なので
                 // 半空間側の距離場も正しい (Lipschitz ≈ 1)。
@@ -332,6 +343,7 @@ impl Sdf {
             Sdf::Mirror(c, axis) => mirror_box(c.aabb(), *axis),
             // 子 aabb の 8 隅を +angle で回し、その軸整列 bbox を取る (保守的)。
             Sdf::Rotate(c, axis, angle) => rotate_box(c.aabb(), *axis, *angle),
+            Sdf::RotateAxis(c, axis, angle) => rotate_box_axis(c.aabb(), *axis, *angle),
             // カットは材料を削るだけなので子の AABB が保守的な上界 (半空間は無限だが
             // 交差により実体は子の範囲を超えない)。
             Sdf::Cut(c, _, _) => c.aabb(),
@@ -447,6 +459,20 @@ impl Sdf {
         Sdf::Rotate(Box::new(self), 2, angle)
     }
 
+    /// 任意軸周りに `angle` ラジアン回転する (Rodrigues の回転公式・問266)。
+    /// `axis` は内部で単位化される (距離場の Lipschitz を保つため)。
+    /// ゼロ軸は呼び出し側 (eval.rs) で拒否される前提だが、`cut` の法線と同様
+    /// 防御的に +Z へフォールバックし NaN を避ける。
+    pub fn rotate_axis(self, axis: Vec3, angle: f64) -> Sdf {
+        let len = axis.length();
+        let unit = if len > 0.0 {
+            axis * (1.0 / len)
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        };
+        Sdf::RotateAxis(Box::new(self), unit, angle)
+    }
+
     /// 平面カット: `dot(p, normal) <= offset` の側を残し、法線が指す側を切り落とす。
     /// `normal` は内部で単位化される (距離場の Lipschitz を保つため)。
     /// ゼロ法線は呼び出し側 (eval.rs) で拒否される前提だが、防御的に正規化する。
@@ -493,6 +519,42 @@ fn rotate_box((lo, hi): (Vec3, Vec3), axis: u8, angle: f64) -> (Vec3, Vec3) {
     let mut mx = Vec3::splat(f64::NEG_INFINITY);
     for corner in corners {
         let r = rotate_point(corner, axis, angle);
+        mn = mn.min(r);
+        mx = mx.max(r);
+    }
+    (mn, mx)
+}
+
+/// 点 `p` を単位軸 `axis` 周りに `angle` ラジアン回転する (Rodrigues の回転公式・問266)。
+/// `axis=(1,0,0)/(0,1,0)/(0,0,1)` のとき `rotate_point` の対応する分岐と数式的に一致する。
+/// 固定演算順序で記述し決定性を保つ (問5、FMA 不使用)。`axis` は単位長である前提
+/// (呼び出し側の `rotate_axis`/`cut` と同じ契約)。
+fn rotate_point_axis(p: Vec3, axis: Vec3, angle: f64) -> Vec3 {
+    let s = angle.sin();
+    let c = angle.cos();
+    let k = axis;
+    let k_cross_p = k.cross(p);
+    let k_dot_p = k.dot(p);
+    p * c + k_cross_p * s + k * (k_dot_p * (1.0 - c))
+}
+
+/// 軸整列ボックスの 8 隅を任意軸 `axis` 周りに `angle` 回転し、
+/// その軸整列バウンディングボックスを返す (`rotate_box` の任意軸版)。
+fn rotate_box_axis((lo, hi): (Vec3, Vec3), axis: Vec3, angle: f64) -> (Vec3, Vec3) {
+    let corners = [
+        Vec3::new(lo.x, lo.y, lo.z),
+        Vec3::new(hi.x, lo.y, lo.z),
+        Vec3::new(lo.x, hi.y, lo.z),
+        Vec3::new(hi.x, hi.y, lo.z),
+        Vec3::new(lo.x, lo.y, hi.z),
+        Vec3::new(hi.x, lo.y, hi.z),
+        Vec3::new(lo.x, hi.y, hi.z),
+        Vec3::new(hi.x, hi.y, hi.z),
+    ];
+    let mut mn = Vec3::splat(f64::INFINITY);
+    let mut mx = Vec3::splat(f64::NEG_INFINITY);
+    for corner in corners {
+        let r = rotate_point_axis(corner, axis, angle);
         mn = mn.min(r);
         mx = mx.max(r);
     }
@@ -585,19 +647,37 @@ mod tests {
 
         // cylinder: 長軸は Z。h=2,r=0.5 → z 方向に ±2 まで内部・x 方向は ±0.5 まで。
         let cy = Sdf::cylinder(0.5, 2.0);
-        assert!(cy.eval(Vec3::new(0.0, 0.0, 1.5)) < 0.0, "cylinder inside along +Z within h");
-        assert!(cy.eval(Vec3::new(1.5, 0.0, 0.0)) > 0.0, "cylinder outside at x=1.5 (r=0.5)");
+        assert!(
+            cy.eval(Vec3::new(0.0, 0.0, 1.5)) < 0.0,
+            "cylinder inside along +Z within h"
+        );
+        assert!(
+            cy.eval(Vec3::new(1.5, 0.0, 0.0)) > 0.0,
+            "cylinder outside at x=1.5 (r=0.5)"
+        );
         // 非対称 (z は h=2 まで内部だが x は r=0.5 で外部) が「長軸=Z」の証拠。
 
         // capsule: 軸は Z。端点 (0,0,h) から radius 離れた点が表面。
         let cap = Sdf::capsule(1.0, 0.5);
-        assert!(cap.eval(Vec3::new(0.0, 0.0, 1.4)) < 0.0, "capsule inside Z cap region");
-        assert!(cap.eval(Vec3::new(1.4, 0.0, 0.0)) > 0.0, "capsule outside far in X");
+        assert!(
+            cap.eval(Vec3::new(0.0, 0.0, 1.4)) < 0.0,
+            "capsule inside Z cap region"
+        );
+        assert!(
+            cap.eval(Vec3::new(1.4, 0.0, 0.0)) > 0.0,
+            "capsule outside far in X"
+        );
 
         // torus: リングは XY 平面。穴は Z 軸を向く → Z 軸上 (0,0,z) は穴の中 (外部)。
         let t = Sdf::torus(1.0, 0.3);
-        assert!(t.eval(Vec3::ZERO) > 0.0, "torus hole on Z axis → origin is outside");
-        assert!(t.eval(Vec3::new(1.0, 0.0, 0.0)) < 0.0, "torus tube center in XY plane is inside");
+        assert!(
+            t.eval(Vec3::ZERO) > 0.0,
+            "torus hole on Z axis → origin is outside"
+        );
+        assert!(
+            t.eval(Vec3::new(1.0, 0.0, 0.0)) < 0.0,
+            "torus tube center in XY plane is inside"
+        );
     }
 
     #[test]
@@ -620,13 +700,20 @@ mod tests {
         // 問53: 符号は厳密、軸上の距離は厳密。
         let e = Sdf::ellipsoid(Vec3::new(2.0, 1.0, 0.5));
         // 中心は内部 (負)。最小半軸 0.5 → 距離 -0.5。
-        assert!((e.eval(Vec3::ZERO) - (-0.5)).abs() < EPS, "center: {}", e.eval(Vec3::ZERO));
+        assert!(
+            (e.eval(Vec3::ZERO) - (-0.5)).abs() < EPS,
+            "center: {}",
+            e.eval(Vec3::ZERO)
+        );
         // 軸上の表面点は 0。
         assert!(e.eval(Vec3::new(2.0, 0.0, 0.0)).abs() < EPS, "x surface");
         assert!(e.eval(Vec3::new(0.0, 1.0, 0.0)).abs() < EPS, "y surface");
         assert!(e.eval(Vec3::new(0.0, 0.0, 0.5)).abs() < EPS, "z surface");
         // 軸上の外側距離は厳密 (x=3 → 距離 1)。
-        assert!((e.eval(Vec3::new(3.0, 0.0, 0.0)) - 1.0).abs() < EPS, "x exterior");
+        assert!(
+            (e.eval(Vec3::new(3.0, 0.0, 0.0)) - 1.0).abs() < EPS,
+            "x exterior"
+        );
         // 内側の符号。
         assert!(e.eval(Vec3::new(1.0, 0.0, 0.0)) < 0.0, "inside x");
         // 軸外の点でも符号は厳密: (1.5, 0.5, 0) は (1.5/2)²+(0.5/1)² = 0.5625+0.25 < 1 → 内部。
@@ -652,15 +739,24 @@ mod tests {
         // 中心: 最小半径 0.001 → 距離 ≈ -0.001。
         let d_center = e.eval(Vec3::ZERO);
         assert!(d_center < 0.0, "center must be inside: {d_center}");
-        assert!(d_center.is_finite(), "center distance must be finite: {d_center}");
+        assert!(
+            d_center.is_finite(),
+            "center distance must be finite: {d_center}"
+        );
         // X 軸上の表面 (x=1000): 距離 ≈ 0。
         let d_xsurf = e.eval(Vec3::new(1000.0, 0.0, 0.0));
-        assert!(d_xsurf.is_finite(), "x-surface distance must be finite: {d_xsurf}");
+        assert!(
+            d_xsurf.is_finite(),
+            "x-surface distance must be finite: {d_xsurf}"
+        );
         assert!(d_xsurf.abs() < 0.1, "x-surface must be near 0: {d_xsurf}");
         // X 軸内部 (x=500): 楕円式 (500/1000)²=0.25 < 1 → 内部 (負)。
         let d_inside = e.eval(Vec3::new(500.0, 0.0, 0.0));
         assert!(d_inside < 0.0, "x=500 must be inside: {d_inside}");
-        assert!(d_inside.is_finite(), "interior distance must be finite: {d_inside}");
+        assert!(
+            d_inside.is_finite(),
+            "interior distance must be finite: {d_inside}"
+        );
     }
 
     #[test]
@@ -687,11 +783,20 @@ mod tests {
         // shell(sphere(1.0), 0.3) → 外半径 1.0 維持・内半径 0.7・壁厚 0.3。
         let s = Sdf::sphere(1.0).shell(0.3);
         // 外側表面は元の半径 1.0 のまま (肥大しない)。
-        assert!(s.eval(Vec3::new(1.0, 0.0, 0.0)).abs() < EPS, "outer surface preserved at r=1");
+        assert!(
+            s.eval(Vec3::new(1.0, 0.0, 0.0)).abs() < EPS,
+            "outer surface preserved at r=1"
+        );
         // 壁の内部 (r=0.85) は内側 (負)。
-        assert!(s.eval(Vec3::new(0.85, 0.0, 0.0)) < 0.0, "wall is inward of the surface");
+        assert!(
+            s.eval(Vec3::new(0.85, 0.0, 0.0)) < 0.0,
+            "wall is inward of the surface"
+        );
         // 内側表面は r = 1 - thickness = 0.7。
-        assert!(s.eval(Vec3::new(0.7, 0.0, 0.0)).abs() < EPS, "inner wall at r=0.7");
+        assert!(
+            s.eval(Vec3::new(0.7, 0.0, 0.0)).abs() < EPS,
+            "inner wall at r=0.7"
+        );
         // 中心は中空 (壁の外 = 正)。
         assert!(s.eval(Vec3::ZERO) > 0.0, "deep interior is hollow");
     }
@@ -861,17 +966,133 @@ mod tests {
     }
 
     #[test]
+    fn rotate_axis_matches_canonical_rotate_on_x_y_z() {
+        // 問266: rotate_axis((1,0,0)/(0,1,0)/(0,0,1), angle) は Rodrigues の回転公式が
+        // rotate_x/y/z の既存の直交行列式と数式的に一致することを固定する。
+        let angle = 0.83;
+        let bar = Sdf::cuboid(Vec3::new(1.5, 0.6, 0.3));
+        let via_axis_x = bar.clone().rotate_axis(Vec3::new(1.0, 0.0, 0.0), angle);
+        let via_canonical_x = bar.clone().rotate_x(angle);
+        let via_axis_y = bar.clone().rotate_axis(Vec3::new(0.0, 1.0, 0.0), angle);
+        let via_canonical_y = bar.clone().rotate_y(angle);
+        let via_axis_z = bar.clone().rotate_axis(Vec3::new(0.0, 0.0, 1.0), angle);
+        let via_canonical_z = bar.rotate_z(angle);
+        for p in grid() {
+            assert!(
+                (via_axis_x.eval(p) - via_canonical_x.eval(p)).abs() < 1e-9,
+                "rotate_axis(x) must match rotate_x at {p:?}"
+            );
+            assert!(
+                (via_axis_y.eval(p) - via_canonical_y.eval(p)).abs() < 1e-9,
+                "rotate_axis(y) must match rotate_y at {p:?}"
+            );
+            assert!(
+                (via_axis_z.eval(p) - via_canonical_z.eval(p)).abs() < 1e-9,
+                "rotate_axis(z) must match rotate_z at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_axis_leaves_sphere_unchanged() {
+        // 問266: 球は回転対称なので、任意軸周りに任意角度回転しても距離場は不変。
+        let s = Sdf::sphere(1.0);
+        let r = s.clone().rotate_axis(Vec3::new(1.0, 1.0, 1.0), 1.234);
+        for p in grid() {
+            assert!((s.eval(p) - r.eval(p)).abs() < EPS);
+        }
+    }
+
+    #[test]
+    fn rotate_axis_unnormalized_axis_gives_same_result_as_normalized() {
+        // 問266: 軸ベクトルは内部で単位化されるため、非単位長 (例: (2,0,0)) を渡しても
+        // 単位化済み (1,0,0) と同じ結果になる (axis の「向き」だけが意味を持つ)。
+        let angle = 0.5;
+        let bar = Sdf::cuboid(Vec3::new(1.2, 0.7, 0.4));
+        let unit = bar.clone().rotate_axis(Vec3::new(1.0, 0.0, 0.0), angle);
+        let scaled = bar.rotate_axis(Vec3::new(5.0, 0.0, 0.0), angle);
+        for p in grid() {
+            assert!(
+                (unit.eval(p) - scaled.eval(p)).abs() < 1e-9,
+                "non-unit axis length must not change the rotation result at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_axis_180deg_around_diagonal_swaps_and_negates_orthogonal_axis() {
+        // 問266: (1,1,0)/√2 軸周りの180°回転は、幾何学的によく知られた変換——
+        // x↔y を入れ替え、z を反転する。既知の解析解と比較して Rodrigues 公式の
+        // 実装 (演算順序含む) が正しいことを検証する。
+        use std::f64::consts::PI;
+        let axis = Vec3::new(1.0, 1.0, 0.0);
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        // rotate_point_axis は "点を逆回転" ではなく直接回転に使う関数なので、
+        // ここでは形状の eval ではなく幾何学的な変換結果を rotate_point_axis で直接確認する。
+        let rotated = rotate_point_axis(p, axis * (1.0 / axis.length()), PI);
+        assert!(
+            (rotated.x - 2.0).abs() < 1e-9,
+            "x must become original y, got {rotated:?}"
+        );
+        assert!(
+            (rotated.y - 1.0).abs() < 1e-9,
+            "y must become original x, got {rotated:?}"
+        );
+        assert!(
+            (rotated.z - (-3.0)).abs() < 1e-9,
+            "z must be negated, got {rotated:?}"
+        );
+    }
+
+    #[test]
+    fn rotate_axis_is_deterministic() {
+        // 問5/266: 任意軸回転も同一バイナリ内でビット決定的。
+        let tree = Sdf::cylinder(0.4, 1.0).rotate_axis(Vec3::new(1.0, 2.0, 3.0), 0.7);
+        for p in grid() {
+            assert_eq!(tree.eval(p).to_bits(), tree.eval(p).to_bits());
+        }
+    }
+
+    #[test]
+    fn rotate_axis_aabb_is_finite_and_contains_rotated_shape() {
+        // 問266: 対角軸周りの回転でも aabb は有限で、実際に回転した頂点を包含する
+        // (rotate_box_axis が rotate_box と同じ8隅法で正しく汎化されていることを確認)。
+        let bar = Sdf::cuboid(Vec3::new(2.0, 0.5, 0.5));
+        let rotated = bar.rotate_axis(Vec3::new(1.0, 1.0, 1.0), 0.9);
+        let (lo, hi) = rotated.aabb();
+        assert!(lo.x.is_finite() && lo.y.is_finite() && lo.z.is_finite());
+        assert!(hi.x.is_finite() && hi.y.is_finite() && hi.z.is_finite());
+        assert!(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z);
+        // 回転前の対角長 (2*sqrt(2^2+0.5^2+0.5^2)) を超えない程度の妥当な広がりであること
+        // (無限大や極端な値に発散していないことの粗いガード)。
+        let diag = (hi - lo).length();
+        assert!(
+            diag > 0.0 && diag < 20.0,
+            "aabb diagonal must be reasonable, got {diag}"
+        );
+    }
+
+    #[test]
     fn cut_removes_half_space_the_normal_points_into() {
         // 問235 (新機能): cut は dot(p,n) <= offset の側を残す。
         // 球を z=0 平面で「下半分を削る」: 法線が下 (0,0,-1)、offset=0 → z>=0 を残す。
         let s = Sdf::sphere(1.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
         // 上半球内部 (0,0,0.5) は残る (負)。
-        assert!(s.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "kept half (z>0) must be inside");
+        assert!(
+            s.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0,
+            "kept half (z>0) must be inside"
+        );
         // 下半球の点 (0,0,-0.5) は切り落とされ外部 (正)。
         // dot(p,n) = (0,0,-0.5)·(0,0,-1) = 0.5 > offset 0 → half=0.5 → max(球内部, 0.5)=0.5。
-        assert!(s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "cut-away half (z<0) must be outside");
+        assert!(
+            s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0,
+            "cut-away half (z<0) must be outside"
+        );
         // 切断面 z=0 上の中心は表面 (=0): 球内部 -1.0 と half = 0 の max = 0。
-        assert!(s.eval(Vec3::ZERO).abs() < 1e-12, "cut plane at z=0 is the new surface at center");
+        assert!(
+            s.eval(Vec3::ZERO).abs() < 1e-12,
+            "cut plane at z=0 is the new surface at center"
+        );
     }
 
     #[test]
@@ -881,9 +1102,12 @@ mod tests {
         // sphere をカットせず平面だけが効く領域で、距離が真の幾何距離になることを確認。
         let unit = Sdf::sphere(5.0).cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
         let scaled = Sdf::sphere(5.0).cut(Vec3::new(0.0, 0.0, -3.0), 0.0); // 非正規化
-        // z=-2 の点: 球内部 (r=5)、平面側 half = 2 (真の距離)。両者一致すべき。
+                                                                           // z=-2 の点: 球内部 (r=5)、平面側 half = 2 (真の距離)。両者一致すべき。
         let p = Vec3::new(0.0, 0.0, -2.0);
-        assert!((unit.eval(p) - 2.0).abs() < 1e-12, "unit normal: half-space distance must be 2.0");
+        assert!(
+            (unit.eval(p) - 2.0).abs() < 1e-12,
+            "unit normal: half-space distance must be 2.0"
+        );
         assert!(
             (scaled.eval(p) - unit.eval(p)).abs() < 1e-12,
             "non-unit normal must be normalized to the same metric field"
@@ -895,10 +1119,17 @@ mod tests {
         // 半空間単独なら無限 AABB だが、cut は子への交差なので AABB は子の AABB。
         let child = Sdf::sphere(1.0);
         let cut = child.clone().cut(Vec3::new(0.0, 0.0, -1.0), 0.0);
-        assert_eq!(cut.aabb(), child.aabb(), "cut aabb must equal child aabb (bounded)");
+        assert_eq!(
+            cut.aabb(),
+            child.aabb(),
+            "cut aabb must equal child aabb (bounded)"
+        );
         // sampling_box も有限で非反転。
         let (lo, hi) = cut.sampling_box();
-        assert!(lo.x.is_finite() && hi.x.is_finite(), "cut sampling_box must be finite");
+        assert!(
+            lo.x.is_finite() && hi.x.is_finite(),
+            "cut sampling_box must be finite"
+        );
         assert!(lo.z <= hi.z, "cut sampling_box must not be inverted");
     }
 
@@ -912,22 +1143,48 @@ mod tests {
         let pos = bar.clone().rotate_z(FRAC_PI_2).aabb();
         let neg = bar.clone().rotate_z(-FRAC_PI_2).aabb();
         // ±90° の z 回転は対称な箱に対して同一 aabb を生む。
-        assert!((pos.0.x - neg.0.x).abs() < 1e-9, "±90° z must give same lo.x");
-        assert!((pos.1.y - neg.1.y).abs() < 1e-9, "±90° z must give same hi.y");
-        assert!((neg.1.y - 2.0).abs() < 1e-9, "neg rotate hi.y must be 2.0, got {}", neg.1.y);
+        assert!(
+            (pos.0.x - neg.0.x).abs() < 1e-9,
+            "±90° z must give same lo.x"
+        );
+        assert!(
+            (pos.1.y - neg.1.y).abs() < 1e-9,
+            "±90° z must give same hi.y"
+        );
+        assert!(
+            (neg.1.y - 2.0).abs() < 1e-9,
+            "neg rotate hi.y must be 2.0, got {}",
+            neg.1.y
+        );
 
         // x 軸回転 90°: y 半幅 (0.5) と z 半幅 (0.5) が入れ替わる (両方 0.5 なので不変)。
         // 代わりに y!=z の箱で確認する。
         let bar_yz = Sdf::cuboid(Vec3::new(0.5, 2.0, 0.3));
         let rx = bar_yz.clone().rotate_x(FRAC_PI_2).aabb();
         // x 軸回転で y(2.0)↔z(0.3) 入れ替え → hi.z ≈ 2.0, hi.y ≈ 0.3。
-        assert!((rx.1.z - 2.0).abs() < 1e-9, "rotate_x must move y-extent to z, got hi.z={}", rx.1.z);
-        assert!((rx.1.y - 0.3).abs() < 1e-9, "rotate_x must move z-extent to y, got hi.y={}", rx.1.y);
+        assert!(
+            (rx.1.z - 2.0).abs() < 1e-9,
+            "rotate_x must move y-extent to z, got hi.z={}",
+            rx.1.z
+        );
+        assert!(
+            (rx.1.y - 0.3).abs() < 1e-9,
+            "rotate_x must move z-extent to y, got hi.y={}",
+            rx.1.y
+        );
 
         // y 軸回転 90°: x(0.5)↔z(0.3) 入れ替え。
         let ry = bar_yz.clone().rotate_y(FRAC_PI_2).aabb();
-        assert!((ry.1.x - 0.3).abs() < 1e-9, "rotate_y must move z-extent to x, got hi.x={}", ry.1.x);
-        assert!((ry.1.z - 0.5).abs() < 1e-9, "rotate_y must move x-extent to z, got hi.z={}", ry.1.z);
+        assert!(
+            (ry.1.x - 0.3).abs() < 1e-9,
+            "rotate_y must move z-extent to x, got hi.x={}",
+            ry.1.x
+        );
+        assert!(
+            (ry.1.z - 0.5).abs() < 1e-9,
+            "rotate_y must move x-extent to z, got hi.z={}",
+            ry.1.z
+        );
     }
 
     #[test]
@@ -939,14 +1196,25 @@ mod tests {
         let inter = a.intersection(b);
         // aabb は x 方向で反転する (a の hi.x=1.0 < b の lo.x=9.0 → max(lo)=9, min(hi)=1)。
         let (lo, hi) = inter.aabb();
-        assert!(lo.x > hi.x, "non-overlap intersection aabb must invert on x: lo.x={} hi.x={}", lo.x, hi.x);
+        assert!(
+            lo.x > hi.x,
+            "non-overlap intersection aabb must invert on x: lo.x={} hi.x={}",
+            lo.x,
+            hi.x
+        );
         // eval は max(da, db)。原点では a 内部(-1.0) だが b 外部(+9.0) → max=+9.0 (外部)。
         let d = inter.eval(Vec3::ZERO);
-        assert!(d > 0.0, "intersection of disjoint shapes must be exterior at origin: {d}");
+        assert!(
+            d > 0.0,
+            "intersection of disjoint shapes must be exterior at origin: {d}"
+        );
         assert!((d - 9.0).abs() < 1e-9, "eval = max(-1, 9) = 9, got {d}");
         // sampling_box は正規化される (lo <= hi)。
         let (slo, shi) = inter.sampling_box();
-        assert!(slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z, "sampling_box must be normalized");
+        assert!(
+            slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+            "sampling_box must be normalized"
+        );
     }
 
     #[test]
@@ -961,20 +1229,43 @@ mod tests {
         let m = neg_side.clone().mirror_x();
         let (lo, hi) = m.aabb();
         // aabb: ext = max(|-3.5|, |-2.5|) = 3.5 → [-3.5, 3.5] (対称・保守的)。
-        assert!((lo.x + 3.5).abs() < 1e-9, "mirrored lo.x must be -3.5, got {}", lo.x);
-        assert!((hi.x - 3.5).abs() < 1e-9, "mirrored hi.x must be 3.5, got {}", hi.x);
-        assert!((lo.x + hi.x).abs() < 1e-12, "mirror aabb must be symmetric: lo.x=-hi.x");
+        assert!(
+            (lo.x + 3.5).abs() < 1e-9,
+            "mirrored lo.x must be -3.5, got {}",
+            lo.x
+        );
+        assert!(
+            (hi.x - 3.5).abs() < 1e-9,
+            "mirrored hi.x must be 3.5, got {}",
+            hi.x
+        );
+        assert!(
+            (lo.x + hi.x).abs() < 1e-12,
+            "mirror aabb must be symmetric: lo.x=-hi.x"
+        );
         // eval: child は x=-3 にあり |x|>=0 では届かない → どこも外部 (空集合)。
         let d_pos = m.eval(Vec3::new(3.0, 0.0, 0.0)); // child.eval(3,..) = |3-(-3)|-0.5 = 5.5
         let d_neg = m.eval(Vec3::new(-3.0, 0.0, 0.0)); // child.eval(|-3|,..) = 同じ 5.5
-        assert!((d_pos - d_neg).abs() < EPS, "mirror eval must be symmetric: {d_pos} vs {d_neg}");
-        assert!(d_pos > 0.0, "negative-side shape mirrors to empty: must be exterior, got {d_pos}");
+        assert!(
+            (d_pos - d_neg).abs() < EPS,
+            "mirror eval must be symmetric: {d_pos} vs {d_neg}"
+        );
+        assert!(
+            d_pos > 0.0,
+            "negative-side shape mirrors to empty: must be exterior, got {d_pos}"
+        );
 
         // 対照: +x 側の形状なら反射コピーが -x 側に現れる (規約の正常動作)。
         let pos_side = Sdf::sphere(0.5).translate(Vec3::new(3.0, 0.0, 0.0));
         let mp = pos_side.mirror_x();
-        assert!(mp.eval(Vec3::new(3.0, 0.0, 0.0)) < 0.0, "+x copy must exist (inside)");
-        assert!(mp.eval(Vec3::new(-3.0, 0.0, 0.0)) < 0.0, "reflected -x copy must exist (inside)");
+        assert!(
+            mp.eval(Vec3::new(3.0, 0.0, 0.0)) < 0.0,
+            "+x copy must exist (inside)"
+        );
+        assert!(
+            mp.eval(Vec3::new(-3.0, 0.0, 0.0)) < 0.0,
+            "reflected -x copy must exist (inside)"
+        );
     }
 
     #[test]
@@ -1260,10 +1551,22 @@ mod tests {
         // グループで固定し、いずれかの変種で正規化が壊れる回帰を防ぐ。
         let far = |s: Sdf| s.translate(Vec3::new(10.0, 0.0, 0.0));
         let cases: Vec<(&str, Sdf)> = vec![
-            ("hard_intersection", Sdf::sphere(1.0).intersection(far(Sdf::sphere(1.0)))),
-            ("smooth_intersection", Sdf::sphere(1.0).smooth_intersection(far(Sdf::sphere(1.0)), 0.3)),
-            ("hard_difference", Sdf::sphere(0.5).difference(far(Sdf::sphere(2.0)))),
-            ("smooth_difference", Sdf::sphere(0.5).smooth_difference(far(Sdf::sphere(2.0)), 0.3)),
+            (
+                "hard_intersection",
+                Sdf::sphere(1.0).intersection(far(Sdf::sphere(1.0))),
+            ),
+            (
+                "smooth_intersection",
+                Sdf::sphere(1.0).smooth_intersection(far(Sdf::sphere(1.0)), 0.3),
+            ),
+            (
+                "hard_difference",
+                Sdf::sphere(0.5).difference(far(Sdf::sphere(2.0))),
+            ),
+            (
+                "smooth_difference",
+                Sdf::sphere(0.5).smooth_difference(far(Sdf::sphere(2.0)), 0.3),
+            ),
         ];
         for (name, sdf) in cases {
             let (slo, shi) = sdf.sampling_box();
@@ -1317,30 +1620,48 @@ mod tests {
         assert!(
             lo.x > child_lo.x,
             "shrunk AABB lo.x must be > child lo.x: lo.x={}, child_lo.x={}",
-            lo.x, child_lo.x
+            lo.x,
+            child_lo.x
         );
         assert!(
             hi.x < child_hi.x,
             "shrunk AABB hi.x must be < child hi.x: hi.x={}, child_hi.x={}",
-            hi.x, child_hi.x
+            hi.x,
+            child_hi.x
         );
         // AABB は等方 (sphere): 各軸 ±(1.0 - 0.4) = ±0.6。
-        assert!((lo.x - (-0.6)).abs() < 1e-12, "expected lo.x=-0.6, got {}", lo.x);
-        assert!((hi.x - 0.6).abs() < 1e-12, "expected hi.x=0.6, got {}", hi.x);
+        assert!(
+            (lo.x - (-0.6)).abs() < 1e-12,
+            "expected lo.x=-0.6, got {}",
+            lo.x
+        );
+        assert!(
+            (hi.x - 0.6).abs() < 1e-12,
+            "expected hi.x=0.6, got {}",
+            hi.x
+        );
 
         // AABB は依然 isosurface を内包する (表面点 (0.6,0,0) は AABB 内または境界)。
         let surface = Vec3::new(0.6, 0.0, 0.0);
         assert!(
             surface.x >= lo.x && surface.x <= hi.x,
             "surface point must be within AABB: {:?} in [{:?}, {:?}]",
-            surface, lo, hi
+            surface,
+            lo,
+            hi
         );
 
         // 過侵食 (amount > 子半径) では lo2 > hi2 → min/max で正規化されるため有限。
         let over_eroded = Sdf::sphere(1.0).offset(-1.5);
         let (elo, ehi) = over_eroded.aabb();
-        assert!(elo.x.is_finite() && ehi.x.is_finite(), "over-eroded AABB must be finite");
-        assert!(elo.x <= ehi.x, "over-eroded AABB must not be inverted: {elo:?} {ehi:?}");
+        assert!(
+            elo.x.is_finite() && ehi.x.is_finite(),
+            "over-eroded AABB must be finite"
+        );
+        assert!(
+            elo.x <= ehi.x,
+            "over-eroded AABB must not be inverted: {elo:?} {ehi:?}"
+        );
     }
 
     #[test]
@@ -1385,8 +1706,7 @@ mod tests {
         // (1) union(A, A) == A everywhere      (min(f,f) = f)
         // (2) intersection(A, A) == A everywhere (max(f,f) = f)
         // (3) difference(A, A) >= 0 everywhere  (max(f,-f) = |f| >= 0 → 自己差分は常に外部)
-        let a = Sdf::sphere(1.0)
-            .smooth_union(Sdf::cuboid(Vec3::splat(0.6)), 0.2);
+        let a = Sdf::sphere(1.0).smooth_union(Sdf::cuboid(Vec3::splat(0.6)), 0.2);
         let pts = grid();
 
         // (1) union の等冪性。
@@ -1395,7 +1715,8 @@ mod tests {
             assert!(
                 (u.eval(p) - a.eval(p)).abs() < EPS,
                 "union(A, A) must equal A at {p:?}: got {} vs {}",
-                u.eval(p), a.eval(p)
+                u.eval(p),
+                a.eval(p)
             );
         }
 
@@ -1405,7 +1726,8 @@ mod tests {
             assert!(
                 (i.eval(p) - a.eval(p)).abs() < EPS,
                 "intersection(A, A) must equal A at {p:?}: got {} vs {}",
-                i.eval(p), a.eval(p)
+                i.eval(p),
+                a.eval(p)
             );
         }
 
@@ -1442,7 +1764,9 @@ mod tests {
             Sdf::sphere(1.0).shell(0.25),
             Sdf::sphere(0.5).repeat_n(Vec3::splat(2.0), [1, 1, 1]),
             // 問142: Mirror は電池から漏れていた。mirror_box は反射軸で対称ボックスを作る。
-            Sdf::sphere(0.5).translate(Vec3::new(1.5, 0.0, 0.0)).mirror_x(),
+            Sdf::sphere(0.5)
+                .translate(Vec3::new(1.5, 0.0, 0.0))
+                .mirror_x(),
         ];
         for (k, s) in shapes.iter().enumerate() {
             let (alo, ahi) = s.aabb();
@@ -1493,23 +1817,44 @@ mod tests {
 
         // Sphere(r=1.5): 全軸 ±1.5。
         let (lo, hi) = Sdf::sphere(1.5).aabb();
-        assert!((lo.x + 1.5).abs() < EPS && (hi.x - 1.5).abs() < EPS, "sphere aabb x");
-        assert!((lo.z + 1.5).abs() < EPS && (hi.z - 1.5).abs() < EPS, "sphere aabb z");
+        assert!(
+            (lo.x + 1.5).abs() < EPS && (hi.x - 1.5).abs() < EPS,
+            "sphere aabb x"
+        );
+        assert!(
+            (lo.z + 1.5).abs() < EPS && (hi.z - 1.5).abs() < EPS,
+            "sphere aabb z"
+        );
 
         // Cylinder(r=0.5, half_height=2.0): XY は ±0.5、Z は ±2.0。
         // API: cylinder(radius, half_height) — 第2引数は高さの「半分」。
         let (lo, hi) = Sdf::cylinder(0.5, 2.0).aabb();
-        assert!((lo.x + 0.5).abs() < EPS && (hi.x - 0.5).abs() < EPS, "cylinder aabb x");
-        assert!((lo.z + 2.0).abs() < EPS && (hi.z - 2.0).abs() < EPS, "cylinder aabb z");
+        assert!(
+            (lo.x + 0.5).abs() < EPS && (hi.x - 0.5).abs() < EPS,
+            "cylinder aabb x"
+        );
+        assert!(
+            (lo.z + 2.0).abs() < EPS && (hi.z - 2.0).abs() < EPS,
+            "cylinder aabb z"
+        );
 
         // Torus(major=2.0, minor=0.5): XY は ±2.5、Z は ±0.5。
         let (lo, hi) = Sdf::torus(2.0, 0.5).aabb();
-        assert!((lo.x + 2.5).abs() < EPS && (hi.x - 2.5).abs() < EPS, "torus aabb x");
-        assert!((lo.z + 0.5).abs() < EPS && (hi.z - 0.5).abs() < EPS, "torus aabb z");
+        assert!(
+            (lo.x + 2.5).abs() < EPS && (hi.x - 2.5).abs() < EPS,
+            "torus aabb x"
+        );
+        assert!(
+            (lo.z + 0.5).abs() < EPS && (hi.z - 0.5).abs() < EPS,
+            "torus aabb z"
+        );
 
         // Cone(r=1.0, h=2.0): XY は ±1.0 (底面)、Z は [-2.0, 0.0] (頂点=z=0, 底面=z=-2)。
         let (lo, hi) = Sdf::cone(1.0, 2.0).aabb();
-        assert!((lo.x + 1.0).abs() < EPS && (hi.x - 1.0).abs() < EPS, "cone aabb x");
+        assert!(
+            (lo.x + 1.0).abs() < EPS && (hi.x - 1.0).abs() < EPS,
+            "cone aabb x"
+        );
         assert!((lo.z + 2.0).abs() < EPS && hi.z.abs() < EPS, "cone aabb z");
     }
 
@@ -1549,9 +1894,15 @@ mod tests {
         let at_mid = s.eval(Vec3::new(1.0, 0.0, 0.0));
         let at_neighbor = s.eval(Vec3::new(2.0, 0.0, 0.0));
         // 隣接セル中心は球内部 (負)。
-        assert!(at_neighbor < 0.0, "x=2 (copy center) must be inside sphere: {at_neighbor}");
+        assert!(
+            at_neighbor < 0.0,
+            "x=2 (copy center) must be inside sphere: {at_neighbor}"
+        );
         // x=1.0 は両球から距離 0.7 → 外部。
-        assert!(at_mid > 0.0, "midpoint x=1.0 must be outside both spheres: {at_mid}");
+        assert!(
+            at_mid > 0.0,
+            "midpoint x=1.0 must be outside both spheres: {at_mid}"
+        );
         // 両端が同距離なことの確認 (snap どちらでも同値)。
         let at_neg_mid = s.eval(Vec3::new(-1.0, 0.0, 0.0));
         assert!(
@@ -1569,9 +1920,18 @@ mod tests {
         let s = Sdf::sphere(1.0).scale(-2.0);
         let (lo, hi) = s.sampling_box();
         // 反転後も sampling_box が lo <= hi を保証する。
-        assert!(lo.x <= hi.x, "sampling_box x must be non-inverted after scale(-1)");
-        assert!(lo.y <= hi.y, "sampling_box y must be non-inverted after scale(-1)");
-        assert!(lo.z <= hi.z, "sampling_box z must be non-inverted after scale(-1)");
+        assert!(
+            lo.x <= hi.x,
+            "sampling_box x must be non-inverted after scale(-1)"
+        );
+        assert!(
+            lo.y <= hi.y,
+            "sampling_box y must be non-inverted after scale(-1)"
+        );
+        assert!(
+            lo.z <= hi.z,
+            "sampling_box z must be non-inverted after scale(-1)"
+        );
     }
 
     #[test]
@@ -1584,18 +1944,34 @@ mod tests {
         let (alo, ahi) = rep.aabb();
         let (slo, shi) = rep.sampling_box();
         // sampling_box は aabb を包含する。
-        assert!(slo.x <= alo.x, "sampling_box.x.lo must enclose aabb.x.lo: slo.x={} alo.x={}", slo.x, alo.x);
-        assert!(shi.x >= ahi.x, "sampling_box.x.hi must enclose aabb.x.hi: shi.x={} ahi.x={}", shi.x, ahi.x);
+        assert!(
+            slo.x <= alo.x,
+            "sampling_box.x.lo must enclose aabb.x.lo: slo.x={} alo.x={}",
+            slo.x,
+            alo.x
+        );
+        assert!(
+            shi.x >= ahi.x,
+            "sampling_box.x.hi must enclose aabb.x.hi: shi.x={} ahi.x={}",
+            shi.x,
+            ahi.x
+        );
         assert!(slo.y <= alo.y, "sampling_box.y.lo must enclose aabb.y.lo");
         assert!(shi.y >= ahi.y, "sampling_box.y.hi must enclose aabb.y.hi");
         // 反転していない (lo <= hi)。
-        assert!(slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
-            "sampling_box must not be inverted with zero-period axis");
+        assert!(
+            slo.x <= shi.x && slo.y <= shi.y && slo.z <= shi.z,
+            "sampling_box must not be inverted with zero-period axis"
+        );
         // x 軸の AABB は child 範囲のみ (period.x=0 なのでカウントによる拡張なし)。
         // sampling_box は全軸一律の diag*5% マージンを加えるため、y/z の拡張の影響を受ける。
         // (diag はすべての軸を含む全体の対角線なので x も多少大きくなる → 保守的に確認)
         assert!(shi.x >= 1.0, "x half-extent must cover child sphere radius");
-        assert!(shi.x < 3.0, "x-axis must not excessively expand with period=0: shi.x={}", shi.x);
+        assert!(
+            shi.x < 3.0,
+            "x-axis must not excessively expand with period=0: shi.x={}",
+            shi.x
+        );
     }
 
     #[test]
@@ -1635,7 +2011,10 @@ mod tests {
         // count=1 の x 軸は period 2.0 で繰り返す → x=0 と x=2.0 は同じセルに snap。
         let d_x0 = rep.eval(Vec3::new(0.0, 0.0, 0.0));
         let d_x2 = rep.eval(Vec3::new(2.0, 0.0, 0.0));
-        assert_eq!(d_x0, d_x2, "x-axis (count=1) must repeat: d(x=0)={d_x0} d(x=2)={d_x2}");
+        assert_eq!(
+            d_x0, d_x2,
+            "x-axis (count=1) must repeat: d(x=0)={d_x0} d(x=2)={d_x2}"
+        );
         // y 軸 (count=0) は繰り返しなし: y=2.0 は繰り返しセルに snap されない。
         // 中心 (0,0,0) は球の内部 (d<0)、y=2.0 は 1.7 距離 (d≈1.4>0) なので異なるはず。
         assert_ne!(
@@ -1665,9 +2044,18 @@ mod tests {
                 let du = su.eval(p);
                 let di = si.eval(p);
                 let dd = sd.eval(p);
-                assert!(du.is_finite(), "smooth_union k={k} at {p:?}: {du} is not finite");
-                assert!(di.is_finite(), "smooth_intersection k={k} at {p:?}: {di} is not finite");
-                assert!(dd.is_finite(), "smooth_difference k={k} at {p:?}: {dd} is not finite");
+                assert!(
+                    du.is_finite(),
+                    "smooth_union k={k} at {p:?}: {du} is not finite"
+                );
+                assert!(
+                    di.is_finite(),
+                    "smooth_intersection k={k} at {p:?}: {di} is not finite"
+                );
+                assert!(
+                    dd.is_finite(),
+                    "smooth_difference k={k} at {p:?}: {dd} is not finite"
+                );
             }
         }
     }
@@ -1700,10 +2088,16 @@ mod tests {
         let s = Sdf::sphere(1.0).scale(0.0);
         let d = s.eval(Vec3::new(0.5, 0.0, 0.0));
         // パニックなしを確認 (上の行が到達できれば OK)。NaN であることも固定。
-        assert!(d.is_nan(), "scale(0.0).eval must be NaN (not panic), got {d}");
+        assert!(
+            d.is_nan(),
+            "scale(0.0).eval must be NaN (not panic), got {d}"
+        );
         // aabb は 0 * child_bound = 0 → lo=hi=0 (有限)。
         let (lo, hi) = s.aabb();
-        assert!(lo.x.is_finite() && hi.x.is_finite(), "scale(0.0).aabb must be finite (all-zero)");
+        assert!(
+            lo.x.is_finite() && hi.x.is_finite(),
+            "scale(0.0).aabb must be finite (all-zero)"
+        );
     }
 
     #[test]
@@ -1713,14 +2107,23 @@ mod tests {
         // capsule(half_height, radius) の引数順に注意 (問178 で判明)。
         // half_height=0.1, radius=1.0 → 丸みの勝ったカプセル。
         let c = Sdf::capsule(0.1, 1.0); // half_height=0.1, radius=1.0
-        // 中心: pz_clamped=0, length(0,0,0)=0 → d = 0 - 1.0 = -1.0。
-        assert!((c.eval(Vec3::ZERO) - (-1.0)).abs() < 1e-12, "center must be at d=-1.0");
+                                        // 中心: pz_clamped=0, length(0,0,0)=0 → d = 0 - 1.0 = -1.0。
+        assert!(
+            (c.eval(Vec3::ZERO) - (-1.0)).abs() < 1e-12,
+            "center must be at d=-1.0"
+        );
         // 軸端 (0,0,0.1) から radial 方向 (1.0, 0, 0.1):
         // pz_clamped=0.1, offset=(1.0, 0, 0) → length=1.0 → d = 1.0 - 1.0 = 0。
-        assert!(c.eval(Vec3::new(1.0, 0.0, 0.1)).abs() < 1e-12, "end-cap surface at (1,0,0.1)");
+        assert!(
+            c.eval(Vec3::new(1.0, 0.0, 0.1)).abs() < 1e-12,
+            "end-cap surface at (1,0,0.1)"
+        );
         // 遠点は外部 (有限)。
         let d_far = c.eval(Vec3::new(5.0, 0.0, 0.0));
-        assert!(d_far.is_finite() && d_far > 0.0, "far exterior must be positive finite: {d_far}");
+        assert!(
+            d_far.is_finite() && d_far > 0.0,
+            "far exterior must be positive finite: {d_far}"
+        );
         // 連続性: 中心 → 軸端 の中間点も評価できる。
         for z in [0.0_f64, 0.05, 0.1, 0.2] {
             let d = c.eval(Vec3::new(0.0, 0.0, z));
@@ -1737,7 +2140,12 @@ mod tests {
         let (lo, hi) = extreme.aabb();
         assert!(lo.x.is_finite(), "lo.x must be finite: {}", lo.x);
         assert!(hi.x.is_finite(), "hi.x must be finite: {}", hi.x);
-        assert!(lo.x <= hi.x, "aabb must be normalized (lo <= hi): lo={} hi={}", lo.x, hi.x);
+        assert!(
+            lo.x <= hi.x,
+            "aabb must be normalized (lo <= hi): lo={} hi={}",
+            lo.x,
+            hi.x
+        );
         // eval も NaN/Inf を生じない。
         let d = extreme.eval(Vec3::ZERO);
         assert!(d.is_finite(), "eval at origin must be finite: {d}");

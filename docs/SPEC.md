@@ -88,6 +88,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | 反復 | `repeat_n(period, count)` | 有限反復。count=0 または period=0 で軸無効 |
 | 鏡映 | `mirror_x/y/z()` | `child.eval(\|x\|,..)`：+側を−側へ反射 |
 | 回転 | `rotate_x/y/z(angle)` | 剛体・距離保存。angle はラジアン |
+| 任意軸回転 | `rotate_axis(axis, angle)` | Rodrigues の回転公式。axis は内部で単位化（ゼロ軸は eval 層で拒否）。`axis=(1,0,0)/(0,1,0)/(0,0,1)` で `rotate_x/y/z` と数式的に一致（問266） |
 | カット | `cut(normal, offset)` | 平面 `dot(p,n)=offset` で半空間と交差。`dot(p,n)≤offset` 側を残す。法線は単位化。断面用。AABB は子の AABB（材料を削るのみ） |
 | 平坦化 | `flatten(at)` | FDM 印刷の平坦底面。z=at（既定 0）で底を切り z≥at を残す。`cut` の最頻用ケースの意図明示型別名（法線方向の取り違え回避）。内部で `cut((0,0,−1),−at)` に lower |
 
@@ -266,7 +267,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 351 テスト（341 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
+- `cargo test`: 358 テスト（348 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

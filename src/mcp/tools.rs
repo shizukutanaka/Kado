@@ -678,6 +678,12 @@ mirror_z      {"op":"mirror_z","shape":<sdf>}  half and reflects it onto the neg
 rotate_x      {"op":"rotate_x","angle":90,"shape":<sdf>}  angle in DEGREES
 rotate_y      {"op":"rotate_y","angle":45,"shape":<sdf>}
 rotate_z      {"op":"rotate_z","angle":30,"shape":<sdf>}
+rotate        {"op":"rotate","ax":1,"ay":1,"az":0,"angle":45,"shape":<sdf>}
+              rotate around an arbitrary axis (ax,ay,az; auto-normalized, must be
+              non-zero), angle in DEGREES. Use this instead of composing
+              rotate_x/y/z when you need a diagonal axis — chaining canonical
+              rotations does NOT equal a single arbitrary-axis rotation in
+              general (Euler composition order matters).
 repeat        {"op":"repeat","x":2.0,"nx":2,"shape":<sdf>}
               period per axis (x/y/z); count per axis (nx/ny/nz, default 1).
               count is copies PER SIDE of the origin → total = 2*count+1 per axis.
@@ -709,7 +715,8 @@ DSL arg order mirrors the constructors:
   cone(r,h) · capsule(h,r) · rounded_box(s,r) or (x,y,z,r) · ellipsoid(s) or (x,y,z)
   union/intersection/difference(a,b) · smooth_*(a,b[,k])
   translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
-  rotate_x/y/z(deg,shape) · mirror_x/y/z(shape) · repeat(px,py,pz[,nx,ny,nz],shape)
+  rotate_x/y/z(deg,shape) · rotate(ax,ay,az,deg,shape) · mirror_x/y/z(shape)
+  repeat(px,py,pz[,nx,ny,nz],shape)
   cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape) · flatten(shape) or flatten(at,shape)
 
 ## Workflow

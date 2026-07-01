@@ -345,6 +345,30 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.rotate_z(req_f64(v, "angle")?.to_radians()))
         }
 
+        // 任意軸周り回転 (問266)。rotate_x/y/z は canonical 3軸のみだが、
+        // "rotate_x してから rotate_y" のような合成では一般に到達できない姿勢
+        // (対角線周りの回転等) を、オイラー角の逆算なしに1操作で表現できる。
+        // 軸は非ゼロ必須 (cut の法線と同じ契約)。角度は度 (degree) で受け取る。
+        "rotate" => {
+            let child = build_child(v, "shape", op, depth, budget)?;
+            let ax = req_f64(v, "ax")?;
+            let ay = req_f64(v, "ay")?;
+            let az = req_f64(v, "az")?;
+            let angle = req_f64(v, "angle")?;
+            let axis = Vec3::new(ax, ay, az);
+            if axis.length() == 0.0 {
+                return Err(ScriptError::new(
+                    "rotate axis (ax,ay,az) must be non-zero".to_string(),
+                ));
+            }
+            if !angle.is_finite() {
+                return Err(ScriptError::new(format!(
+                    "rotate \"angle\" must be finite, got {angle}"
+                )));
+            }
+            Ok(child.rotate_axis(axis, angle.to_radians()))
+        }
+
         // 平面カット: dot(p,(nx,ny,nz)) <= offset の側を残す。法線は非ゼロ必須。
         "cut" => {
             let child = build_child(v, "shape", op, depth, budget)?;
@@ -411,9 +435,7 @@ fn req_f64(v: &Value, key: &str) -> Result<f64, ScriptError> {
 fn req_positive_f64(v: &Value, key: &str) -> Result<f64, ScriptError> {
     let f = req_f64(v, key)?;
     if f <= 0.0 {
-        return Err(ScriptError::new(format!(
-            "\"{key}\" must be > 0, got {f}"
-        )));
+        return Err(ScriptError::new(format!("\"{key}\" must be > 0, got {f}")));
     }
     Ok(f)
 }
@@ -481,7 +503,11 @@ mod tests {
             "error must carry the path to the failing node, got: {}",
             e.message
         );
-        assert!(e.message.contains("must be > 0"), "and the leaf cause: {}", e.message);
+        assert!(
+            e.message.contains("must be > 0"),
+            "and the leaf cause: {}",
+            e.message
+        );
     }
 
     #[test]
@@ -580,33 +606,87 @@ mod tests {
     fn zero_or_negative_primitive_dimensions_are_rejected() {
         // 問28: r=0/負は eval エラーなく受理されると EMPTY_MESH でサイレント失敗する。
         // scale/shell と同様に入力段で拒否して明確なエラーを返す。
-        assert!(eval_scene(r#"{"op":"sphere","r":0.0}"#).is_err(), "r=0 sphere");
-        assert!(eval_scene(r#"{"op":"sphere","r":-1.0}"#).is_err(), "r<0 sphere");
-        assert!(eval_scene(r#"{"op":"sphere","r":1.0}"#).is_ok(), "r>0 sphere");
+        assert!(
+            eval_scene(r#"{"op":"sphere","r":0.0}"#).is_err(),
+            "r=0 sphere"
+        );
+        assert!(
+            eval_scene(r#"{"op":"sphere","r":-1.0}"#).is_err(),
+            "r<0 sphere"
+        );
+        assert!(
+            eval_scene(r#"{"op":"sphere","r":1.0}"#).is_ok(),
+            "r>0 sphere"
+        );
 
-        assert!(eval_scene(r#"{"op":"cylinder","r":0.0,"h":1.0}"#).is_err(), "r=0 cylinder");
-        assert!(eval_scene(r#"{"op":"cylinder","r":1.0,"h":0.0}"#).is_err(), "h=0 cylinder");
+        assert!(
+            eval_scene(r#"{"op":"cylinder","r":0.0,"h":1.0}"#).is_err(),
+            "r=0 cylinder"
+        );
+        assert!(
+            eval_scene(r#"{"op":"cylinder","r":1.0,"h":0.0}"#).is_err(),
+            "h=0 cylinder"
+        );
         assert!(eval_scene(r#"{"op":"cylinder","r":1.0,"h":1.0}"#).is_ok());
 
-        assert!(eval_scene(r#"{"op":"cone","r":0.0,"h":1.0}"#).is_err(), "r=0 cone");
-        assert!(eval_scene(r#"{"op":"cone","r":1.0,"h":0.0}"#).is_err(), "h=0 cone");
+        assert!(
+            eval_scene(r#"{"op":"cone","r":0.0,"h":1.0}"#).is_err(),
+            "r=0 cone"
+        );
+        assert!(
+            eval_scene(r#"{"op":"cone","r":1.0,"h":0.0}"#).is_err(),
+            "h=0 cone"
+        );
 
-        assert!(eval_scene(r#"{"op":"torus","major":0.0,"minor":0.1}"#).is_err(), "major=0 torus");
-        assert!(eval_scene(r#"{"op":"torus","major":1.0,"minor":0.0}"#).is_err(), "minor=0 torus");
+        assert!(
+            eval_scene(r#"{"op":"torus","major":0.0,"minor":0.1}"#).is_err(),
+            "major=0 torus"
+        );
+        assert!(
+            eval_scene(r#"{"op":"torus","major":1.0,"minor":0.0}"#).is_err(),
+            "minor=0 torus"
+        );
 
-        assert!(eval_scene(r#"{"op":"capsule","h":-1.0,"r":0.5}"#).is_err(), "h<0 capsule");
-        assert!(eval_scene(r#"{"op":"capsule","h":0.0,"r":0.5}"#).is_ok(), "h=0 capsule is sphere");
-        assert!(eval_scene(r#"{"op":"capsule","h":1.0,"r":0.0}"#).is_err(), "r=0 capsule");
+        assert!(
+            eval_scene(r#"{"op":"capsule","h":-1.0,"r":0.5}"#).is_err(),
+            "h<0 capsule"
+        );
+        assert!(
+            eval_scene(r#"{"op":"capsule","h":0.0,"r":0.5}"#).is_ok(),
+            "h=0 capsule is sphere"
+        );
+        assert!(
+            eval_scene(r#"{"op":"capsule","h":1.0,"r":0.0}"#).is_err(),
+            "r=0 capsule"
+        );
 
-        assert!(eval_scene(r#"{"op":"cuboid","x":0.0,"y":1.0,"z":1.0}"#).is_err(), "x=0 cuboid");
-        assert!(eval_scene(r#"{"op":"cuboid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(), "y<0 cuboid");
+        assert!(
+            eval_scene(r#"{"op":"cuboid","x":0.0,"y":1.0,"z":1.0}"#).is_err(),
+            "x=0 cuboid"
+        );
+        assert!(
+            eval_scene(r#"{"op":"cuboid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(),
+            "y<0 cuboid"
+        );
 
-        assert!(eval_scene(r#"{"op":"rounded_box","x":0.0,"r":0.1}"#).is_err(), "x=0 rounded_box");
-        assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.0}"#).is_err(), "r=0 rounded_box");
+        assert!(
+            eval_scene(r#"{"op":"rounded_box","x":0.0,"r":0.1}"#).is_err(),
+            "x=0 rounded_box"
+        );
+        assert!(
+            eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.0}"#).is_err(),
+            "r=0 rounded_box"
+        );
         assert!(eval_scene(r#"{"op":"rounded_box","x":1.0,"r":0.1}"#).is_ok());
 
-        assert!(eval_scene(r#"{"op":"ellipsoid","x":0.0,"y":1.0,"z":1.0}"#).is_err(), "x=0 ellipsoid");
-        assert!(eval_scene(r#"{"op":"ellipsoid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(), "y<0 ellipsoid");
+        assert!(
+            eval_scene(r#"{"op":"ellipsoid","x":0.0,"y":1.0,"z":1.0}"#).is_err(),
+            "x=0 ellipsoid"
+        );
+        assert!(
+            eval_scene(r#"{"op":"ellipsoid","x":1.0,"y":-1.0,"z":1.0}"#).is_err(),
+            "y<0 ellipsoid"
+        );
     }
 
     #[test]
@@ -618,7 +698,10 @@ mod tests {
         assert!((s.eval(p) - direct.eval(p)).abs() < 1e-12);
         // "s" で一様指定 → 球相当。
         let uni = eval_scene(r#"{"op":"ellipsoid","s":1.5}"#).unwrap();
-        assert!(uni.eval(Vec3::new(1.5, 0.0, 0.0)).abs() < 1e-12, "uniform ellipsoid surface");
+        assert!(
+            uni.eval(Vec3::new(1.5, 0.0, 0.0)).abs() < 1e-12,
+            "uniform ellipsoid surface"
+        );
         // x 欠落はエラー。
         assert!(eval_scene(r#"{"op":"ellipsoid","y":1.0,"z":1.0}"#).is_err());
     }
@@ -629,7 +712,10 @@ mod tests {
         let z = r#"{"op":"shell","thickness":0.0,"shape":{"op":"sphere","r":1.0}}"#;
         assert!(eval_scene(z).is_err(), "zero thickness must be rejected");
         let neg = r#"{"op":"shell","thickness":-0.1,"shape":{"op":"sphere","r":1.0}}"#;
-        assert!(eval_scene(neg).is_err(), "negative thickness must be rejected");
+        assert!(
+            eval_scene(neg).is_err(),
+            "negative thickness must be rejected"
+        );
         let ok = r#"{"op":"shell","thickness":0.1,"shape":{"op":"sphere","r":1.0}}"#;
         assert!(eval_scene(ok).is_ok(), "positive thickness must pass");
     }
@@ -643,24 +729,44 @@ mod tests {
         // smooth_union: 重なり中心は両球の内部 → 負。
         let src_u = format!(r#"{{"op":"smooth_union","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
         let su = eval_scene(&src_u).unwrap();
-        assert!(su.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0, "smooth_union center inside");
+        assert!(
+            su.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0,
+            "smooth_union center inside"
+        );
         // 遠方は外側 → 正。
-        assert!(su.eval(Vec3::new(5.0, 0.0, 0.0)) > 0.0, "smooth_union far outside");
+        assert!(
+            su.eval(Vec3::new(5.0, 0.0, 0.0)) > 0.0,
+            "smooth_union far outside"
+        );
 
         // smooth_intersection: 両球の重なり領域の中心は内側 → 負。
-        let src_i = format!(r#"{{"op":"smooth_intersection","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
+        let src_i =
+            format!(r#"{{"op":"smooth_intersection","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
         let si = eval_scene(&src_i).unwrap();
-        assert!(si.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0, "smooth_intersection overlap inside");
+        assert!(
+            si.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0,
+            "smooth_intersection overlap inside"
+        );
         // 一方の球だけにある点は外側 → 正。
-        assert!(si.eval(Vec3::new(-1.5, 0.0, 0.0)) > 0.0, "smooth_intersection non-overlap outside");
+        assert!(
+            si.eval(Vec3::new(-1.5, 0.0, 0.0)) > 0.0,
+            "smooth_intersection non-overlap outside"
+        );
 
         // smooth_difference a-b: a 内 b 外の領域 → 負。
-        let src_d = format!(r#"{{"op":"smooth_difference","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
+        let src_d =
+            format!(r#"{{"op":"smooth_difference","k":0.3,"a":{sphere_a},"b":{sphere_b}}}"#);
         let sd = eval_scene(&src_d).unwrap();
         // a の左端 (-0.9, 0, 0) は a 内 b 外 → 負。
-        assert!(sd.eval(Vec3::new(-0.9, 0.0, 0.0)) < 0.0, "smooth_diff inside a minus b");
+        assert!(
+            sd.eval(Vec3::new(-0.9, 0.0, 0.0)) < 0.0,
+            "smooth_diff inside a minus b"
+        );
         // b の中心付近 (0.5, 0, 0) は b 内 → 削除済み → 正。
-        assert!(sd.eval(Vec3::new(0.5, 0.0, 0.0)) > 0.0, "smooth_diff inside b is removed");
+        assert!(
+            sd.eval(Vec3::new(0.5, 0.0, 0.0)) > 0.0,
+            "smooth_diff inside b is removed"
+        );
     }
 
     #[test]
@@ -687,15 +793,24 @@ mod tests {
             "shape":{"op":"sphere","r":1.0}}"#;
         let s = eval_scene(src).unwrap();
         assert!(s.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "upper half kept");
-        assert!(s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "lower half cut away");
+        assert!(
+            s.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0,
+            "lower half cut away"
+        );
 
         // offset 省略時は 0 (原点を通る平面)。
-        let no_off = eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
-        assert!(no_off.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "default offset 0 cuts at origin");
+        let no_off =
+            eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"shape":{"op":"sphere","r":1.0}}"#)
+                .unwrap();
+        assert!(
+            no_off.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0,
+            "default offset 0 cuts at origin"
+        );
 
         // ゼロ法線は拒否 (退化平面)。
         assert!(
-            eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":0,"shape":{"op":"sphere","r":1.0}}"#).is_err(),
+            eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":0,"shape":{"op":"sphere","r":1.0}}"#)
+                .is_err(),
             "zero normal must be rejected"
         );
         // 法線成分の欠落はエラー。
@@ -706,28 +821,98 @@ mod tests {
     }
 
     #[test]
+    fn rotate_via_script_matches_canonical_axis_and_rejects_zero_axis() {
+        // 問266: rotate(ax,ay,az,angle,shape) は canonical axis (1,0,0) 指定時に
+        // rotate_x と同じ結果を返す。角度は度 (degree) 単位。
+        let via_rotate = eval_scene(
+            r#"{"op":"rotate","ax":1,"ay":0,"az":0,"angle":40,
+                "shape":{"op":"cuboid","x":1.5,"y":0.6,"z":0.3}}"#,
+        )
+        .unwrap();
+        let via_rotate_x = eval_scene(
+            r#"{"op":"rotate_x","angle":40,
+                "shape":{"op":"cuboid","x":1.5,"y":0.6,"z":0.3}}"#,
+        )
+        .unwrap();
+        for p in [
+            Vec3::new(0.3, 0.2, 0.1),
+            Vec3::new(-0.5, 0.4, -0.2),
+            Vec3::new(1.0, -1.0, 0.5),
+        ] {
+            assert!(
+                (via_rotate.eval(p) - via_rotate_x.eval(p)).abs() < 1e-9,
+                "rotate(ax=1,ay=0,az=0) must match rotate_x at {p:?}"
+            );
+        }
+
+        // ゼロ軸は拒否 (退化回転)。
+        assert!(
+            eval_scene(
+                r#"{"op":"rotate","ax":0,"ay":0,"az":0,"angle":40,
+                    "shape":{"op":"sphere","r":1.0}}"#
+            )
+            .is_err(),
+            "zero axis must be rejected"
+        );
+        // 軸成分の欠落はエラー。
+        assert!(
+            eval_scene(
+                r#"{"op":"rotate","ax":1,"ay":0,"angle":40,
+                    "shape":{"op":"sphere","r":1.0}}"#
+            )
+            .is_err(),
+            "missing az must be rejected"
+        );
+        // angle 欠落もエラー。
+        assert!(
+            eval_scene(
+                r#"{"op":"rotate","ax":1,"ay":0,"az":0,
+                    "shape":{"op":"sphere","r":1.0}}"#
+            )
+            .is_err(),
+            "missing angle must be rejected"
+        );
+    }
+
+    #[test]
     fn flatten_keeps_above_plane_and_equals_explicit_cut() {
         // 問236: flatten は印刷用の平坦底面 (z>=at を残す) を意図明示型で作る。
         // flatten(at) は cut(normal=(0,0,-1), offset=-at) と完全一致しなければならない
         // (法線方向の取り違えを避ける安全な別名)。
-        let flat = eval_scene(r#"{"op":"flatten","at":0,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        let flat =
+            eval_scene(r#"{"op":"flatten","at":0,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
         // z>=0 は残る、z<0 は削られる。
         assert!(flat.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "z>0 kept");
         assert!(flat.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "z<0 cut away");
-        assert!(flat.eval(Vec3::ZERO).abs() < 1e-12, "z=0 is the flat base surface");
+        assert!(
+            flat.eval(Vec3::ZERO).abs() < 1e-12,
+            "z=0 is the flat base surface"
+        );
 
         // at 省略時は 0。
         let no_at = eval_scene(r#"{"op":"flatten","shape":{"op":"sphere","r":1.0}}"#).unwrap();
         assert!(no_at.eval(Vec3::new(0.0, 0.0, -0.5)) > 0.0, "default at=0");
 
         // at=0.3 で底を上げる: z>=0.3 を残す。
-        let raised = eval_scene(r#"{"op":"flatten","at":0.3,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        let raised =
+            eval_scene(r#"{"op":"flatten","at":0.3,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
         assert!(raised.eval(Vec3::new(0.0, 0.0, 0.5)) < 0.0, "z>0.3 kept");
-        assert!(raised.eval(Vec3::new(0.0, 0.0, 0.1)) > 0.0, "z<0.3 cut away");
+        assert!(
+            raised.eval(Vec3::new(0.0, 0.0, 0.1)) > 0.0,
+            "z<0.3 cut away"
+        );
 
         // flatten(at) == cut((0,0,-1), -at) を多点でビット一致確認。
-        let explicit = eval_scene(r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":-0.3,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
-        for p in [Vec3::ZERO, Vec3::new(0.2, -0.1, 0.5), Vec3::new(0.0, 0.0, -0.7), Vec3::new(0.5, 0.5, 0.3)] {
+        let explicit = eval_scene(
+            r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":-0.3,"shape":{"op":"sphere","r":1.0}}"#,
+        )
+        .unwrap();
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(0.2, -0.1, 0.5),
+            Vec3::new(0.0, 0.0, -0.7),
+            Vec3::new(0.5, 0.5, 0.3),
+        ] {
             assert_eq!(
                 raised.eval(p).to_bits(),
                 explicit.eval(p).to_bits(),
@@ -767,10 +952,16 @@ mod tests {
         );
 
         // 0° 回転は恒等。
-        let id = eval_scene(r#"{"op":"rotate_z","angle":0,"shape":{"op":"cuboid","x":1,"y":0.5,"z":0.5}}"#).unwrap();
+        let id = eval_scene(
+            r#"{"op":"rotate_z","angle":0,"shape":{"op":"cuboid","x":1,"y":0.5,"z":0.5}}"#,
+        )
+        .unwrap();
         let direct = Sdf::cuboid(Vec3::new(1.0, 0.5, 0.5));
         let p = Vec3::new(0.7, 0.2, 0.1);
-        assert!((id.eval(p) - direct.eval(p)).abs() < 1e-12, "0° rotation must be identity");
+        assert!(
+            (id.eval(p) - direct.eval(p)).abs() < 1e-12,
+            "0° rotation must be identity"
+        );
     }
 
     #[test]
@@ -782,17 +973,23 @@ mod tests {
         let p = Vec3::new(1.5, 0.0, 0.0);
         // 負角 -90° と +270° は同一回転。
         let neg = eval_scene(&format!(r#"{{"op":"rotate_y","angle":-90,"shape":{cyl}}}"#)).unwrap();
-        let pos270 = eval_scene(&format!(r#"{{"op":"rotate_y","angle":270,"shape":{cyl}}}"#)).unwrap();
+        let pos270 =
+            eval_scene(&format!(r#"{{"op":"rotate_y","angle":270,"shape":{cyl}}}"#)).unwrap();
         assert!(
             (neg.eval(p) - pos270.eval(p)).abs() < 1e-9,
-            "-90° must equal 270°: {} vs {}", neg.eval(p), pos270.eval(p)
+            "-90° must equal 270°: {} vs {}",
+            neg.eval(p),
+            pos270.eval(p)
         );
         // 450° と 90° は同一回転。
         let big = eval_scene(&format!(r#"{{"op":"rotate_y","angle":450,"shape":{cyl}}}"#)).unwrap();
-        let small = eval_scene(&format!(r#"{{"op":"rotate_y","angle":90,"shape":{cyl}}}"#)).unwrap();
+        let small =
+            eval_scene(&format!(r#"{{"op":"rotate_y","angle":90,"shape":{cyl}}}"#)).unwrap();
         assert!(
             (big.eval(p) - small.eval(p)).abs() < 1e-9,
-            "450° must equal 90°: {} vs {}", big.eval(p), small.eval(p)
+            "450° must equal 90°: {} vs {}",
+            big.eval(p),
+            small.eval(p)
         );
     }
 
@@ -870,7 +1067,10 @@ mod tests {
 
         // minor = major → horn torus
         let horn = r#"{"op":"torus","major":1.0,"minor":1.0}"#;
-        assert!(eval_scene(horn).is_err(), "minor=major (horn torus) must be rejected");
+        assert!(
+            eval_scene(horn).is_err(),
+            "minor=major (horn torus) must be rejected"
+        );
 
         // minor > major → spindle torus
         let spindle = r#"{"op":"torus","major":0.5,"minor":0.8}"#;
@@ -884,7 +1084,10 @@ mod tests {
 
         // minor < major → 有効な ring torus
         let ring = r#"{"op":"torus","major":1.0,"minor":0.3}"#;
-        assert!(eval_scene(ring).is_ok(), "minor<major ring torus must be accepted");
+        assert!(
+            eval_scene(ring).is_ok(),
+            "minor<major ring torus must be accepted"
+        );
     }
 
     #[test]
@@ -893,7 +1096,10 @@ mod tests {
         // AI が nx=500 を指定したのに 256 コピーしか生成されないことに気づけない問題を防ぐ。
         let too_many = r#"{"op":"repeat","x":1.0,"nx":300,"shape":{"op":"sphere","r":0.3}}"#;
         let err = eval_scene(too_many);
-        assert!(err.is_err(), "repeat nx=300 > MAX_REPEAT must be an error, not clamped silently");
+        assert!(
+            err.is_err(),
+            "repeat nx=300 > MAX_REPEAT must be an error, not clamped silently"
+        );
         let msg = err.unwrap_err().to_string();
         assert!(
             msg.contains("256") || msg.contains("maximum"),
@@ -902,11 +1108,17 @@ mod tests {
 
         // MAX_REPEAT(256) 以内は OK。
         let at_max = r#"{"op":"repeat","x":1.0,"nx":256,"shape":{"op":"sphere","r":0.3}}"#;
-        assert!(eval_scene(at_max).is_ok(), "repeat nx=256 (= MAX_REPEAT) must be accepted");
+        assert!(
+            eval_scene(at_max).is_ok(),
+            "repeat nx=256 (= MAX_REPEAT) must be accepted"
+        );
 
         // 負のカウントもエラー。
         let neg_count = r#"{"op":"repeat","x":1.0,"nx":-1,"shape":{"op":"sphere","r":0.3}}"#;
-        assert!(eval_scene(neg_count).is_err(), "repeat nx=-1 must be rejected");
+        assert!(
+            eval_scene(neg_count).is_err(),
+            "repeat nx=-1 must be rejected"
+        );
     }
 
     #[test]
@@ -918,21 +1130,36 @@ mod tests {
 
         // k=0 はエラー。
         let zero_u = format!(r#"{{"op":"smooth_union","k":0,"a":{a},"b":{b}}}"#);
-        assert!(eval_scene(&zero_u).is_err(), "smooth_union k=0 must be rejected (NaN risk)");
+        assert!(
+            eval_scene(&zero_u).is_err(),
+            "smooth_union k=0 must be rejected (NaN risk)"
+        );
 
         let zero_i = format!(r#"{{"op":"smooth_intersection","k":0,"a":{a},"b":{b}}}"#);
-        assert!(eval_scene(&zero_i).is_err(), "smooth_intersection k=0 must be rejected");
+        assert!(
+            eval_scene(&zero_i).is_err(),
+            "smooth_intersection k=0 must be rejected"
+        );
 
         let zero_d = format!(r#"{{"op":"smooth_difference","k":0,"a":{a},"b":{b}}}"#);
-        assert!(eval_scene(&zero_d).is_err(), "smooth_difference k=0 must be rejected");
+        assert!(
+            eval_scene(&zero_d).is_err(),
+            "smooth_difference k=0 must be rejected"
+        );
 
         // k<0 もエラー。
         let neg_u = format!(r#"{{"op":"smooth_union","k":-0.5,"a":{a},"b":{b}}}"#);
-        assert!(eval_scene(&neg_u).is_err(), "smooth_union k<0 must be rejected (AABB shrinks)");
+        assert!(
+            eval_scene(&neg_u).is_err(),
+            "smooth_union k<0 must be rejected (AABB shrinks)"
+        );
 
         // k>0 は有効。
         let pos_u = format!(r#"{{"op":"smooth_union","k":0.2,"a":{a},"b":{b}}}"#);
-        assert!(eval_scene(&pos_u).is_ok(), "smooth_union positive k must succeed");
+        assert!(
+            eval_scene(&pos_u).is_ok(),
+            "smooth_union positive k must succeed"
+        );
     }
 
     #[test]
@@ -964,15 +1191,25 @@ mod tests {
         // 問190: offset は req_f64 (not req_positive_f64) を使い、負値を意図的に許可する。
         // 正値は shape を膨張、負値は収縮する。どちらも valid。
         // eval.rs の文書コメント (line 621: "inflates/deflates") を固定する。
-        let inflated = eval_scene(r#"{"op":"offset","amount":0.5,"shape":{"op":"sphere","r":1.0}}"#)
-            .expect("positive offset must succeed");
-        let deflated = eval_scene(r#"{"op":"offset","amount":-0.5,"shape":{"op":"sphere","r":1.0}}"#)
-            .expect("negative offset must succeed (deflation)");
+        let inflated =
+            eval_scene(r#"{"op":"offset","amount":0.5,"shape":{"op":"sphere","r":1.0}}"#)
+                .expect("positive offset must succeed");
+        let deflated =
+            eval_scene(r#"{"op":"offset","amount":-0.5,"shape":{"op":"sphere","r":1.0}}"#)
+                .expect("negative offset must succeed (deflation)");
         let p = crate::core::Vec3::new(1.5, 0.0, 0.0);
         // 元の sphere(1.0) で x=1.5 は外部 (d=0.5)。
         // offset(+0.5): d = 0.5 - 0.5 = 0.0 (表面になる)。
-        assert!(inflated.eval(p).abs() < 1e-12, "offset(+0.5) must bring x=1.5 to surface, got {}", inflated.eval(p));
+        assert!(
+            inflated.eval(p).abs() < 1e-12,
+            "offset(+0.5) must bring x=1.5 to surface, got {}",
+            inflated.eval(p)
+        );
         // offset(-0.5): d = 0.5 - (-0.5) = 1.0 (さらに外側)。
-        assert!((deflated.eval(p) - 1.0).abs() < 1e-12, "offset(-0.5) must push x=1.5 further out, got {}", deflated.eval(p));
+        assert!(
+            (deflated.eval(p) - 1.0).abs() < 1e-12,
+            "offset(-0.5) must push x=1.5 further out, got {}",
+            deflated.eval(p)
+        );
     }
 }

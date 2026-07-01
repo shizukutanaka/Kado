@@ -185,9 +185,9 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let a = |i: usize| args[i].clone();
 
-    let obj = |pairs: Vec<(&'static str, Value)>| Value::Object(
-        pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
-    );
+    let obj = |pairs: Vec<(&'static str, Value)>| {
+        Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    };
 
     match name {
         // ── プリミティブ ──
@@ -338,6 +338,20 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
                 ("shape", a(1)),
             ]))
         }
+        // rotate(ax, ay, az, angle, shape): 任意軸周り回転 (問266)。
+        // rotate_x/y/z の canonical 3軸だけでは表現できない対角線等の軸を
+        // オイラー角の逆算なしに1操作で指定できる。
+        "rotate" => {
+            want(5)?;
+            Ok(obj(vec![
+                ("op", json::s("rotate")),
+                ("ax", a(0)),
+                ("ay", a(1)),
+                ("az", a(2)),
+                ("angle", a(3)),
+                ("shape", a(4)),
+            ]))
+        }
         "mirror_x" | "mirror_y" | "mirror_z" => {
             want(1)?;
             Ok(obj(vec![("op", json::s(name)), ("shape", a(0))]))
@@ -476,21 +490,30 @@ mod tests {
         assert_same("sphere(1.0)", r#"{"op":"sphere","r":1.0}"#);
         assert_same("cuboid(0.8)", r#"{"op":"cuboid","x":0.8,"y":0.8,"z":0.8}"#);
         assert_same("cylinder(0.5, 1.0)", r#"{"op":"cylinder","r":0.5,"h":1.0}"#);
-        assert_same("torus(1.0, 0.25)", r#"{"op":"torus","major":1.0,"minor":0.25}"#);
+        assert_same(
+            "torus(1.0, 0.25)",
+            r#"{"op":"torus","major":1.0,"minor":0.25}"#,
+        );
         assert_same("cone(0.5, 1.0)", r#"{"op":"cone","r":0.5,"h":1.0}"#);
         assert_same("capsule(0.5, 0.3)", r#"{"op":"capsule","h":0.5,"r":0.3}"#);
         assert_same(
             "rounded_box(0.8, 0.1)",
             r#"{"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}"#,
         );
-        assert_same("ellipsoid(2, 1, 0.5)", r#"{"op":"ellipsoid","x":2,"y":1,"z":0.5}"#);
+        assert_same(
+            "ellipsoid(2, 1, 0.5)",
+            r#"{"op":"ellipsoid","x":2,"y":1,"z":0.5}"#,
+        );
 
         // ブーリアン (6): a,b はそれぞれ離れた球で領域差が出るようにする。
         let a = r#"{"op":"sphere","r":1}"#;
         let b = r#"{"op":"translate","x":0.5,"y":0,"z":0,"shape":{"op":"sphere","r":1}}"#;
         let da = "sphere(1)";
         let db = "translate(0.5, 0, 0, sphere(1))";
-        assert_same(&format!("union({da}, {db})"), &format!(r#"{{"op":"union","a":{a},"b":{b}}}"#));
+        assert_same(
+            &format!("union({da}, {db})"),
+            &format!(r#"{{"op":"union","a":{a},"b":{b}}}"#),
+        );
         assert_same(
             &format!("intersection({da}, {db})"),
             &format!(r#"{{"op":"intersection","a":{a},"b":{b}}}"#),
@@ -512,12 +535,15 @@ mod tests {
             &format!(r#"{{"op":"smooth_difference","k":0.3,"a":{a},"b":{b}}}"#),
         );
 
-        // 変形 (11)
+        // 変形 (12; rotate 問266 追加)
         assert_same(
             "translate(1, 0.5, -0.5, sphere(1))",
             r#"{"op":"translate","x":1,"y":0.5,"z":-0.5,"shape":{"op":"sphere","r":1}}"#,
         );
-        assert_same("scale(2, sphere(1))", r#"{"op":"scale","s":2,"shape":{"op":"sphere","r":1}}"#);
+        assert_same(
+            "scale(2, sphere(1))",
+            r#"{"op":"scale","s":2,"shape":{"op":"sphere","r":1}}"#,
+        );
         assert_same(
             "offset(0.1, sphere(1))",
             r#"{"op":"offset","amount":0.1,"shape":{"op":"sphere","r":1}}"#,
@@ -544,6 +570,12 @@ mod tests {
                 ),
             );
         }
+        // rotate: 任意軸周り回転 (問266)。
+        assert_same(
+            "rotate(1, 1, 0, 45, cuboid(1, 0.5, 0.3))",
+            r#"{"op":"rotate","ax":1,"ay":1,"az":0,"angle":45,
+               "shape":{"op":"cuboid","x":1,"y":0.5,"z":0.3}}"#,
+        );
 
         // cut: 4 引数 (offset 省略) と 5 引数 (offset 明示) の両形式。
         assert_same(
@@ -555,7 +587,10 @@ mod tests {
             r#"{"op":"cut","nx":0,"ny":0,"nz":-1,"offset":0.5,"shape":{"op":"sphere","r":1}}"#,
         );
         // flatten: 1 引数 (at=0) と 2 引数 (at 明示)。
-        assert_same("flatten(sphere(1))", r#"{"op":"flatten","shape":{"op":"sphere","r":1}}"#);
+        assert_same(
+            "flatten(sphere(1))",
+            r#"{"op":"flatten","shape":{"op":"sphere","r":1}}"#,
+        );
         assert_same(
             "flatten(0.3, sphere(1))",
             r#"{"op":"flatten","at":0.3,"shape":{"op":"sphere","r":1}}"#,
@@ -621,9 +656,15 @@ mod tests {
         // しかしトップレベルの裸の数値 "1.5" は eval_value で "missing op field" になる。
         // AI エージェントが "1.5" や "-3.14" を形状式として送った場合に
         // 明確なエラーが返ることを固定する。
-        assert!(eval_dsl("1.5").is_err(), "bare positive number must be rejected");
+        assert!(
+            eval_dsl("1.5").is_err(),
+            "bare positive number must be rejected"
+        );
         assert!(eval_dsl("0").is_err(), "bare zero must be rejected");
-        assert!(eval_dsl("-3.14").is_err(), "bare negative number must be rejected");
+        assert!(
+            eval_dsl("-3.14").is_err(),
+            "bare negative number must be rejected"
+        );
     }
 
     #[test]
@@ -632,7 +673,10 @@ mod tests {
         // 既存テストは `wobble(1)` (トップレベル) のみ確認。
         // `union(wobble(1), sphere(1))` のように有効な呼び出しの引数に
         // 未知演算子が含まれる場合もエラーが伝播することを固定する。
-        assert!(eval_dsl("sphire(1)").is_err(), "typo at top level must be rejected");
+        assert!(
+            eval_dsl("sphire(1)").is_err(),
+            "typo at top level must be rejected"
+        );
         assert!(
             eval_dsl("union(sphire(1), sphere(1))").is_err(),
             "typo nested in union must be rejected"
@@ -656,7 +700,10 @@ mod tests {
         // 他の固定アリティ演算子も同様に拒否される。
         assert!(eval_dsl("cuboid()").is_err(), "cuboid() must be rejected");
         assert!(eval_dsl("union()").is_err(), "union() must be rejected");
-        assert!(eval_dsl("translate()").is_err(), "translate() must be rejected");
+        assert!(
+            eval_dsl("translate()").is_err(),
+            "translate() must be rejected"
+        );
     }
 
     #[test]
@@ -670,13 +717,20 @@ mod tests {
             err1.to_string().contains("got 1"),
             "1-arg error must mention 'got 1': {err1}"
         );
-        let err3 = eval_dsl("rounded_box(1.0, 0.8, 0.6)").expect_err("3-arg rounded_box must be rejected");
+        let err3 =
+            eval_dsl("rounded_box(1.0, 0.8, 0.6)").expect_err("3-arg rounded_box must be rejected");
         assert!(
             err3.to_string().contains("got 3"),
             "3-arg error must mention 'got 3': {err3}"
         );
         // 有効なアリティは通る (回帰防止)。
-        assert!(eval_dsl("rounded_box(1.0, 0.1)").is_ok(), "2-arg rounded_box must succeed");
-        assert!(eval_dsl("rounded_box(1.0, 0.8, 0.6, 0.1)").is_ok(), "4-arg rounded_box must succeed");
+        assert!(
+            eval_dsl("rounded_box(1.0, 0.1)").is_ok(),
+            "2-arg rounded_box must succeed"
+        );
+        assert!(
+            eval_dsl("rounded_box(1.0, 0.8, 0.6, 0.1)").is_ok(),
+            "4-arg rounded_box must succeed"
+        );
     }
 }
