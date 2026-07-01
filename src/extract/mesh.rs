@@ -45,14 +45,10 @@ impl Mesh {
         boundary == 0 && nonmanifold == 0
     }
 
-    /// エッジ欠陥の内訳 `(開境界エッジ数, 非多様体接合エッジ数)`。
-    ///
-    /// - 開境界 (1面共有): 表面が閉じていない。サンプリング境界によるクリップや
-    ///   ゼロ厚フィーチャが主因 (問25)。
-    /// - 非多様体接合 (3面以上共有): 自己交差・座標一致による接合。
-    ///
-    /// 両者は是正策が異なる (前者=境界拡大、後者=解像度/形状分離) ため区別する。
-    pub fn edge_defects(&self) -> (usize, usize) {
+    /// 無向エッジ (頂点インデックス昇順ペア) ごとの共有三角形数。
+    /// `edge_defects`/`first_boundary_edge_midpoint`/`first_nonmanifold_edge_midpoint` が共有する
+    /// 内部集計 (問257: 重複計算を避ける)。
+    fn edge_counts(&self) -> HashMap<(u32, u32), u32> {
         let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
         for t in &self.triangles {
             for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -60,31 +56,19 @@ impl Mesh {
                 *counts.entry(key).or_insert(0) += 1;
             }
         }
-        let mut boundary = 0;
-        let mut nonmanifold = 0;
-        for &c in counts.values() {
-            if c == 1 {
-                boundary += 1;
-            } else if c > 2 {
-                nonmanifold += 1;
-            }
-        }
-        (boundary, nonmanifold)
+        counts
     }
 
-    /// 非多様体エッジ (3面以上共有) が存在する場合、最小頂点インデックスのエッジ中点を返す。
-    /// なければ `None`。HashMap 走査後に最小キーを選ぶため決定的 (問257/ADR-003)。
-    pub fn first_nonmanifold_edge_midpoint(&self) -> Option<Vec3> {
-        let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
-        for t in &self.triangles {
-            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                let key = if a < b { (a, b) } else { (b, a) };
-                *counts.entry(key).or_insert(0) += 1;
-            }
-        }
+    /// 条件 `pred(c)` を満たすエッジのうち、最小頂点インデックスのものの中点を返す。
+    /// HashMap 走査後に最小キーを選ぶため決定的 (問257/ADR-003)。
+    fn first_edge_midpoint_where(
+        &self,
+        counts: &HashMap<(u32, u32), u32>,
+        pred: impl Fn(u32) -> bool,
+    ) -> Option<Vec3> {
         let mut best: Option<(u32, u32)> = None;
-        for (&(a, b), &c) in &counts {
-            if c > 2 {
+        for (&(a, b), &c) in counts {
+            if pred(c) {
                 best = Some(match best {
                     None => (a, b),
                     Some(curr) if (a, b) < curr => (a, b),
@@ -97,6 +81,41 @@ impl Mesh {
             let vb = self.vertices[b as usize];
             (va + vb) * 0.5
         })
+    }
+
+    /// エッジ欠陥の内訳 `(開境界エッジ数, 非多様体接合エッジ数)`。
+    ///
+    /// - 開境界 (1面共有): 表面が閉じていない。サンプリング境界によるクリップや
+    ///   ゼロ厚フィーチャが主因 (問25)。
+    /// - 非多様体接合 (3面以上共有): 自己交差・座標一致による接合。
+    ///
+    /// 両者は是正策が異なる (前者=境界拡大、後者=解像度/形状分離) ため区別する。
+    pub fn edge_defects(&self) -> (usize, usize) {
+        let counts = self.edge_counts();
+        let mut boundary = 0;
+        let mut nonmanifold = 0;
+        for &c in counts.values() {
+            if c == 1 {
+                boundary += 1;
+            } else if c > 2 {
+                nonmanifold += 1;
+            }
+        }
+        (boundary, nonmanifold)
+    }
+
+    /// 開境界エッジ (1面のみ共有) が存在する場合、最小頂点インデックスのエッジ中点を返す。
+    /// なければ `None` (問258)。
+    pub fn first_boundary_edge_midpoint(&self) -> Option<Vec3> {
+        let counts = self.edge_counts();
+        self.first_edge_midpoint_where(&counts, |c| c == 1)
+    }
+
+    /// 非多様体エッジ (3面以上共有) が存在する場合、最小頂点インデックスのエッジ中点を返す。
+    /// なければ `None` (問257)。
+    pub fn first_nonmanifold_edge_midpoint(&self) -> Option<Vec3> {
+        let counts = self.edge_counts();
+        self.first_edge_midpoint_where(&counts, |c| c > 2)
     }
 
     /// 符号付き体積 (発散定理)。メッシュの向きが外向きに揃っている前提。
@@ -585,6 +604,56 @@ mod tests {
         assert!(
             clean.first_nonmanifold_edge_midpoint().is_none(),
             "manifold mesh must return None"
+        );
+    }
+
+    #[test]
+    fn first_boundary_edge_midpoint_is_deterministic_and_correct() {
+        // 問258: 単一三角形は3辺すべてが境界エッジ (1面のみ共有)。
+        // 最小インデックスのエッジは (v0,v1) → 中点 (0.5,0,0)。
+        let tri = Mesh::from_soup(&[[
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ]]);
+        let mid = tri
+            .first_boundary_edge_midpoint()
+            .expect("open triangle must return Some");
+        assert!(
+            (mid.x - 0.5).abs() < 1e-9 && mid.y.abs() < 1e-9 && mid.z.abs() < 1e-9,
+            "midpoint of edge (v0,v1) must be (0.5,0,0), got {:?}",
+            mid
+        );
+        // 開境界のない水密メッシュ (正四面体) では None。
+        let tet = Mesh::from_soup(&[
+            [
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(1.0, -1.0, -1.0),
+                Vec3::new(-1.0, 1.0, -1.0),
+            ],
+            [
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(-1.0, 1.0, -1.0),
+                Vec3::new(-1.0, -1.0, 1.0),
+            ],
+            [
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(-1.0, -1.0, 1.0),
+                Vec3::new(1.0, -1.0, -1.0),
+            ],
+            [
+                Vec3::new(1.0, -1.0, -1.0),
+                Vec3::new(-1.0, -1.0, 1.0),
+                Vec3::new(-1.0, 1.0, -1.0),
+            ],
+        ]);
+        assert!(
+            tet.is_edge_manifold(),
+            "regular tetrahedron soup must be watertight"
+        );
+        assert!(
+            tet.first_boundary_edge_midpoint().is_none(),
+            "watertight mesh must return None for boundary edge"
         );
     }
 }

@@ -5057,3 +5057,56 @@ AI はメッシュのどこに問題があるか分からない。」
 > 試みる実害があったが、根本原因 (SUSPICIOUS_SCALE) の修正で THIN_WALL が消えることを
 > 明示することで AI の修正戦略を改善した。
 > テスト数: 329 ユニット + 6 統合 = 335 合計。
+
+---
+
+## 問258 — OPEN_MESH の location 欠落
+
+*コード読解による一貫性チェック (v124)*
+
+**問い:**
+「問257 で NON_MANIFOLD に location を追加した。同じ『メッシュ上のエッジ集合から
+問題エッジを特定する』構造を持つ OPEN_MESH (開境界エッジ) はなぜ location = null のままか？
+既存テスト `issues_without_spatial_context_have_null_location_in_json` は
+むしろ OPEN_MESH が null であることを積極的に固定していた ── これは設計判断か、単なる見落としか？」
+
+*ソクラテス式問答:*
+- *OPEN_MESH に location を付ける価値は?*
+  → 「クリップされた境界や意図しないゼロ厚フィーチャの位置が分かれば、
+  AI は『どちらの方向にバウンディングボックスを広げるべきか』を判断できる。
+  NON_MANIFOLD (問257) と同型の改善。」
+- *実装をどう共有するか?*
+  → 「NON_MANIFOLD 用の non-manifold edge 探索と、OPEN_MESH 用の boundary edge 探索は
+  カウント方法が同一 (HashMap<(u32,u32), u32>) で述語だけが違う (c>2 vs c==1)。
+  edge_counts() を共有ヘルパーとして抽出し、first_edge_midpoint_where(pred) で
+  述語だけ切り替える。3箇所で同じ走査ループを書く重複を解消。」
+- *既存テストが「OPEN_MESH は null」を固定していたのは問題では?*
+  → 「これは仕様ではなく単なる未実装の副産物だった。テストを更新し、
+  EMPTY_MESH で null 側の契約を確認、OPEN_MESH で non-null 側の契約を確認する
+  2 本立てに変更。」
+
+**実装**:
+- `src/extract/mesh.rs`: `edge_counts()` (共有集計) と
+  `first_edge_midpoint_where(pred)` (共有探索) を抽出。
+  `edge_defects`/`first_nonmanifold_edge_midpoint`/新設 `first_boundary_edge_midpoint`
+  の3箇所が共有し、走査ロジックの重複を解消 (簡素化)。
+- `src/verify/check.rs`: OPEN_MESH 発火時に `with_location()` で境界エッジ中点を付与。
+- `docs/SPEC.md`: §5.2/5.3 に OPEN_MESH の location 記述を追加。
+- テスト:
+  - `first_boundary_edge_midpoint_is_deterministic_and_correct` (mesh.rs)
+  - `open_mesh_issue_carries_spatial_location` (check.rs)
+  - `issues_without_spatial_context_have_null_location_in_json` を更新
+    (EMPTY_MESH=null / OPEN_MESH=non-null の対比に変更)。
+
+## 反映サマリ v124
+| 問 | 実装 |
+|----|------|
+| 258 | OPEN_MESH に location (最小インデックス境界エッジ中点) を付与 + edge 探索の重複コード解消 |
+
+> 総括: v124 は問257 の一貫性を問い直すことで見つかった改善。
+> 既存テストが「OPEN_MESH は null」を積極的に固定していた点は、
+> 設計判断ではなく単なる未実装の名残りだったことが判明し、is_manifold の2つの失敗モード
+> (開境界・非多様体) に対称的な location サポートを与えた。
+> 実装過程で edge_counts/first_edge_midpoint_where を共有ヘルパーとして抽出し、
+> 3箇所の重複した HashMap 走査ループを1箇所に統合した (副次的な簡素化)。
+> テスト数: 331 ユニット + 6 統合 = 337 合計。

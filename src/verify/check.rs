@@ -315,8 +315,10 @@ pub fn validate_with_field(
 
     // 1. 開境界 (致命的): 表面が閉じていない。原因別にヒントを出す (問25/問3)。
     //    「解像度を上げよ」は開境界 (クリップ) には逆効果なので、境界拡大を案内する。
+    //    問258: NON_MANIFOLD (問257) と同じく、最小インデックスの開境界エッジ中点を
+    //    location として付与し、AI がどこを拡張すべきか空間的に参照できるようにする。
     if boundary_edges > 0 {
-        issues.push(KadoError::error(
+        let mut issue = KadoError::error(
             "OPEN_MESH",
             format!(
                 "surface is not closed: {boundary_edges} open boundary edge(s) \
@@ -326,7 +328,11 @@ pub fn validate_with_field(
                 "Enlarge the sampling/bounding region so the shape is fully enclosed",
                 "Avoid zero-thickness walls; add offset()/shell thickness",
             ],
-        ));
+        );
+        if let Some(loc) = mesh.first_boundary_edge_midpoint() {
+            issue = issue.with_location(loc);
+        }
+        issues.push(issue);
     }
 
     // 2. 非多様体接合 (致命的): 3面以上が同一エッジを共有 (自己交差・座標一致)。
@@ -1932,29 +1938,44 @@ mod tests {
 
     #[test]
     fn issues_without_spatial_context_have_null_location_in_json() {
-        // 問242: 空間的でない issue (EMPTY_MESH, OPEN_MESH 等) の JSON location は null。
+        // 問242/258: 空間的でない issue (EMPTY_MESH 等) の JSON location は null。
+        // OPEN_MESH は問258 で境界エッジ中点を持つようになったため non-null。
         use crate::mcp::json::{parse, Value};
-        // OPEN_MESH を誘発 (クリップ)。
+        // EMPTY_MESH を誘発 (空バウンディングボックス)。
         let s = Sdf::sphere(1.0);
-        let mesh = polygonize(
-            &s,
-            Vec3::new(-1.5, -1.5, -1.5),
-            Vec3::new(1.5, 1.5, 0.0),
-            24,
-        );
+        let mesh = polygonize(&s, Vec3::new(5.0, 5.0, 5.0), Vec3::new(6.0, 6.0, 6.0), 8);
         let r = validate(&mesh, 0.0, 0.0);
         let doc = parse(&r.to_json().to_string()).unwrap();
         let issues = doc.get("issues").and_then(|x| x.as_array()).unwrap();
-        // 全 issue に location キーが存在し、OPEN_MESH は null。
         for issue in issues {
             let code = issue.get("code").and_then(|c| c.as_str()).unwrap_or("");
             let loc = issue
                 .get("location")
                 .expect("every issue JSON must have a location key");
-            if code == "OPEN_MESH" {
-                assert_eq!(*loc, Value::Null, "OPEN_MESH location must be null");
+            if code == "EMPTY_MESH" {
+                assert_eq!(*loc, Value::Null, "EMPTY_MESH location must be null");
             }
         }
+
+        // 対照 (問258): OPEN_MESH は境界エッジ中点を location に持つ (non-null)。
+        let mesh_clipped = polygonize(
+            &s,
+            Vec3::new(-1.5, -1.5, -1.5),
+            Vec3::new(1.5, 1.5, 0.0),
+            24,
+        );
+        let r2 = validate(&mesh_clipped, 0.0, 0.0);
+        let doc2 = parse(&r2.to_json().to_string()).unwrap();
+        let issues2 = doc2.get("issues").and_then(|x| x.as_array()).unwrap();
+        let om = issues2
+            .iter()
+            .find(|i| i.get("code").and_then(|c| c.as_str()) == Some("OPEN_MESH"))
+            .expect("clipped sphere must emit OPEN_MESH");
+        assert_ne!(
+            *om.get("location").unwrap(),
+            Value::Null,
+            "OPEN_MESH location must be non-null since 問258"
+        );
     }
 
     #[test]
@@ -2510,6 +2531,32 @@ mod tests {
         assert!(
             (loc.x - 0.5).abs() < 1e-9 && loc.y.abs() < 1e-9 && loc.z.abs() < 1e-9,
             "NON_MANIFOLD location must be midpoint of edge (v0,v1) = (0.5,0,0), got {:?}",
+            loc
+        );
+    }
+
+    #[test]
+    fn open_mesh_issue_carries_spatial_location() {
+        // 問258: 単一三角形 (3辺すべて開境界) の validate は OPEN_MESH issue に
+        // 最小インデックスのエッジ中点 (0.5, 0, 0) を location として持つ。
+        use crate::extract::Mesh;
+        let tri = Mesh::from_soup(&[[
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ]]);
+        let r = validate_with_field(&tri, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let om = r
+            .issues
+            .iter()
+            .find(|e| e.code == "OPEN_MESH")
+            .expect("open triangle must emit OPEN_MESH");
+        let loc = om
+            .location
+            .expect("OPEN_MESH must carry spatial location (問258)");
+        assert!(
+            (loc.x - 0.5).abs() < 1e-9 && loc.y.abs() < 1e-9 && loc.z.abs() < 1e-9,
+            "OPEN_MESH location must be midpoint of edge (v0,v1) = (0.5,0,0), got {:?}",
             loc
         );
     }

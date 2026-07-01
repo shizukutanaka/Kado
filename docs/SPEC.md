@@ -154,7 +154,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | コード | 種別 | 意味 |
 |--------|------|------|
 | `EMPTY_MESH` | error | 三角形ゼロ（形状が空） |
-| `OPEN_MESH` | error | 開境界（非水密） |
+| `OPEN_MESH` | error | 開境界（非水密）。location = 最小インデックスの境界エッジ中点（問258） |
 | `NON_MANIFOLD` | error | 3 面以上共有エッジ（自己交差等） |
 | `NEGATIVE_VOLUME` | warn | 向き反転（体積が負）。**閉じたメッシュでのみ判定**（開境界では signed_volume が無意味なため抑制し、OPEN_MESH のみ出す。問245） |
 | `MULTIPLE_BODIES` | warn | 複数の独立ボディ |
@@ -175,6 +175,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `THIN_WALL` | プローブが最小肉厚を検出した表面頂点 |
 | `UNSTABLE` | 重心（COM）座標 = `Report.center_of_mass` と同一 |
 | `NON_MANIFOLD` | 最小頂点インデックスの非多様体エッジ中点（決定的・問257） |
+| `OPEN_MESH` | 最小頂点インデックスの開境界エッジ中点（決定的・問258） |
 | `HIGH_ASPECT_RATIO` | ビルド方向最上位 10% の頂点重心（揺れの起点・問255） |
 | その他 | `null`（空間的意味を持たない issue） |
 
@@ -245,7 +246,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 335 テスト（329 ユニット + 6 統合）合格。
+- `cargo test`: 337 テスト（331 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 
