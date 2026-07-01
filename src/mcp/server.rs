@@ -92,12 +92,28 @@ fn write_message(w: &mut impl Write, v: &Value) -> io::Result<()> {
 // ── リクエストハンドラ ────────────────────────────────────────────────────────
 
 fn handle(session: &mut tools::Session, msg: &Value) -> Option<Value> {
-    let method = msg.get("method")?.as_str()?;
     let id = msg.get("id").cloned().unwrap_or(json::NULL);
-    let params = msg.get("params").cloned().unwrap_or(json::NULL);
-
     // notifications (id なし) はレスポンス不要。
     let is_notification = msg.get("id").is_none();
+
+    // 問261: 以前は `msg.get("method")?.as_str()?` で即座に None を返し、"method" が
+    // 欠落/非文字列のリクエスト (id あり) が無応答のまま放置されていた。MCP クライアントは
+    // レスポンスを待ち続けタイムアウトするまで気付けない。JSON-RPC 2.0 は Invalid Request
+    // (-32600) を要求する。id なし (通知形) は仕様上レスポンス不要のため従来通り無応答。
+    let method = match msg.get("method").and_then(|m| m.as_str()) {
+        Some(m) => m,
+        None => {
+            if is_notification {
+                return None;
+            }
+            return Some(error_response(
+                id,
+                -32600,
+                "Invalid Request: missing or non-string \"method\"",
+            ));
+        }
+    };
+    let params = msg.get("params").cloned().unwrap_or(json::NULL);
 
     let result = match method {
         "initialize" => Some(handle_initialize(&params)),
@@ -197,7 +213,6 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
         ),
     ])
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -395,7 +410,10 @@ mod tests {
         // 問78: 既定デモは smooth_union(sphere(1), cuboid(0.8)) → 原点は形状内 (負)。
         // 遠点 (10, 0, 0) は外 (正) → 問12 検証に使う。
         let default_far = eval_at(&mut s, 10.0, 0.0, 0.0);
-        assert!(default_far > 0.0, "far point in default scene must be outside: {default_far}");
+        assert!(
+            default_far > 0.0,
+            "far point in default scene must be outside: {default_far}"
+        );
 
         // 半径 3 の球に差し替える。
         let params = json::obj([
@@ -431,13 +449,63 @@ mod tests {
     }
 
     #[test]
+    fn request_missing_method_with_id_returns_invalid_request_error() {
+        // 問261: "method" キーが欠落したリクエスト (id あり) は、以前は無応答のまま
+        // 放置されクライアントがタイムアウトするまで気付けなかった。JSON-RPC 2.0 の
+        // Invalid Request (-32600) を明示的に返すことを固定する。
+        let mut s = tools::Session::new();
+        let msg = json::obj([("jsonrpc", json::s("2.0")), ("id", json::n(9.0))]);
+        let resp = handle(&mut s, &msg).expect("request with id must get a response, not silence");
+        let err = resp
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_f64());
+        assert_eq!(
+            err.map(|f| f as i64),
+            Some(-32600),
+            "missing method with id must be Invalid Request (-32600)"
+        );
+        assert_eq!(
+            resp.get("id"),
+            Some(&json::n(9.0)),
+            "error response must echo the request id"
+        );
+    }
+
+    #[test]
+    fn request_non_string_method_with_id_returns_invalid_request_error() {
+        // 問261: "method" がある型 (数値) の場合も同様に -32600。
+        let mut s = tools::Session::new();
+        let msg = json::obj([
+            ("jsonrpc", json::s("2.0")),
+            ("id", json::n(10.0)),
+            ("method", json::n(42.0)),
+        ]);
+        let resp = handle(&mut s, &msg).expect("non-string method with id must get a response");
+        let err = resp
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_f64());
+        assert_eq!(err.map(|f| f as i64), Some(-32600));
+    }
+
+    #[test]
+    fn notification_missing_method_returns_none_not_error() {
+        // 問261: id なし (通知形) で method も欠落している場合は、JSON-RPC の
+        // 「通知には応答しない」原則を優先し従来通り無応答のまま (エラーも返さない)。
+        let mut s = tools::Session::new();
+        let msg = json::obj([("jsonrpc", json::s("2.0"))]);
+        assert!(
+            handle(&mut s, &msg).is_none(),
+            "notification-shaped message missing method must stay silent, not error"
+        );
+    }
+
+    #[test]
     fn help_tool_returns_format_reference() {
         // 問37: help ツールが KadoScene 演算子一覧を含む参考文書を返すことを確認する。
         let mut s = tools::Session::new();
-        let params = json::obj([
-            ("name", json::s("help")),
-            ("arguments", json::obj([])),
-        ]);
+        let params = json::obj([("name", json::s("help")), ("arguments", json::obj([]))]);
         let resp = handle(&mut s, &req("tools/call", 20, Some(params))).unwrap();
         let text = resp
             .get("result")
@@ -448,7 +516,10 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap();
         assert!(text.contains("sphere"), "help must mention sphere");
-        assert!(text.contains("smooth_union"), "help must mention smooth_union");
+        assert!(
+            text.contains("smooth_union"),
+            "help must mention smooth_union"
+        );
         assert!(text.contains("run_script"), "help must reference workflow");
     }
 
@@ -518,16 +589,25 @@ mod tests {
         // 1. 有効なスクリプト A を適用。
         let run_a = json::obj([
             ("name", json::s("run_script")),
-            ("arguments", json::obj([("script", json::s(r#"{"op":"sphere","r":3.0}"#))])),
+            (
+                "arguments",
+                json::obj([("script", json::s(r#"{"op":"sphere","r":3.0}"#))]),
+            ),
         ]);
         handle(&mut s, &req("tools/call", 30, Some(run_a))).unwrap();
         let after_a = eval_at(&mut s, 0.0, 0.0, 0.0);
-        assert!((after_a - (-3.0)).abs() < 1e-9, "scene A (sphere r=3) applied: {after_a}");
+        assert!(
+            (after_a - (-3.0)).abs() < 1e-9,
+            "scene A (sphere r=3) applied: {after_a}"
+        );
 
         // 2. 不正なスクリプトを適用 → 失敗するはず。
         let run_bad = json::obj([
             ("name", json::s("run_script")),
-            ("arguments", json::obj([("script", json::s(r#"{"op":"not_a_real_op"}"#))])),
+            (
+                "arguments",
+                json::obj([("script", json::s(r#"{"op":"not_a_real_op"}"#))]),
+            ),
         ]);
         let bad_resp = handle(&mut s, &req("tools/call", 31, Some(run_bad))).unwrap();
         assert_eq!(
@@ -544,7 +624,10 @@ mod tests {
 
         // 3. undo → A の前 (default) に戻る。失敗した run が undo 履歴を壊していれば
         //    ここで A (-3.0) のままになり、このアサートが落ちる。
-        let undo = json::obj([("name", json::s("undo_script")), ("arguments", json::obj([]))]);
+        let undo = json::obj([
+            ("name", json::s("undo_script")),
+            ("arguments", json::obj([])),
+        ]);
         let undo_resp = handle(&mut s, &req("tools/call", 32, Some(undo))).unwrap();
         assert_eq!(
             undo_resp.get("result").and_then(|r| r.get("isError")),
@@ -599,10 +682,7 @@ mod tests {
         let mut s = tools::Session::new();
         let params = json::obj([
             ("name", json::s("screenshot")),
-            (
-                "arguments",
-                json::obj([("view", json::s("above-45-deg"))]),
-            ),
+            ("arguments", json::obj([("view", json::s("above-45-deg"))])),
         ]);
         let resp = handle(&mut s, &req("tools/call", 50, Some(params))).unwrap();
         assert_eq!(
@@ -627,10 +707,7 @@ mod tests {
         // 既知のビュー名 ("front") は成功する。
         let params_ok = json::obj([
             ("name", json::s("screenshot")),
-            (
-                "arguments",
-                json::obj([("view", json::s("front"))]),
-            ),
+            ("arguments", json::obj([("view", json::s("front"))])),
         ]);
         let resp_ok = handle(&mut s, &req("tools/call", 51, Some(params_ok))).unwrap();
         assert_eq!(
@@ -729,7 +806,10 @@ mod tests {
         // run_script でシーンを変更 → undo 可能になる。
         let params_run = json::obj([
             ("name", json::s("run_script")),
-            ("arguments", json::obj([("script", json::s(r#"{"op":"sphere","r":1.0}"#))])),
+            (
+                "arguments",
+                json::obj([("script", json::s(r#"{"op":"sphere","r":1.0}"#))]),
+            ),
         ]);
         handle(&mut s, &req("tools/call", 61, Some(params_run))).unwrap();
 
@@ -748,7 +828,10 @@ mod tests {
         );
 
         // undo_script を呼ぶ → 再び undo 不可。
-        let params_undo = json::obj([("name", json::s("undo_script")), ("arguments", json::obj([]))]);
+        let params_undo = json::obj([
+            ("name", json::s("undo_script")),
+            ("arguments", json::obj([])),
+        ]);
         handle(&mut s, &req("tools/call", 63, Some(params_undo))).unwrap();
 
         let resp3 = handle(&mut s, &req("tools/call", 64, Some(params_get))).unwrap();
@@ -784,9 +867,10 @@ mod tests {
             ("name", json::s("validate")),
             (
                 "arguments",
-                json::obj([
-                    ("build_dir", json::arr([json::n(1.0), json::n(0.0), json::n(0.0)])),
-                ]),
+                json::obj([(
+                    "build_dir",
+                    json::arr([json::n(1.0), json::n(0.0), json::n(0.0)]),
+                )]),
             ),
         ]);
         let resp = handle(&mut s, &req("tools/call", 91, Some(params_val))).unwrap();
@@ -839,7 +923,10 @@ mod tests {
         let call = |s: &mut tools::Session, params: Value| -> (bool, String) {
             let resp = handle(s, &req("tools/call", 1, Some(params))).unwrap();
             let result = resp.get("result").expect("must have result");
-            let is_err = result.get("isError").and_then(|v| v.as_bool()).expect("isError present");
+            let is_err = result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .expect("isError present");
             let text = result
                 .get("content")
                 .and_then(|c| c.as_array())
@@ -866,17 +953,29 @@ mod tests {
         // eval は引数を読めず arg エラーになるが unknown tool ではない。
         let (e3, t3) = call(
             &mut s,
-            json::obj([("name", json::s("eval")), ("arguments", json::s("not-an-object"))]),
+            json::obj([
+                ("name", json::s("eval")),
+                ("arguments", json::s("not-an-object")),
+            ]),
         );
         assert!(e3, "eval with non-object arguments must error gracefully");
-        assert!(!t3.contains("unknown tool"), "must dispatch eval, not 'unknown tool': {t3}");
+        assert!(
+            !t3.contains("unknown tool"),
+            "must dispatch eval, not 'unknown tool': {t3}"
+        );
 
         // 未知ツール名 → isError:true で "unknown tool" を含む (既存の整合した経路)。
         let (e4, t4) = call(
             &mut s,
-            json::obj([("name", json::s("nonexistent_tool")), ("arguments", json::obj([]))]),
+            json::obj([
+                ("name", json::s("nonexistent_tool")),
+                ("arguments", json::obj([])),
+            ]),
         );
-        assert!(e4 && t4.contains("unknown tool"), "unknown tool path unchanged: {t4}");
+        assert!(
+            e4 && t4.contains("unknown tool"),
+            "unknown tool path unchanged: {t4}"
+        );
     }
 
     #[test]
@@ -932,7 +1031,8 @@ mod tests {
         // (2) Content-Length が非数値 → parse().ok() = None → 欠落と同一エラー。
         let bad_cl = "Content-Length: notanumber\r\n\r\n";
         let mut cursor2 = std::io::Cursor::new(bad_cl.as_bytes().to_vec());
-        let err2 = read_message(&mut cursor2).expect_err("non-numeric Content-Length must be rejected");
+        let err2 =
+            read_message(&mut cursor2).expect_err("non-numeric Content-Length must be rejected");
         assert_eq!(err2.kind(), io::ErrorKind::InvalidData);
         assert!(
             err2.to_string().contains("missing Content-Length"),
