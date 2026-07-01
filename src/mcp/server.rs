@@ -32,25 +32,50 @@ const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 pub fn run_stdio() -> ! {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let mut reader = stdin.lock();
-    let mut writer = stdout.lock();
     // セッション状態 (正本シーン)。run_script で更新され他ツールが参照する。
     let mut session = tools::Session::new();
+    run_loop(stdin.lock(), stdout.lock(), &mut session);
+    std::process::exit(0)
+}
 
-    // read_message が Err (stdin EOF または不正フレーム) を返すまで処理を続ける。
-    while let Ok(msg) = read_message(&mut reader) {
-        if let Some(resp) = handle(&mut session, &msg) {
+/// メッセージ処理の中核ループ。テスト用に Read/Write を注入できるよう
+/// `run_stdio` から切り出す (問264)。
+///
+/// 問264: 以前は `read_message` の Err を全て同一視し、フレーミング自体の失敗
+/// (EOF・Content-Length 不正、ストリーム位置が再同期不能) と、フレームは正しく
+/// 読めたが本文が不正 (非UTF8・不正JSON、ストリーム位置は次フレーム先頭のまま健全)
+/// のどちらでもループを終了していた。後者は1通の不正メッセージだけでセッション
+/// 全体が無診断のまま落ちる (問261 と同種、かつより深刻: 1リクエストの無応答では
+/// なく全セッションの消滅)。`read_frame` (フレーミング層) と `parse_frame_body`
+/// (本文パース層) を分離し、後者の失敗のみ JSON-RPC Parse error (-32700) を返して
+/// 継続する。
+fn run_loop(mut reader: impl BufRead, mut writer: impl Write, session: &mut tools::Session) {
+    // フレーミング自体の失敗 (EOF・Content-Length 不正/超過) はストリーム位置が
+    // 信頼できないため再同期できない。接続を終了する。
+    while let Ok(buf) = read_frame(&mut reader) {
+        let msg = match parse_frame_body(&buf) {
+            Ok(v) => v,
+            Err(reason) => {
+                let resp = error_response(json::NULL, -32700, &format!("Parse error: {reason}"));
+                if write_message(&mut writer, &resp).is_err() {
+                    break;
+                }
+                continue;
+            }
+        };
+        if let Some(resp) = handle(session, &msg) {
             if write_message(&mut writer, &resp).is_err() {
                 break;
             }
         }
     }
-    std::process::exit(0)
 }
 
 // ── フレーミング ──────────────────────────────────────────────────────────────
 
-fn read_message(r: &mut impl BufRead) -> io::Result<Value> {
+/// Content-Length フレームの本文バイト列を読む。ヘッダ不正・EOF・上限超過は
+/// フレーミング層の失敗 (再同期不能)。本文の中身 (UTF-8/JSON) は検査しない。
+fn read_frame(r: &mut impl BufRead) -> io::Result<Vec<u8>> {
     // ヘッダを行単位で読む。Content-Length: N\r\n\r\n の形式。
     let mut content_length: Option<usize> = None;
     loop {
@@ -78,9 +103,23 @@ fn read_message(r: &mut impl BufRead) -> io::Result<Value> {
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
-    let text =
-        std::str::from_utf8(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    json::parse(text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(buf)
+}
+
+/// フレーム本文をメッセージとしてパースする (UTF-8 → JSON)。失敗してもストリーム
+/// 位置は次フレームの先頭のまま健全なので、呼び出し側は継続できる (問264)。
+fn parse_frame_body(buf: &[u8]) -> Result<Value, String> {
+    let text = std::str::from_utf8(buf).map_err(|e| e.to_string())?;
+    json::parse(text)
+}
+
+/// `read_frame` + `parse_frame_body` を1回で行う合成ヘルパ。問264 で `run_loop` は
+/// 両者を分離して個別に呼ぶようになったため、本体コードでは未使用。フレーミング層の
+/// 挙動 (問118/171/172 等) を直接検証する既存テストのために残す。
+#[cfg(test)]
+fn read_message(r: &mut impl BufRead) -> io::Result<Value> {
+    let buf = read_frame(r)?;
+    parse_frame_body(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 fn write_message(w: &mut impl Write, v: &Value) -> io::Result<()> {
@@ -498,6 +537,77 @@ mod tests {
         assert!(
             handle(&mut s, &msg).is_none(),
             "notification-shaped message missing method must stay silent, not error"
+        );
+    }
+
+    #[test]
+    fn malformed_json_body_gets_parse_error_and_session_continues() {
+        // 問264: フレームは正しく読めるが本文が不正 JSON の場合、以前は run_stdio 全体が
+        // 無診断で終了していた。ストリーム位置は次フレームの先頭のまま健全なので、
+        // Parse error (-32700) を返して継続できることを固定する。
+        let bad_body = "{not valid json";
+        let good_body = r#"{"jsonrpc":"2.0","method":"ping","id":7}"#;
+        let input = format!(
+            "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+            bad_body.len(),
+            bad_body,
+            good_body.len(),
+            good_body
+        );
+        let reader = std::io::Cursor::new(input.into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        let mut session = tools::Session::new();
+        run_loop(reader, &mut out, &mut session);
+        let out_str = String::from_utf8(out).expect("output must be valid UTF-8");
+        assert!(
+            out_str.contains("-32700"),
+            "malformed body must produce a Parse error (-32700): {out_str}"
+        );
+        assert!(
+            out_str.contains("\"result\""),
+            "the well-formed message after it must still be processed: {out_str}"
+        );
+    }
+
+    #[test]
+    fn non_utf8_body_gets_parse_error_and_session_continues() {
+        // 問264: 本文が非UTF8バイト列の場合も同様に Parse error で継続する。
+        let bad_bytes: &[u8] = &[0xFF, 0xFE, 0xFD];
+        let good_body = r#"{"jsonrpc":"2.0","method":"ping","id":8}"#;
+        let mut input = format!("Content-Length: {}\r\n\r\n", bad_bytes.len()).into_bytes();
+        input.extend_from_slice(bad_bytes);
+        input.extend_from_slice(
+            format!("Content-Length: {}\r\n\r\n{}", good_body.len(), good_body).as_bytes(),
+        );
+        let reader = std::io::Cursor::new(input);
+        let mut out: Vec<u8> = Vec::new();
+        let mut session = tools::Session::new();
+        run_loop(reader, &mut out, &mut session);
+        let out_str = String::from_utf8(out).expect("output must be valid UTF-8");
+        assert!(
+            out_str.contains("-32700"),
+            "non-UTF8 body must produce a Parse error (-32700): {out_str}"
+        );
+        assert!(
+            out_str.contains("\"result\""),
+            "the well-formed message after it must still be processed: {out_str}"
+        );
+    }
+
+    #[test]
+    fn fatal_framing_error_still_terminates_the_loop() {
+        // 問264: フレーミング自体の失敗 (ここでは Content-Length 欠落) は
+        // ストリーム位置が信頼できないため、従来通りループを終了する
+        // (Parse error を返して継続してはならない)。
+        let input = "not a valid header block at all\r\n\r\n";
+        let reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut out: Vec<u8> = Vec::new();
+        let mut session = tools::Session::new();
+        run_loop(reader, &mut out, &mut session);
+        assert!(
+            out.is_empty(),
+            "fatal framing error must terminate without writing any response, got {:?}",
+            String::from_utf8_lossy(&out)
         );
     }
 
