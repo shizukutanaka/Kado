@@ -5110,3 +5110,56 @@ AI はメッシュのどこに問題があるか分からない。」
 > 実装過程で edge_counts/first_edge_midpoint_where を共有ヘルパーとして抽出し、
 > 3箇所の重複した HashMap 走査ループを1箇所に統合した (副次的な簡素化)。
 > テスト数: 331 ユニット + 6 統合 = 337 合計。
+
+---
+
+## 問259 — render() の width/height==0 未防御 (パニックリスク)
+
+*io/render/script/cli モジュール横断調査 (v125)*
+
+**問い:**
+「`src/verify/check.rs` の DFM 検証は15ラウンドかけて改善してきたが、
+`src/render/raster.rs` の `render()` は一度も見直されていない。
+同ファイル内の `draw_axes()` は `if w==0 || h==0 { return; }` というガードを持つのに、
+`render()` 自体には同じガードがない。この非対称性は偶然か、実害があるか？」
+
+*ソクラテス式問答:*
+- *実際にパニックするか?*
+  → 「`width=0` のとき `width - 1` は usize アンダーフローで `usize::MAX` になる。
+  `xmax = (...).min(width-1)` は事実上無制限になり、`for px in xmin..=xmax` が
+  巨大ループになる。`zbuf = vec![f32::MAX; width*height]` は `width*height=0` で空なので、
+  `zbuf[idx]` への最初のアクセスで range out of bounds パニックする。」
+- *MCP 経由では起きないのでは?*
+  → 「その通り。`mcp/tools.rs` の `arg_dim()` (問18) が `[1, MAX_IMAGE_DIM]` にクランプする。
+  しかし `render()` は `pub fn` であり、ライブラリとして Kado を使う将来のコードや
+  テストコードが直接呼べば防御なしにパニックする。`draw_axes` は既にこの防御を持つのに
+  `render` だけ持たないのは一貫性の欠如であり、"呼び出し側の契約に依存しない防御" という
+  既存の設計方針 (問18/MAX_IMAGE_DIM のクランプもこの方針) から外れていた。」
+- *過剰な防御的プログラミングにならないか?*
+  → 「CLAUDE.md の方針は『起こりえないシナリオへの防御は書かない』。しかし本件は
+  `pub fn` の呼び出し側契約が単一 (MCP 経由のみ) ではなく、`draw_axes` に既に前例がある
+  ため『一貫性のための最小限の防御』であり過剰ではない。」
+
+**実装**:
+- `src/render/raster.rs`: `render()` 冒頭に `if width == 0 || height == 0 { return img; }` を追加。
+  `Image::new(0, 0, ..)` は空のピクセルバッファを返すため安全。
+- `docs/SPEC.md`: §7.4 リソース上限表の直後に render() の防御方針を注記。
+- テスト: `render_with_zero_dimension_returns_empty_image_without_panicking`
+  (width=0/height=0/両方0 の3ケースでパニックしないことを確認)。
+- 副次的: 同ファイルが一度も rustfmt されていなかった (フォーマットドリフト) ため、
+  変更に合わせて全体を rustfmt (問1 の "触れたファイルは fmt を通す" 慣行)。
+
+## 反映サマリ v125
+| 問 | 実装 |
+|----|------|
+| 259 | render() に width/height==0 の防御ガードを追加 (draw_axes との一貫性) |
+
+> 総括: v125 は探索範囲を verify/check.rs から io/render/script/cli へ広げた回。
+> Explore エージェントの横断調査が STL/GLB の u32 オーバーフロー・DSL の repeat 指数爆発など
+> 複数候補を提示したが、実際に検証した結果もっとも具体的で検証可能だったのは
+> render() の width/height==0 アンダーフロー (同ファイル内の draw_axes に既に前例あり)。
+> MCP 経由では arg_dim のクランプにより到達しないが、pub fn としての契約違反は
+> ライブラリ利用者に対する実害がありうる。他の候補 (STL/GLB u32 オーバーフロー) は
+> MAX_RESOLUTION=256 の実測上限では到達不可能な仮想シナリオであり、
+> 過剰な防御的プログラミングを避ける既存方針 (CLAUDE.md) に従い見送った。
+> テスト数: 333 ユニット + 6 統合 = 339 合計。

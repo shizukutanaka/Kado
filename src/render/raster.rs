@@ -76,6 +76,14 @@ impl Camera {
 /// メッシュを `(width, height)` ピクセルの PNG 画像としてラスタライズする。
 pub fn render(mesh: &Mesh, cam: &Camera, width: usize, height: usize) -> Image {
     let mut img = Image::new(width, height, cam.bg);
+    // 問259: width/height==0 は xmax=(...).min(width-1) 等の usize 減算がアンダーフローし、
+    // 巨大な走査範囲で zbuf 添字が範囲外パニックする。draw_axes (同ファイル) は既に
+    // 同じガードを持つが render はこれまで無防備だった。MCP 経由 (arg_dim, 問18) は
+    // [1, MAX_IMAGE_DIM] にクランプ済みで到達しないが、render は pub fn であり
+    // 呼び出し側の契約に依存しない防御が一貫性の観点で必要。
+    if width == 0 || height == 0 {
+        return img;
+    }
     let mut zbuf = vec![f32::MAX; width * height];
 
     // カメラ行列を構築。
@@ -317,6 +325,36 @@ mod tests {
     }
 
     #[test]
+    fn render_with_zero_dimension_returns_empty_image_without_panicking() {
+        // 問259: width/height==0 は width-1/height-1 の usize アンダーフローで
+        // zbuf 添字が範囲外パニックしうる。draw_axes と同じガードを render にも適用する。
+        // MCP 経由では arg_dim (問18) が [1, MAX_IMAGE_DIM] にクランプするため到達しないが、
+        // render は pub fn であり呼び出し側の契約に依存しない防御が必要。
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = &presets[0];
+        let img_w0 = render(&mesh, cam, 0, 64);
+        assert_eq!(
+            img_w0.pixels.len(),
+            0,
+            "width=0 must yield an empty pixel buffer"
+        );
+        let img_h0 = render(&mesh, cam, 64, 0);
+        assert_eq!(
+            img_h0.pixels.len(),
+            0,
+            "height=0 must yield an empty pixel buffer"
+        );
+        let img_both0 = render(&mesh, cam, 0, 0);
+        assert_eq!(
+            img_both0.pixels.len(),
+            0,
+            "0×0 must yield an empty pixel buffer"
+        );
+    }
+
+    #[test]
     fn render_is_deterministic() {
         // 問41: インデックスではなく名前でカメラを取得し順序変更に耐える。
         let mesh = sphere_mesh();
@@ -338,7 +376,11 @@ mod tests {
         let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
         let a = render(&mesh, cam, 64, 64).downsample(2);
         let b = render(&mesh, cam, 64, 64).downsample(2);
-        assert_eq!((a.width, a.height), (32, 32), "downsample halves dimensions");
+        assert_eq!(
+            (a.width, a.height),
+            (32, 32),
+            "downsample halves dimensions"
+        );
         assert_eq!(a.pixels, b.pixels, "SSAA path must be deterministic");
         let has_fg = a.pixels.chunks(3).any(|c| c != cam.bg);
         assert!(has_fg, "SSAA image must contain foreground");
@@ -423,9 +465,20 @@ mod tests {
         };
         let (w, h) = (200, 100);
         let (sx, sy, clip_w) = project_to_screen(&cam, cam.target, w, h);
-        assert!(clip_w > 0.0, "target must be in front of camera (clip w>0): {clip_w}");
-        assert!((sx - w as f64 / 2.0).abs() < 1e-9, "target screen-x must be center {}, got {sx}", w / 2);
-        assert!((sy - h as f64 / 2.0).abs() < 1e-9, "target screen-y must be center {}, got {sy}", h / 2);
+        assert!(
+            clip_w > 0.0,
+            "target must be in front of camera (clip w>0): {clip_w}"
+        );
+        assert!(
+            (sx - w as f64 / 2.0).abs() < 1e-9,
+            "target screen-x must be center {}, got {sx}",
+            w / 2
+        );
+        assert!(
+            (sy - h as f64 / 2.0).abs() < 1e-9,
+            "target screen-y must be center {}, got {sy}",
+            h / 2
+        );
     }
 
     #[test]
@@ -464,7 +517,11 @@ mod tests {
         let row = |i: usize| Vec3::new(view[i * 4], view[i * 4 + 1], view[i * 4 + 2]);
         let (r, u, nf) = (row(0), row(1), row(2));
         for (name, v) in [("r", r), ("u", u), ("-f", nf)] {
-            assert!((v.length() - 1.0).abs() < 1e-12, "{name} must be unit length, got {}", v.length());
+            assert!(
+                (v.length() - 1.0).abs() < 1e-12,
+                "{name} must be unit length, got {}",
+                v.length()
+            );
         }
         assert!(r.dot(u).abs() < 1e-12, "r ⊥ u: {}", r.dot(u));
         assert!(r.dot(nf).abs() < 1e-12, "r ⊥ f: {}", r.dot(nf));
@@ -538,16 +595,21 @@ mod tests {
         let nf = 1.0 / (near - far); // near-far < 0 なので nf < 0
         assert!(
             (proj[10] - (far + near) * nf).abs() < 1e-15,
-            "proj[10] must be (far+near)/(near-far), got {}", proj[10]
+            "proj[10] must be (far+near)/(near-far), got {}",
+            proj[10]
         );
         assert!(
             (proj[11] - 2.0 * far * near * nf).abs() < 1e-14,
-            "proj[11] must be 2*far*near/(near-far), got {}", proj[11]
+            "proj[11] must be 2*far*near/(near-far), got {}",
+            proj[11]
         );
         assert_eq!(proj[14], -1.0, "proj[14] (w from z) must be -1");
         // f = 1/tan(fov/2)。fov=π/4 → tan(π/8) ≈ 0.41421 → f ≈ 2.41421。aspect=1。
         let f = 1.0 / (fov / 2.0).tan();
-        assert!((proj[0] - f).abs() < 1e-12, "proj[0] = f/aspect must equal f at aspect=1");
+        assert!(
+            (proj[0] - f).abs() < 1e-12,
+            "proj[0] = f/aspect must equal f at aspect=1"
+        );
         assert!((proj[5] - f).abs() < 1e-12, "proj[5] must equal f");
     }
 
@@ -557,12 +619,26 @@ mod tests {
         // 閾値の上下で挙動が分かれることを固定 (look_at の縮退回避に依存)。
         // 閾値以上 → 正規化される。
         let above = normalize(Vec3::new(1e-14, 0.0, 0.0));
-        assert!(above.x > 0.5, "len=1e-14 (>threshold) must normalize toward x, got {above:?}");
-        assert!((above.length() - 1.0).abs() < 1e-9, "normalized vector must be unit length");
+        assert!(
+            above.x > 0.5,
+            "len=1e-14 (>threshold) must normalize toward x, got {above:?}"
+        );
+        assert!(
+            (above.length() - 1.0).abs() < 1e-9,
+            "normalized vector must be unit length"
+        );
         // 閾値未満 → (0,0,1) フォールバック。
         let below = normalize(Vec3::new(1e-16, 0.0, 0.0));
-        assert_eq!(below, Vec3::new(0.0, 0.0, 1.0), "len=1e-16 (<threshold) must fall back to Z");
+        assert_eq!(
+            below,
+            Vec3::new(0.0, 0.0, 1.0),
+            "len=1e-16 (<threshold) must fall back to Z"
+        );
         // 完全ゼロベクトルもフォールバック。
-        assert_eq!(normalize(Vec3::ZERO), Vec3::new(0.0, 0.0, 1.0), "zero vector must fall back to Z");
+        assert_eq!(
+            normalize(Vec3::ZERO),
+            Vec3::new(0.0, 0.0, 1.0),
+            "zero vector must fall back to Z"
+        );
     }
 }

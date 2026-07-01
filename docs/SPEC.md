@@ -220,6 +220,10 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | `MAX_RESOLUTION` | 256 | mcp/tools |
 | `MAX_IMAGE_DIM` | 4096 | mcp/tools |
 
+MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到達しないが、
+`render::render()` 自体も pub fn として `width==0`/`height==0` を防御する
+（`draw_axes` と同じガード。呼び出し側の契約に依存しない防御・問259）。
+
 ---
 
 ## 8. 出力フォーマット
@@ -246,7 +250,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 
 ## 10. 品質ゲート
 
-- `cargo test`: 337 テスト（331 ユニット + 6 統合）合格。
+- `cargo test`: 339 テスト（333 ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 
