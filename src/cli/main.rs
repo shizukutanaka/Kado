@@ -75,21 +75,23 @@ fn main() {
         "screenshot" => {
             // screenshot [scene.json] <out.png> [view]
             // arg2 が .json で終わる → scene file; arg3 が出力パス; arg4 がビュー。
-            let (sdf, out, view) =
-                if args.get(2).map(|s| s.ends_with(".json")).unwrap_or(false) {
-                    let src = load_scene_file(args.get(2).unwrap());
-                    let sdf = parse_scene(&src);
-                    let out = args.get(3).map(String::as_str).unwrap_or("kado-screenshot.png");
-                    let view = args.get(4).map(String::as_str).unwrap_or("iso");
-                    (sdf, out.to_string(), view.to_string())
-                } else {
-                    let out = args
-                        .get(2)
-                        .map(String::as_str)
-                        .unwrap_or("kado-screenshot.png");
-                    let view = args.get(3).map(String::as_str).unwrap_or("iso");
-                    (demo_model(), out.to_string(), view.to_string())
-                };
+            let (sdf, out, view) = if args.get(2).map(|s| s.ends_with(".json")).unwrap_or(false) {
+                let src = load_scene_file(args.get(2).unwrap());
+                let sdf = parse_scene(&src);
+                let out = args
+                    .get(3)
+                    .map(String::as_str)
+                    .unwrap_or("kado-screenshot.png");
+                let view = args.get(4).map(String::as_str).unwrap_or("iso");
+                (sdf, out.to_string(), view.to_string())
+            } else {
+                let out = args
+                    .get(2)
+                    .map(String::as_str)
+                    .unwrap_or("kado-screenshot.png");
+                let view = args.get(3).map(String::as_str).unwrap_or("iso");
+                (demo_model(), out.to_string(), view.to_string())
+            };
             let (lo_b, hi_b) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo_b, hi_b, 48);
             if mesh.triangles.is_empty() {
@@ -147,8 +149,10 @@ fn main() {
                 );
                 std::process::exit(2);
             });
-            let min_wall: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
-            let max_overhang: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(45.0);
+            let min_wall =
+                parse_finite_arg(args.get(3), "min_wall_mm", 0.5).unwrap_or_else(|e| fail(e));
+            let max_overhang =
+                parse_finite_arg(args.get(4), "max_overhang_deg", 45.0).unwrap_or_else(|e| fail(e));
             let res: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(48);
             let res = res.clamp(1, 256);
             // 問47: run と同じヘルパを使い、ファイル読み込み・評価のエラー処理を一本化する。
@@ -156,7 +160,13 @@ fn main() {
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, res);
             // SDF を渡し局所薄肉の内向きレイ探針を有効化する (問58)。ビルド方向 +Z (問68)。
-            let report = validate_with_field(&mesh, Some(&sdf), min_wall, max_overhang, Vec3::new(0.0, 0.0, 1.0));
+            let report = validate_with_field(
+                &mesh,
+                Some(&sdf),
+                min_wall,
+                max_overhang,
+                Vec3::new(0.0, 0.0, 1.0),
+            );
             let status = if report.is_ok() { "PASS" } else { "FAIL" };
             println!("[{status}] {}", report.summary());
             for issue in &report.issues {
@@ -199,5 +209,74 @@ fn parse_scene(src: &str) -> Sdf {
             eprintln!("script error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// 数値引数を解析する。省略時は既定値、パース失敗または非有限 (NaN/Inf) は
+/// エラーを返す (問262)。
+///
+/// MCP 経由 (mcp/tools.rs) は JSON 自体が NaN/Infinity を表現できないため、
+/// `min_wall_mm`/`max_overhang_deg` の非有限値は構造的に届かない。しかし CLI は
+/// コマンドライン文字列を `str::parse::<f64>()` で読むため "nan"/"inf"/"-inf" が
+/// 有効な f64 として通ってしまう。これを `unwrap_or(default)` で握りつぶすと、
+/// タイプミス (例: `kado check scene.json abc`) が既定値実行として静かに進行し、
+/// 気付かれない。省略 (引数なし) と誤入力 (パース失敗/非有限) を区別し、後者のみ
+/// エラーにする。
+fn parse_finite_arg(raw: Option<&String>, name: &str, default: f64) -> Result<f64, String> {
+    match raw {
+        None => Ok(default),
+        Some(s) => match s.parse::<f64>() {
+            Ok(v) if v.is_finite() => Ok(v),
+            Ok(v) => Err(format!("{name} must be finite, got {v}")),
+            Err(_) => Err(format!("{name} must be a number, got {s:?}")),
+        },
+    }
+}
+
+fn fail(msg: String) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_finite_arg_uses_default_when_omitted() {
+        // 問262: 引数省略 (None) は誤入力ではないので既定値。
+        assert_eq!(parse_finite_arg(None, "x", 0.5), Ok(0.5));
+    }
+
+    #[test]
+    fn parse_finite_arg_accepts_valid_finite_numbers() {
+        let s = "1.25".to_string();
+        assert_eq!(parse_finite_arg(Some(&s), "x", 0.5), Ok(1.25));
+        let neg = "-3".to_string();
+        assert_eq!(parse_finite_arg(Some(&neg), "x", 0.5), Ok(-3.0));
+    }
+
+    #[test]
+    fn parse_finite_arg_rejects_nan_and_infinity_strings() {
+        // 問262: str::parse::<f64>() は "nan"/"inf"/"-inf" を有効な f64 として
+        // 受理してしまう (Rust FromStr の仕様)。CLI はこれを既定値へ静かに
+        // フォールバックさせず、明示エラーにしなければならない。
+        for bad in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let s = bad.to_string();
+            let r = parse_finite_arg(Some(&s), "min_wall_mm", 0.5);
+            assert!(
+                r.is_err(),
+                "{bad:?} must be rejected as non-finite, got {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_finite_arg_rejects_unparseable_strings() {
+        // 問262: "abc" のような非数値文字列は以前は既定値へ静かにフォールバック
+        // していた。誤入力として明示エラーにする。
+        let s = "abc".to_string();
+        let r = parse_finite_arg(Some(&s), "min_wall_mm", 0.5);
+        assert!(r.is_err(), "non-numeric string must be rejected, got {r:?}");
     }
 }

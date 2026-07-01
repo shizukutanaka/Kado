@@ -5267,3 +5267,69 @@ AI はメッシュのどこに問題があるか分からない。」
 > 顕在化した。既存の `unknown_method_returns_error`/`unknown_method_as_notification_*`
 > というペアテストの構造を模倣し、対称的な3本を追加。
 > テスト数: 337 ユニット + 6 統合 = 343 合計。
+
+---
+
+## 問262 — CLI の数値引数が "nan"/"inf"/"abc" を静かに握りつぶす
+
+*mcp/server.rs (問261) の兄弟パスとして cli/main.rs を精査 (v128)*
+
+**問い:**
+「`check <scene.json> [min_wall_mm] [max_overhang_deg]` は
+`args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5)` で引数を解析する。
+Rust の `f64::from_str` は `"nan"`/`"inf"`/`"-inf"`/`"infinity"` を**有効な f64**
+として受理する。ユーザが `kado check scene.json nan` と打ったら何が起きるか？
+MCP 側 (`mcp/tools.rs` の `tool_validate`) は同じパラメータをどう扱っているか、
+両者は対称か？」
+
+*ソクラテス式問答:*
+- *MCP 側は同じ脆弱性を持つか?*
+  → 「持たない。理由が構造的で興味深い: MCP は JSON-RPC 経由で受け取り、
+  JSON 自体の仕様が `NaN`/`Infinity` を数値リテラルとして表現できない
+  (`{"min_wall_mm": NaN}` は不正な JSON でパース段階で弾かれる)。
+  一方 CLI はコマンドライン文字列を直接 `str::parse::<f64>()` に渡すため、
+  この構造的な保護が存在しない。トランスポート層の違いが安全性の非対称を生んでいた。」
+- *NaN/負値が実際に何を壊すか?*
+  → 「check.rs 側では `if min_wall_mm > 0.0 { ... }` という比較なので NaN はパニックせず
+  静かにチェック全体をスキップする (IEEE754: NaN との比較は常に false)。
+  クラッシュはしないが、ユーザが `min_wall_mm=nan` と打ち間違えたことに気付けないまま
+  『薄肉チェックなしで PASS』という誤った安心感を与える。これは問70/76/106/261 と
+  同じ『サイレントな誤動作 > 明示エラー』というこのプロジェクト一貫の反パターン。」
+- *"abc" (非数値文字列) はどう扱うべきか?*
+  → 「省略 (引数なし) と誤入力 (パースできない値を明示的に渡した) を区別する。
+  省略は既定値でよい。しかし `check scene.json abc` は明らかなタイプミスであり、
+  既定値へ静かにフォールバックすると `kado check scene.json 0.5abc` のような
+  破損した自動生成コマンドも黙って通ってしまう。」
+
+**実装**:
+- `src/cli/main.rs`: `parse_finite_arg(raw, name, default) -> Result<f64, String>` を追加。
+  引数省略は `Ok(default)`、パース失敗または非有限は `Err` を返す純粋関数
+  (プロセス終了を含まないためユニットテスト可能)。
+  `check` コマンドで `min_wall_mm`/`max_overhang_deg` に適用し、エラー時は
+  `fail()` (eprintln + exit(2)) で診断メッセージ付き終了する
+  (既存の "unknown view" パターンと同じスタイル)。
+  `resolution` 引数は対象外 (MCP の `arg_resolution` と同じ「サイレントクランプ」が
+  既存の意図的パターンであり、こちらは非対称ではない)。
+- テスト4本 (`cli::main::tests`):
+  - `parse_finite_arg_uses_default_when_omitted`
+  - `parse_finite_arg_accepts_valid_finite_numbers`
+  - `parse_finite_arg_rejects_nan_and_infinity_strings`
+  - `parse_finite_arg_rejects_unparseable_strings`
+- 手動確認: `kado check scene.json nan` → `min_wall_mm must be finite, got NaN` (exit 2)。
+  `kado check scene.json abc` → `min_wall_mm must be a number, got "abc"` (exit 2)。
+  正常値は従来通り動作。
+- 副次的: `cli/main.rs` も一度も rustfmt されていなかったため全体を rustfmt。
+
+## 反映サマリ v128
+| 問 | 実装 |
+|----|------|
+| 262 | CLI の min_wall_mm/max_overhang_deg に NaN/Inf/非数値の明示エラーを追加 |
+
+> 総括: v128 は問261 (MCP の method 欠落サイレントバグ) の発見を踏まえ、
+> 「同じクラスのバグが CLI 側にもあるか」を意図的に探した回。見つかったのは
+> MCP と CLI という**2つのトランスポート層の非対称性**——JSON は NaN/Infinity を
+> 構造的に表現できないため MCP 側は自動的に保護されているが、CLI の生文字列パースは
+> 保護されていなかった。この種の「片方の経路だけ暗黙に安全」というパターンは
+> 気付きにくく、一方の経路を直しても他方を見直さなければ再発しうる — 実際に今回、
+> 直前ラウンドの学びを次のラウンドの探索指針にすることで発見できた。
+> テスト数: 337 ライブラリユニット + 4 CLI ユニット + 6 統合 = 347 合計。
