@@ -87,7 +87,10 @@ mod tests {
             n.length()
         );
         // XY平面の三角形の法線は +Z 方向。
-        assert!((n.z - 1.0).abs() < 1e-12, "XY-plane triangle normal must be +Z, got {n:?}");
+        assert!(
+            (n.z - 1.0).abs() < 1e-12,
+            "XY-plane triangle normal must be +Z, got {n:?}"
+        );
 
         // 退化: a, b, c が共線 → 面積 0 → 法線ゼロ。
         let degen = face_normal(
@@ -95,11 +98,19 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(2.0, 0.0, 0.0),
         );
-        assert_eq!(degen, Vec3::ZERO, "collinear triangle must produce zero normal");
+        assert_eq!(
+            degen,
+            Vec3::ZERO,
+            "collinear triangle must produce zero normal"
+        );
 
         // 一致: 3 点が同じ → 面積 0 → 法線ゼロ。
         let coinc = face_normal(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
-        assert_eq!(coinc, Vec3::ZERO, "coincident triangle must produce zero normal");
+        assert_eq!(
+            coinc,
+            Vec3::ZERO,
+            "coincident triangle must produce zero normal"
+        );
     }
 
     #[test]
@@ -113,14 +124,50 @@ mod tests {
         let b = Vec3::new(tiny, 0.0, 0.0);
         let c = Vec3::new(0.0, tiny, 0.0);
         let n = face_normal(a, b, c);
-        assert!(n.x.is_finite(), "near-degenerate: x component must be finite, got {}", n.x);
-        assert!(n.y.is_finite(), "near-degenerate: y component must be finite, got {}", n.y);
-        assert!(n.z.is_finite(), "near-degenerate: z component must be finite, got {}", n.z);
+        assert!(
+            n.x.is_finite(),
+            "near-degenerate: x component must be finite, got {}",
+            n.x
+        );
+        assert!(
+            n.y.is_finite(),
+            "near-degenerate: y component must be finite, got {}",
+            n.y
+        );
+        assert!(
+            n.z.is_finite(),
+            "near-degenerate: z component must be finite, got {}",
+            n.z
+        );
         // 正規化されているか 0 かどちらかでなければならない (長さが 0 でなければ単位長)。
         let len = n.length();
         assert!(
             len == 0.0 || (len - 1.0).abs() < 1e-9,
             "near-degenerate normal must be zero or unit-length, got length={len}"
+        );
+    }
+
+    #[test]
+    fn empty_mesh_produces_valid_header_only_stl() {
+        // 問260: gltf.rs/html.rs は空メッシュのテストを持つが stl.rs は持っていなかった
+        // (フォーマット横断の一貫性欠落)。空メッシュでもパニックせず、80バイトヘッダ +
+        // 4バイト三角形数(=0) の 84 バイトちょうどを返すことを固定する。
+        use crate::extract::Mesh;
+        let empty = Mesh::default();
+        let bytes = encode_binary(&empty);
+        assert_eq!(
+            bytes.len(),
+            84,
+            "empty mesh STL must be exactly header+count (84 bytes)"
+        );
+        let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        assert_eq!(count, 0, "empty mesh triangle count field must be 0");
+        // ヘッダタグが含まれる (壊れたバイト列でない)。
+        assert!(
+            bytes
+                .windows(b"kado binary stl".len())
+                .any(|w| w == b"kado binary stl"),
+            "empty mesh STL must still carry the header tag"
         );
     }
 }

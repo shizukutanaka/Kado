@@ -45,7 +45,11 @@ pub fn write_3mf(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
 /// 無効な XML になる (問128)。通常の SDF 抽出では非有限座標は生じないが
 /// (eval.rs のパラメータ検証により)、防御的に正規化して XML の有効性を保証する。
 fn finite_coord(v: f64) -> f64 {
-    if v.is_finite() { v } else { 0.0 }
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 /// `3D/3dmodel.model` の XML 本体を生成する。
@@ -75,7 +79,11 @@ fn build_model_xml(mesh: &Mesh) -> String {
     }
     s.push_str("</vertices>\n<triangles>\n");
     for t in &mesh.triangles {
-        let _ = writeln!(s, "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>", t[0], t[1], t[2]);
+        let _ = writeln!(
+            s,
+            "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
+            t[0], t[1], t[2]
+        );
     }
     s.push_str(
         "</triangles>\n\
@@ -146,7 +154,10 @@ mod tests {
             assert!(xml.contains(open), "missing element {open}");
             assert!(xml.contains(close), "missing closing {close}");
         }
-        assert!(xml.contains("<object id=\"1\" type=\"model\">"), "single object id=1 required");
+        assert!(
+            xml.contains("<object id=\"1\" type=\"model\">"),
+            "single object id=1 required"
+        );
         // 名前空間宣言。
         assert!(
             xml.contains("xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\""),
@@ -206,6 +217,44 @@ mod tests {
         assert!(
             bad_xml.contains("x=\"0\" y=\"0\" z=\"0\""),
             "non-finite coords must be replaced with 0: {bad_xml}"
+        );
+    }
+
+    #[test]
+    fn empty_mesh_produces_valid_zip_package_with_zero_counts() {
+        // 問260: gltf.rs/html.rs は空メッシュのテストを持つが threemf.rs/stl.rs は
+        // 持っていなかった (フォーマット横断の一貫性欠落)。EMPTY_MESH issue (問348 の
+        // validate 早期 return) 後も AI が export を呼ぶ経路があるため、空メッシュでも
+        // パニックせず構造的に有効な出力を返すことを固定する。
+        let empty = Mesh::default();
+        let bytes = encode_3mf(&empty);
+        // ZIP ローカルヘッダ署名で始まる (壊れたパッケージでない)。
+        assert_eq!(&bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+        for part in ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"] {
+            assert!(
+                bytes.windows(part.len()).any(|w| w == part.as_bytes()),
+                "empty-mesh package must still contain part {part}"
+            );
+        }
+        let xml = build_model_xml(&empty);
+        assert_eq!(
+            xml.matches("<vertex ").count(),
+            0,
+            "empty mesh must have 0 vertices"
+        );
+        assert_eq!(
+            xml.matches("<triangle ").count(),
+            0,
+            "empty mesh must have 0 triangles"
+        );
+        // 空でも <vertices></vertices>/<triangles></triangles> の骨格は残り、XML として有効。
+        assert!(
+            xml.contains("<vertices>\n</vertices>"),
+            "empty mesh must still emit an empty <vertices> block: {xml}"
+        );
+        assert!(
+            xml.contains("<item objectid=\"1\"/>"),
+            "build item must still reference object 1"
         );
     }
 }
