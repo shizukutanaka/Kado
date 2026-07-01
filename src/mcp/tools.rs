@@ -74,6 +74,16 @@ pub fn tool_list() -> Value {
                     "Overlay an X(red)/Y(green)/Z(blue) orientation gnomon (default: true)",
                     false,
                 ),
+                (
+                    "projection",
+                    "string",
+                    "perspective|orthographic (default: perspective). Orthographic keeps true \
+                     dimensional proportions (no perspective distortion) — matches the \
+                     engineering-drawing convention that front/back/right/left/top/bottom/iso \
+                     names imply; useful for judging proportions/alignment rather than a \
+                     photo-realistic look.",
+                    false,
+                ),
             ],
         ),
         tool_def(
@@ -376,13 +386,29 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let presets = Camera::presets(lo, hi);
     // 問71: 未知のビュー名はサイレントに "iso" フォールバックするのではなく、
     // 明示エラーを返す。AI が無効な view を指定した場合に気づけるようにする。
-    let cam = match presets.iter().find(|(n, _)| *n == view) {
+    let mut cam = match presets.iter().find(|(n, _)| *n == view) {
         Some((_, c)) => c.clone(),
         None => {
             let valid: Vec<&str> = presets.iter().map(|(n, _)| *n).collect();
             return ToolResult::error(format!(
                 "unknown view '{view}'; valid views: {}",
                 valid.join(", ")
+            ));
+        }
+    };
+    // 問267: front/back/right/left/top/bottom/iso はエンジニアリング図面の多面図・
+    // 等角投影法に由来し、伝統的に正射影 (寸法比率が歪まない) で描かれる。
+    // 既定は既存挙動を維持するため透視投影のまま、opt-in で切り替える。
+    let projection = args
+        .get("projection")
+        .and_then(|v| v.as_str())
+        .unwrap_or("perspective");
+    cam.ortho = match projection {
+        "perspective" => false,
+        "orthographic" => true,
+        other => {
+            return ToolResult::error(format!(
+                "unknown projection '{other}'; valid: perspective, orthographic"
             ));
         }
     };
@@ -1121,6 +1147,46 @@ mod tests {
             .unwrap_or("");
         assert!(
             txt.contains("unknown view"),
+            "error must name the problem: {txt}"
+        );
+    }
+
+    #[test]
+    fn screenshot_accepts_perspective_and_orthographic_projection_and_rejects_unknown() {
+        // 問267: projection 引数で正射影/透視投影を切り替えられる。既定 (省略) は
+        // 従来通り透視投影で成功し、"perspective"/"orthographic" も成功する。
+        // 未知の値は screenshot の view と同じくサイレントフォールバックせず明示エラー。
+        let mut s = Session::new();
+        let base_args = |projection: Option<&str>| {
+            let mut pairs = vec![
+                ("view", json::s("front")),
+                ("width", json::n(32.0)),
+                ("height", json::n(32.0)),
+                ("resolution", json::n(16.0)),
+            ];
+            if let Some(p) = projection {
+                pairs.push(("projection", json::s(p)));
+            }
+            json::obj(pairs)
+        };
+        for projection in [None, Some("perspective"), Some("orthographic")] {
+            let r = call_tool(&mut s, "screenshot", &base_args(projection));
+            assert!(
+                !r.is_error,
+                "screenshot(projection={projection:?}) must succeed"
+            );
+        }
+        let bad = call_tool(&mut s, "screenshot", &base_args(Some("fisheye")));
+        assert!(
+            bad.is_error,
+            "unknown projection must produce an explicit error"
+        );
+        let txt = bad.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            txt.contains("unknown projection"),
             "error must name the problem: {txt}"
         );
     }

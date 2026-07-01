@@ -29,6 +29,13 @@ pub struct Camera {
     pub diffuse: [u8; 3],
     /// Ambient 強度 [0.0, 1.0]。
     pub ambient: f64,
+    /// true なら正射影 (technical drawing 向け・寸法が歪まない)、false なら透視投影
+    /// (既定・問267)。前後関係を写実的に見せたい screenshot には透視投影が向くが、
+    /// front/back/right/left/top/bottom/iso という名前は本来エンジニアリング図面の
+    /// 多面図・等角投影法に由来し、これらは伝統的に**正射影**で描かれる
+    /// (透視投影は寸法比率を歪めるため、DFM の目視確認には不利)。
+    /// 既定は false (透視投影) とし、既存の screenshot 挙動を変えない。
+    pub ortho: bool,
 }
 
 impl Camera {
@@ -60,6 +67,7 @@ impl Camera {
             light_dir: light,
             diffuse,
             ambient,
+            ortho: false, // 既定は透視投影 (問267)。orthographic は screenshot 引数で opt-in。
         };
         vec![
             ("front", cam(Vec3::new(0.0, -1.0, 0.0), up_z)),
@@ -231,7 +239,16 @@ fn draw_line(img: &mut Image, a: (f64, f64), b: (f64, f64), color: [u8; 3]) {
 fn build_matrices(cam: &Camera, w: usize, h: usize) -> ([f64; 16], [f64; 16]) {
     let view = look_at(cam.eye, cam.target, cam.up);
     let aspect = w as f64 / h as f64;
-    let proj = perspective(cam.fov_y, aspect, 0.01, 1000.0);
+    let proj = if cam.ortho {
+        // 問267: eye-target 距離における透視投影相当の視野半高を正射影の
+        // 視野半高として使う。同じ eye/target/fov_y のまま ortho を切り替えても
+        // 対象の見かけの大きさが概ね揃う (ズーム感の連続性)。
+        let dist = (cam.eye - cam.target).length();
+        let half_height = dist * (cam.fov_y / 2.0).tan();
+        orthographic(half_height, aspect, 0.01, 1000.0)
+    } else {
+        perspective(cam.fov_y, aspect, 0.01, 1000.0)
+    };
     (view, proj)
 }
 
@@ -281,6 +298,31 @@ fn perspective(fov_y: f64, aspect: f64, near: f64, far: f64) -> [f64; 16] {
         0.0,
         -1.0,
         0.0,
+    ]
+}
+
+/// 正射影行列 (問267)。透視投影と違い w は常に1のまま (near/far は NDC z に
+/// 線形写像されるのみ)。`render` の透視除算 `[0]/[3]` は恒等になり寸法比率を保つ。
+fn orthographic(half_height: f64, aspect: f64, near: f64, far: f64) -> [f64; 16] {
+    let half_width = half_height * aspect;
+    let nf = 1.0 / (near - far);
+    [
+        1.0 / half_width,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0 / half_height,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0 * nf,
+        (far + near) * nf,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ]
 }
 
@@ -462,6 +504,7 @@ mod tests {
             light_dir: Vec3::new(0.0, 0.0, 1.0),
             diffuse: [200, 200, 200],
             ambient: 0.2,
+            ortho: false,
         };
         let (w, h) = (200, 100);
         let (sx, sy, clip_w) = project_to_screen(&cam, cam.target, w, h);
@@ -495,6 +538,7 @@ mod tests {
             light_dir: Vec3::new(0.0, 0.0, 1.0),
             diffuse: [200, 200, 200],
             ambient: 0.2,
+            ortho: false,
         };
         let (w, h) = (100, 100);
         let (_, center_y, _) = project_to_screen(&cam, cam.target, w, h);
@@ -539,6 +583,7 @@ mod tests {
             light_dir: Vec3::new(0.577, 0.577, 0.577),
             diffuse: [200, 200, 200],
             ambient: 0.2,
+            ortho: false,
         }
     }
 
@@ -611,6 +656,133 @@ mod tests {
             "proj[0] = f/aspect must equal f at aspect=1"
         );
         assert!((proj[5] - f).abs() < 1e-12, "proj[5] must equal f");
+    }
+
+    #[test]
+    fn orthographic_matrix_coefficients_are_exact() {
+        // 問267: 正射影行列の係数を固定する。透視投影と異なり w 行は [0,0,0,1]
+        // (透視除算が恒等になる) でなければならない。
+        let half_height = 2.0;
+        let aspect = 1.5;
+        let near = 0.01;
+        let far = 1000.0;
+        let proj = orthographic(half_height, aspect, near, far);
+        let half_width = half_height * aspect;
+        assert!(
+            (proj[0] - 1.0 / half_width).abs() < 1e-15,
+            "proj[0] must be 1/half_width, got {}",
+            proj[0]
+        );
+        assert!(
+            (proj[5] - 1.0 / half_height).abs() < 1e-15,
+            "proj[5] must be 1/half_height, got {}",
+            proj[5]
+        );
+        let nf = 1.0 / (near - far);
+        assert!(
+            (proj[10] - 2.0 * nf).abs() < 1e-15,
+            "proj[10] must be 2/(near-far), got {}",
+            proj[10]
+        );
+        assert!(
+            (proj[11] - (far + near) * nf).abs() < 1e-15,
+            "proj[11] must be (far+near)/(near-far), got {}",
+            proj[11]
+        );
+        // w 行は恒等 (正射影には透視除算が無い)。
+        assert_eq!(
+            &proj[12..16],
+            &[0.0, 0.0, 0.0, 1.0],
+            "w row must be [0,0,0,1]"
+        );
+    }
+
+    #[test]
+    fn orthographic_projection_maps_near_and_far_plane_to_ndc_bounds() {
+        // 問267: near 面は NDC z=-1、far 面は NDC z=+1 に写像される
+        // (透視除算が w=1 で恒等のため、そのままの値が最終 NDC z になる)。
+        let (near, far) = (0.5, 50.0);
+        let proj = orthographic(1.0, 1.0, near, far);
+        // 視点空間で camera から -near 離れた点 (view space z = -near)。
+        let at_near = mat4_mul_vec4(&proj, [0.0, 0.0, -near, 1.0]);
+        assert!(
+            (at_near[2] / at_near[3] - (-1.0)).abs() < 1e-9,
+            "near plane must map to NDC z=-1, got {}",
+            at_near[2] / at_near[3]
+        );
+        let at_far = mat4_mul_vec4(&proj, [0.0, 0.0, -far, 1.0]);
+        assert!(
+            (at_far[2] / at_far[3] - 1.0).abs() < 1e-9,
+            "far plane must map to NDC z=+1, got {}",
+            at_far[2] / at_far[3]
+        );
+    }
+
+    #[test]
+    fn orthographic_screenshot_of_cuboid_produces_non_blank_image() {
+        // 問267: Camera.ortho=true で render() を呼んでも (w=1 の透視除算恒等が
+        // 正しく処理され) パニックせず、前景を含む画像を生成する。
+        let sdf = Sdf::cuboid(Vec3::splat(1.0));
+        let mesh = polygonize(&sdf, Vec3::splat(-1.5), Vec3::splat(1.5), 24);
+        let (lo, hi) = mesh.bounds().unwrap();
+        let mut presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter_mut().find(|(n, _)| *n == "front").unwrap();
+        cam.ortho = true;
+        let img = render(&mesh, cam, 64, 64);
+        let has_foreground = img.pixels.chunks(3).any(|c| c != cam.bg);
+        assert!(
+            has_foreground,
+            "orthographic render must not be entirely background"
+        );
+    }
+
+    #[test]
+    fn orthographic_keeps_parallel_edges_parallel_unlike_perspective() {
+        // 問267: 正射影の特徴——奥行きが違っても平行なエッジは画面上でも平行のまま
+        // (透視投影は奥行きに応じて収束させ、歪める)。
+        // 立方体の手前の辺と奥の辺 (X方向, 両方 Y=Z=1 の高さ/奥行きにある2本) を front
+        // ビューから見て、画面上の水平方向の長さがほぼ一致することを確認する
+        // (透視だと奥の辺がカメラから遠い分だけ短く見える)。
+        let cam_front = Vec3::new(0.0, -1.0, 0.0);
+        let target = Vec3::ZERO;
+        let mut cam = Camera {
+            eye: target + cam_front * 5.0,
+            target,
+            up: Vec3::new(0.0, 0.0, 1.0),
+            fov_y: std::f64::consts::FRAC_PI_4,
+            bg: [0, 0, 0],
+            light_dir: Vec3::new(0.0, 0.0, 1.0),
+            diffuse: [200, 200, 200],
+            ambient: 0.2,
+            ortho: true,
+        };
+        let (w, h) = (200, 200);
+        // 手前の辺 (y=-1, 近い) の両端。
+        let near_left = project_to_screen(&cam, Vec3::new(-1.0, -1.0, 0.0), w, h);
+        let near_right = project_to_screen(&cam, Vec3::new(1.0, -1.0, 0.0), w, h);
+        // 奥の辺 (y=+1, 遠い) の両端。
+        let far_left = project_to_screen(&cam, Vec3::new(-1.0, 1.0, 0.0), w, h);
+        let far_right = project_to_screen(&cam, Vec3::new(1.0, 1.0, 0.0), w, h);
+        let near_width = (near_right.0 - near_left.0).abs();
+        let far_width = (far_right.0 - far_left.0).abs();
+        assert!(
+            (near_width - far_width).abs() < 1e-6,
+            "orthographic must render equal-depth-independent widths: near={near_width}, far={far_width}"
+        );
+
+        // 対照: 透視投影では奥の辺が手前より画面上で狭く見える (収束)。
+        cam.ortho = false;
+        let p_near_left = project_to_screen(&cam, Vec3::new(-1.0, -1.0, 0.0), w, h);
+        let p_near_right = project_to_screen(&cam, Vec3::new(1.0, -1.0, 0.0), w, h);
+        let p_far_left = project_to_screen(&cam, Vec3::new(-1.0, 1.0, 0.0), w, h);
+        let p_far_right = project_to_screen(&cam, Vec3::new(1.0, 1.0, 0.0), w, h);
+        let p_near_width = (p_near_right.0 - p_near_left.0).abs();
+        let p_far_width = (p_far_right.0 - p_far_left.0).abs();
+        assert!(
+            p_far_width < p_near_width,
+            "perspective must render the far edge narrower than the near edge: \
+             near={p_near_width}, far={p_far_width}"
+        );
     }
 
     #[test]
