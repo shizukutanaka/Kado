@@ -65,6 +65,7 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | カプセル | `capsule(half_height, r)` | hh ≥ 0, r > 0 | **引数順は (hh, r)**。hh=0 は球 |
 | 角丸箱 | `rounded_box(half, r)` | half > 0, r > 0 | |
 | 楕円体 | `ellipsoid(radii)` | 各半径 > 0 | IQ 近似（軸上は厳密） |
+| 正多角形プリズム | `prism(sides, radius, half_height)` | sides ≥ 3（整数）, radius > 0, hh > 0 | Z軸押し出し・外接円半径基準。**厳密 SDF**（IQ sdRegularPolygon + 厳密押し出し）。n→∞ で cylinder に収束（問269） |
 
 ### 3.2 CSG（集合演算）
 
@@ -267,7 +268,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 363 テスト（353 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
+- `cargo test`: 368 テスト（358 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

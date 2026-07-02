@@ -1,4 +1,4 @@
-# Kado 機能過不足トリアージ (問268)
+# Kado 機能過不足トリアージ (問268・v135時点で更新)
 
 問265 (MCPツール面)・問266 (DSL演算子面)・問267 (レンダリング面) の
 ソクラテス式レビュー3巡の結論と、残存候補を1枚に選別・リスト化する。
@@ -12,7 +12,7 @@
 | 面 | 内容 | 判定 |
 |----|------|------|
 | MCPツール (8本) | run_script / validate / screenshot / export / eval / get_scene / undo_script / help | 相互重複なし。全て保持 (問265) |
-| DSLプリミティブ (8) | sphere / cuboid / cylinder / torus / cone / capsule / rounded_box / ellipsoid | rounded_box は offset(cuboid) と等価だが正当な糖衣構文として保持 |
+| DSLプリミティブ (9) | sphere / cuboid / cylinder / torus / cone / capsule / rounded_box / ellipsoid / **prism (正多角形・問269)** | rounded_box は offset(cuboid) と等価だが正当な糖衣構文として保持 |
 | CSG (6) | union / intersection / difference / smooth_* ×3 | 保持 |
 | 変形・修飾 (12) | translate / scale / offset / shell / repeat / mirror_x/y/z / rotate_x/y/z / **rotate (任意軸・問266)** / cut / flatten | 保持 |
 | DFM issue コード (11) | EMPTY_MESH 〜 ENCLOSED_CAVITY。空間的 issue は全て location 付き (問255/257/258) | 保持 |
@@ -24,6 +24,7 @@
 |---|------|------|------|
 | 問266 | 任意軸回転 `rotate(ax,ay,az,angle)` | オイラー角逆算は合成で代替「可能」だが AI が実務上つまずく障壁 | v132 (Rodrigues 公式・新 variant) |
 | 問267 | 正射影 `projection=orthographic` | 多面図・等角図の名前が本来意味する図法。寸法比の目視判断に必須 | v133 (Camera.ortho・opt-in) |
+| 問269 | 正多角形プリズム `prism(n,r,h)` | CAD基本操作。正多角形限定で閉形式SDFが既知 (問268 候補1) | v135 (IQ sdRegularPolygon+厳密押し出し) |
 
 ## 3. 過剰候補として検討し却下 (追加しない)
 
@@ -39,7 +40,7 @@
 
 | # | 候補 | 現状評価 | 障壁 |
 |---|------|---------|------|
-| 1 | 押し出し/多角形プリズム (extrude / prism) | 2D断面→3D は CAD の基本操作。正多角形プリズムは閉形式 SDF が既知で実装量小 | 一般 2D 輪郭の距離場は実装量大。まず正多角形に限定する案 |
+| ~~1~~ | ~~押し出し/多角形プリズム~~ | **v135 で実装済み → 問269 参照** | — |
 | 2 | ねじ/ヘリカル (thread / helix) | FDM 実用部品 (ボルト/ナット) の頻出要求 | ドメイン変形 SDF は距離場の Lipschitz 保証が崩れ、水密抽出・THIN_WALL 探針の前提に波及。要慎重設計 |
 | 3 | 非一様スケール (scale_xyz) | ellipsoid が球の非一様スケール相当を既にカバー。一般形状には距離場が壊れる (Lipschitz>1) | 「符号のみ厳密・距離は近似」と明示するなら ellipsoid と同格で追加可 |
 | 4 | メッシュインポート (STL読み込み) | 「SDF が正本」の設計と衝突。検証専用 (validate だけ通す) なら整合するが用途が半減 | 設計原則との整合を要議論 |
@@ -53,7 +54,7 @@
 - メッシュ CSG (数値破綻回避のため SDF 経由のみ)
 - 無限反復 (有限 repeat のみ)
 
-> 総括: 3巡のレビューで「過剰」は1件も見つからず (8ツール・26演算子・11コード
-> すべてに独立した存在理由がある)、「不足」は2件を実装、5件を根拠付きで却下、
-> 5件を優先度付き候補として残した。残存候補の筆頭は正多角形プリズム (閉形式
-> SDF が既知・実装量小・CAD 基本操作) であり、次ラウンド以降の有力な着手点。
+> 総括: 3巡のレビューで「過剰」は1件も見つからず (8ツール・27演算子・11コード
+> すべてに独立した存在理由がある)、「不足」は3件を実装 (rotate・正射影・prism)、
+> 5件を根拠付きで却下、4件を優先度付き候補として残した。次点はねじ/ヘリカル
+> だが、Lipschitz 保証への波及があり THIN_WALL 探針の前提から慎重設計が要る。

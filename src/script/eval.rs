@@ -127,6 +127,22 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             let h = req_positive_f64(v, "h")?;
             Ok(Sdf::cylinder(r, h))
         }
+        // 正多角形プリズム (問269): n=辺数 (>=3), r=外接円半径, h=半高。
+        // n が大きいほど cylinder(r,h) に近づく (n→∞ で厳密に一致)。
+        "prism" => {
+            let n = req_f64(v, "n")?;
+            // 辺数は形状の同一性そのもの (repeat の count と違い端数に妥当な解釈が
+            // ない「6.5角形」は無意味) なので、非整数を黙って切り捨てず明示エラーにする。
+            if !n.is_finite() || n < 3.0 || n.fract() != 0.0 {
+                return Err(ScriptError::new(format!(
+                    "prism \"n\" (sides) must be an integer >= 3, got {n}"
+                )));
+            }
+            let sides = n as u32;
+            let r = req_positive_f64(v, "r")?;
+            let h = req_positive_f64(v, "h")?;
+            Ok(Sdf::prism(sides, r, h))
+        }
         "torus" => {
             let major = req_positive_f64(v, "major")?;
             let minor = req_positive_f64(v, "minor")?;
@@ -783,6 +799,38 @@ mod tests {
         assert!(
             (s.eval(p_pos) - s.eval(p_neg)).abs() < 1e-12,
             "mirror must be symmetric"
+        );
+    }
+
+    #[test]
+    fn prism_via_script_validates_params() {
+        // 問269: prism(n,r,h) は正常系で成功し、頂点方向の距離が既知の解析値と一致する。
+        let src = r#"{"op":"prism","n":6,"r":1.0,"h":1.0}"#;
+        let s = eval_scene(src).unwrap();
+        assert!(
+            s.eval(Vec3::new(0.0, 1.0, 0.0)).abs() < 1e-9,
+            "hexagon vertex at (0,r,0) must be on surface"
+        );
+
+        // n < 3 は拒否 (退化多角形)。
+        assert!(
+            eval_scene(r#"{"op":"prism","n":2,"r":1.0,"h":1.0}"#).is_err(),
+            "n=2 must be rejected"
+        );
+        // n が端数 (非整数) は拒否。
+        assert!(
+            eval_scene(r#"{"op":"prism","n":6.5,"r":1.0,"h":1.0}"#).is_err(),
+            "fractional n must be rejected"
+        );
+        // r=0 は拒否 (req_positive_f64)。
+        assert!(
+            eval_scene(r#"{"op":"prism","n":6,"r":0.0,"h":1.0}"#).is_err(),
+            "r=0 must be rejected"
+        );
+        // h 欠落は拒否。
+        assert!(
+            eval_scene(r#"{"op":"prism","n":6,"r":1.0}"#).is_err(),
+            "missing h must be rejected"
         );
     }
 

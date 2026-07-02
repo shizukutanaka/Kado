@@ -220,6 +220,16 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
                 ("h", a(1)),
             ]))
         }
+        // prism(n, r, h): 正多角形プリズム (問269)。
+        "prism" => {
+            want(3)?;
+            Ok(obj(vec![
+                ("op", json::s("prism")),
+                ("n", a(0)),
+                ("r", a(1)),
+                ("h", a(2)),
+            ]))
+        }
         "torus" => {
             want(2)?;
             Ok(obj(vec![
@@ -486,7 +496,7 @@ mod tests {
         // 生まなければならない。片方にしか無い op があると、AI が一方の記法で書いた
         // ときだけ "unknown" になる隠れた非対称が生じる。全 op の DSL↔JSON 等価性を
         // 固定し、将来 op を片側だけに追加する退行を検知する。
-        // プリミティブ (8)
+        // プリミティブ (9; prism 問269 追加)
         assert_same("sphere(1.0)", r#"{"op":"sphere","r":1.0}"#);
         assert_same("cuboid(0.8)", r#"{"op":"cuboid","x":0.8,"y":0.8,"z":0.8}"#);
         assert_same("cylinder(0.5, 1.0)", r#"{"op":"cylinder","r":0.5,"h":1.0}"#);
@@ -503,6 +513,10 @@ mod tests {
         assert_same(
             "ellipsoid(2, 1, 0.5)",
             r#"{"op":"ellipsoid","x":2,"y":1,"z":0.5}"#,
+        );
+        assert_same(
+            "prism(6, 1.0, 0.5)",
+            r#"{"op":"prism","n":6,"r":1.0,"h":0.5}"#,
         );
 
         // ブーリアン (6): a,b はそれぞれ離れた球で領域差が出るようにする。

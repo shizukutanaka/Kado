@@ -35,6 +35,15 @@ pub enum Sdf {
     /// 軸外の距離値は IQ 近似 (Lipschitz ≈ 1)。非一様スケールと違い距離場が壊れず
     /// 水密抽出を保てる (符号が厳密なため)。
     Ellipsoid { radii: Vec3 },
+    /// 正多角形プリズム (Z軸押し出し・問269)。`sides` 辺数 (≥3)、`radius` 外接円半径、
+    /// `half_height` 高さの半分。2D 正多角形の厳密 SDF (IQ sdRegularPolygon) を
+    /// 厳密押し出し公式で 3D 化するため、楕円体と違い**距離値も厳密** (Lipschitz = 1)。
+    /// 六角ナット・角柱スペーサー等の FDM 実用形状の基本要素。
+    Prism {
+        sides: u32,
+        radius: f64,
+        half_height: f64,
+    },
 
     // ── ブーリアン (場の代数。問11: 抽出健全性は別保証) ──────────────────────
     /// 和 (min)。
@@ -163,6 +172,20 @@ impl Sdf {
                 }
             }
 
+            Sdf::Prism {
+                sides,
+                radius,
+                half_height,
+            } => {
+                // 厳密押し出し (問269): 2D 断面距離 d2 と軸方向距離 dz を合成する。
+                // 2D SDF が厳密なら押し出し後も厳密 (角の外側は 2 距離のユークリッド合成)。
+                let d2 = regular_polygon_2d(p.x, p.y, *radius, *sides);
+                let dz = p.z.abs() - half_height;
+                let ox = d2.max(0.0);
+                let oz = dz.max(0.0);
+                d2.max(dz).min(0.0) + (ox * ox + oz * oz).sqrt()
+            }
+
             Sdf::Union(a, b) => a.eval(p).min(b.eval(p)),
             Sdf::Intersection(a, b) => a.eval(p).max(b.eval(p)),
             Sdf::Difference(a, b) => a.eval(p).max(-b.eval(p)),
@@ -288,6 +311,15 @@ impl Sdf {
                 (-e, e)
             }
             Sdf::Ellipsoid { radii } => (-*radii, *radii),
+            // 外接円半径で保守的に囲む (実際の多角形は内側に収まる)。
+            Sdf::Prism {
+                radius,
+                half_height,
+                ..
+            } => (
+                Vec3::new(-radius, -radius, -half_height),
+                Vec3::new(*radius, *radius, *half_height),
+            ),
             // 和: 子ボックスの和集合。smooth は k 分だけ膨らみうるので余裕を足す。
             Sdf::Union(a, b) => union_box(a.aabb(), b.aabb()),
             Sdf::SmoothUnion(a, b, k) => {
@@ -398,6 +430,14 @@ impl Sdf {
     pub fn ellipsoid(radii: Vec3) -> Sdf {
         Sdf::Ellipsoid { radii }
     }
+    /// 正 `sides` 角形プリズム (外接円半径 `radius`, 半高 `half_height`, Z軸押し出し・問269)。
+    pub fn prism(sides: u32, radius: f64, half_height: f64) -> Sdf {
+        Sdf::Prism {
+            sides,
+            radius,
+            half_height,
+        }
+    }
 
     pub fn union(self, other: Sdf) -> Sdf {
         Sdf::Union(Box::new(self), Box::new(other))
@@ -488,6 +528,27 @@ impl Sdf {
         let off = if len > 0.0 { offset / len } else { offset };
         Sdf::Cut(Box::new(self), unit, off)
     }
+}
+
+/// XY平面上の正 `n` 角形 (外接円半径 `r`, 中心原点) の厳密符号付き距離 (問269)。
+/// IQ の sdRegularPolygon をそのまま移植 (角度フォールディング + 辺までの距離)。
+/// `atan2`/sin/cos は同一バイナリ・同一arch内で決定的 (rotate_point と同じ保証水準・問5)。
+fn regular_polygon_2d(x: f64, y: f64, r: f64, n: u32) -> f64 {
+    let an = std::f64::consts::PI / (n as f64);
+    let acs_x = an.cos();
+    let acs_y = an.sin();
+
+    // p を最初のセクターへ折り畳む。
+    let bn = x.atan2(y).rem_euclid(2.0 * an) - an;
+    let len_p = (x * x + y * y).sqrt();
+    let mut px = len_p * bn.cos();
+    let mut py = len_p * bn.sin();
+
+    // 辺までの距離。
+    px -= r * acs_x;
+    py -= r * acs_y;
+    py += (-py).clamp(0.0, r * acs_y * 2.0);
+    (px * px + py * py).sqrt() * px.signum()
 }
 
 /// 点 `p` を指定軸周りに `angle` ラジアン回転する (右手系)。
@@ -728,6 +789,95 @@ mod tests {
         let (lo, hi) = e.aabb();
         assert_eq!(hi, Vec3::new(2.0, 1.0, 0.5));
         assert_eq!(lo, Vec3::new(-2.0, -1.0, -0.5));
+    }
+
+    #[test]
+    fn prism_hexagon_surface_and_sign() {
+        // 問269: 正六角形プリズム (n=6, 外接円半径 r=1, 半高 h=1)。
+        let r = 1.0;
+        let h = 1.0;
+        let p = Sdf::prism(6, r, h);
+        // 頂点方向 (0,r,0) は厳密に表面 (距離0)。
+        assert!(
+            p.eval(Vec3::new(0.0, r, 0.0)).abs() < EPS,
+            "vertex must be on surface, got {}",
+            p.eval(Vec3::new(0.0, r, 0.0))
+        );
+        // 原点 (中心) は内部、距離 = -アポテム = -r*cos(π/6) (厳密)。
+        let apothem = r * (std::f64::consts::PI / 6.0).cos();
+        assert!(
+            (p.eval(Vec3::ZERO) - (-apothem)).abs() < EPS,
+            "center distance must equal -apothem exactly, got {}",
+            p.eval(Vec3::ZERO)
+        );
+        // 外接円の外側 (半径の1.5倍) は外部。
+        assert!(
+            p.eval(Vec3::new(0.0, r * 1.5, 0.0)) > 0.0,
+            "beyond circumradius must be outside"
+        );
+        // z軸方向: 天面 (0,0,h) 中心は表面。
+        assert!(
+            p.eval(Vec3::new(0.0, 0.0, h)).abs() < EPS,
+            "top cap center must be on surface"
+        );
+        // 天面より上は外部、距離は厳密に 0.5h (中心軸上なので2D距離への寄与ゼロ)。
+        assert!(
+            (p.eval(Vec3::new(0.0, 0.0, h * 1.5)) - 0.5 * h).abs() < EPS,
+            "point above cap center must have exact distance 0.5h, got {}",
+            p.eval(Vec3::new(0.0, 0.0, h * 1.5))
+        );
+    }
+
+    #[test]
+    fn prism_square_matches_rotated_cuboid() {
+        // 問269: n=4 の正方形プリズムは、半幅 r/√2 の cuboid を45°回転したものと
+        // 全格子点で厳密に一致する (独立実装同士の相互検証)。
+        let r = 1.3;
+        let h = 0.7;
+        let half = r / std::f64::consts::SQRT_2;
+        let via_prism = Sdf::prism(4, r, h);
+        let via_cuboid =
+            Sdf::cuboid(Vec3::new(half, half, h)).rotate_z(std::f64::consts::FRAC_PI_4);
+        for p in grid() {
+            assert!(
+                (via_prism.eval(p) - via_cuboid.eval(p)).abs() < 1e-9,
+                "prism(4,...) must match rotated cuboid at {p:?}: {} vs {}",
+                via_prism.eval(p),
+                via_cuboid.eval(p)
+            );
+        }
+    }
+
+    #[test]
+    fn prism_large_n_approaches_cylinder() {
+        // 問269: n が大きい正多角形プリズムは、内接円柱 (半径=アポテム) と
+        // 外接円柱 (半径=circumradius) の間に距離場が挟まれる
+        // (内接円 ⊆ 多角形 ⊆ 外接円 という包含関係から、SDF の順序が従う)。
+        let r = 1.0;
+        let h = 1.0;
+        let n: u32 = 64;
+        let prism = Sdf::prism(n, r, h);
+        let inradius = r * (std::f64::consts::PI / n as f64).cos();
+        let inner_cyl = Sdf::cylinder(inradius, h);
+        let outer_cyl = Sdf::cylinder(r, h);
+        for p in grid() {
+            let dp = prism.eval(p);
+            let di = inner_cyl.eval(p);
+            let do_ = outer_cyl.eval(p);
+            assert!(
+                dp >= do_ - 1e-9 && dp <= di + 1e-9,
+                "prism(64) must be sandwiched: outer={do_} <= prism={dp} <= inner={di} at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prism_is_deterministic() {
+        // 問269/問5: atan2 を含む prism eval も同一バイナリ内でビット決定的。
+        let s = Sdf::prism(7, 1.0, 0.5);
+        for p in grid() {
+            assert_eq!(s.eval(p).to_bits(), s.eval(p).to_bits());
+        }
     }
 
     #[test]
@@ -1758,6 +1908,7 @@ mod tests {
             Sdf::cone(0.5, 1.0),
             Sdf::rounded_box(Vec3::new(0.8, 0.6, 0.4), 0.1),
             Sdf::ellipsoid(Vec3::new(1.2, 0.8, 0.5)),
+            Sdf::prism(6, 0.8, 1.0), // 問269
             Sdf::sphere(1.0).translate(Vec3::new(0.5, -0.3, 0.2)),
             Sdf::sphere(0.6).union(Sdf::cuboid(Vec3::splat(0.5))),
             Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0)),

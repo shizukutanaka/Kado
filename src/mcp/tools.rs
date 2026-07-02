@@ -672,6 +672,14 @@ rounded_box   {"op":"rounded_box","x":0.8,"y":0.8,"z":0.8,"r":0.1}
 ellipsoid     {"op":"ellipsoid","x":2.0,"y":1.0,"z":0.5}
               x,y,z (req): per-axis radii > 0 (or "s" for uniform = sphere)
 
+prism         {"op":"prism","n":6,"r":1.0,"h":1.0}
+              regular n-gon prism, axis along Z (spans z=-h..+h). Exact SDF
+              (not an approximation), so extraction is watertight like any
+              other primitive. Useful for hex nuts, bolt heads, and other
+              polygonal FDM parts. n (req): integer sides >= 3;
+              r (req): circumradius > 0; h (req): half-height > 0.
+              Large n approaches a cylinder(r,h).
+
 ## Boolean Operations
 
 union         {"op":"union","a":<sdf>,"b":<sdf>}
@@ -739,6 +747,7 @@ hole example:
 DSL arg order mirrors the constructors:
   sphere(r) · cuboid(s) or cuboid(x,y,z) · cylinder(r,h) · torus(major,minor)
   cone(r,h) · capsule(h,r) · rounded_box(s,r) or (x,y,z,r) · ellipsoid(s) or (x,y,z)
+  prism(n,r,h)
   union/intersection/difference(a,b) · smooth_*(a,b[,k])
   translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
   rotate_x/y/z(deg,shape) · rotate(ax,ay,az,deg,shape) · mirror_x/y/z(shape)
