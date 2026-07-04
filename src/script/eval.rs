@@ -10,12 +10,15 @@
 //!   "b": { "op": "cylinder", "r": 0.3, "h": 2.0 } }
 //! ```
 //!
-//! 演算子一覧 (op 文字列):
-//! プリミティブ: sphere, cuboid, cylinder, torus, cone, capsule, rounded_box, ellipsoid
+//! 演算子一覧 (op 文字列。単一の真実源は `ALL_DSL_OPS` — 問271: この一覧が
+//! 古い演算子集合を列挙したまま新規追加に追従できていなかった (rotate/cut/
+//! flatten/prism が漏れていた)。`dsl_ops_are_fully_documented` テストが
+//! `ALL_DSL_OPS` の全項目をこのコメントと KADOSCENE_HELP の双方に固定する):
+//! プリミティブ: sphere, cuboid, cylinder, prism, torus, cone, capsule, rounded_box, ellipsoid
 //! ブーリアン:   union, intersection, difference,
 //!               smooth_union, smooth_intersection, smooth_difference
 //! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z,
-//!               rotate_x, rotate_y, rotate_z (angle は度)
+//!               rotate_x, rotate_y, rotate_z, rotate (任意軸), cut, flatten (angle は度)
 
 use crate::core::{Sdf, Vec3};
 use crate::mcp::json::{parse, Value};
@@ -84,6 +87,46 @@ pub fn eval_value(v: &Value) -> Result<Sdf, ScriptError> {
 pub(crate) const DSL_MAX_SOURCE_BYTES: usize = MAX_SOURCE_BYTES;
 /// DSL 用の最大ネスト深さ (問16)。
 pub(crate) const DSL_MAX_DEPTH: usize = MAX_DEPTH;
+
+/// `build()` が受理する全 op 文字列 (単一の真実源・問271)。
+/// `dsl_ops_are_fully_documented` テストが、この一覧がモジュール冒頭のコメントと
+/// KADOSCENE_HELP (mcp/tools.rs) の双方に記載されていることを固定する。
+/// 問103 (ALL_ISSUE_CODES) と同じ「文書ドリフト防止」パターンを演算子名にも適用する。
+#[cfg(test)]
+pub(crate) const ALL_DSL_OPS: &[&str] = &[
+    // プリミティブ
+    "sphere",
+    "cuboid",
+    "cylinder",
+    "prism",
+    "torus",
+    "cone",
+    "capsule",
+    "rounded_box",
+    "ellipsoid",
+    // ブーリアン
+    "union",
+    "intersection",
+    "difference",
+    "smooth_union",
+    "smooth_intersection",
+    "smooth_difference",
+    // 変形
+    "translate",
+    "scale",
+    "offset",
+    "shell",
+    "repeat",
+    "mirror_x",
+    "mirror_y",
+    "mirror_z",
+    "rotate_x",
+    "rotate_y",
+    "rotate_z",
+    "rotate",
+    "cut",
+    "flatten",
+];
 
 fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptError> {
     if depth > MAX_DEPTH {
@@ -469,6 +512,26 @@ fn req_child<'a>(v: &'a Value, key: &str) -> Result<&'a Value, ScriptError> {
 mod tests {
     use super::*;
     use crate::core::Vec3;
+
+    #[test]
+    fn all_dsl_ops_are_documented_in_module_comment() {
+        // 問271: ALL_DSL_OPS (build() が実際に受理する op の単一の真実源) の全項目が
+        // このファイル冒頭のモジュールドキュメントコメントに記載されていることを
+        // 固定する。実際に rotate/cut/flatten/prism がこのコメントから漏れていた
+        // 退行を検知する (問103 の ALL_ISSUE_CODES と同じ文書ドリフト防止パターン)。
+        // KADOSCENE_HELP (mcp/tools.rs, AI が読む唯一のリファレンス) 側は
+        // mcp/tools.rs 内の対になるテスト (dsl_ops_are_fully_documented) が
+        // 同じ ALL_DSL_OPS を使って検証する (モジュール境界を越えた文字列複製を避ける)。
+        let self_source = include_str!("eval.rs");
+        let doc_comment_end = self_source.find("\nuse crate::core").unwrap_or(0);
+        let module_doc = &self_source[..doc_comment_end];
+        for op in ALL_DSL_OPS {
+            assert!(
+                module_doc.contains(op),
+                "op '{op}' must be listed in eval.rs's module doc comment (問271)"
+            );
+        }
+    }
 
     #[test]
     fn simple_sphere() {

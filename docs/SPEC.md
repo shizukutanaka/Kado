@@ -268,7 +268,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 368 テスト（358 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
+- `cargo test`: 370 テスト（360 ライブラリユニット + 4 CLI ユニット + 6 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
 

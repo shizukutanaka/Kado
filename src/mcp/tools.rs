@@ -1449,6 +1449,23 @@ mod tests {
     }
 
     #[test]
+    fn dsl_ops_are_fully_documented() {
+        // 問271: eval.rs の build() が実際に受理する全 op (ALL_DSL_OPS, 単一の
+        // 真実源) は KADOSCENE_HELP (AI が読む唯一のリファレンス) に記載されて
+        // いなければならない。問103 (ALL_ISSUE_CODES) と同じ文書ドリフト防止
+        // パターンを演算子名にも適用する。eval.rs 側の対になるテスト
+        // (all_dsl_ops_are_documented_in_module_comment) はモジュール冒頭コメントを
+        // 検証する。
+        let help = KADOSCENE_HELP;
+        for op in crate::script::eval::ALL_DSL_OPS {
+            assert!(
+                help.contains(op),
+                "DSL op '{op}' must be documented in KADOSCENE_HELP (問271)"
+            );
+        }
+    }
+
+    #[test]
     fn every_advertised_tool_is_dispatchable() {
         // 問102: tools/list が広告する全ツールは call_tool で必ずディスパッチされなければ
         // ならない。広告されているのに未実装だと AI は「unknown tool」という混乱する
