@@ -5,8 +5,8 @@
 //!   selftest   最小 SDF 評価の動作確認
 //!   export     [scene.json] <out.stl|.glb|.3mf|.html>  メッシュ出力 (拡張子で形式選択)
 //!   screenshot [scene.json] <out.png> [view]  PNG スクリーンショット出力
-//!   run        <scene.json>  メッシュ統計表示
-//!   check      <scene.json> [min_wall_mm] [max_overhang_deg]  DFM 検証
+//!   run        <scene.json> [resolution]  メッシュ統計表示
+//!   check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]  DFM 検証
 //!   mcp        MCP サーバー (stdio) 起動
 
 use kado::core::{Sdf, Vec3};
