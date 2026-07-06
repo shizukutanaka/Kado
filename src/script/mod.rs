@@ -2,7 +2,7 @@
 //!
 //! 正本 (source of truth) はスクリプトであり、SDF 木はその決定的射影 (問2)。
 //!
-//! 2 つの表層構文を提供する (どちらも同一の KadoScene [`Value`] 木へ落ち、
+//! 2 つの表層構文を提供する (どちらも同一の KadoScene [`Value`](crate::mcp::json::Value) 木へ落ち、
 //! 意味論・検証・上限は共有される):
 //! - **KadoScene JSON** ([`eval_scene`]) — 宣言的 JSON ツリー。
 //! - **テキスト DSL** ([`eval_dsl`]) — 簡潔な関数呼び出し式 (問59)。
@@ -54,10 +54,7 @@ mod tests {
     fn dispatches_json_and_dsl_to_same_field() {
         // 問122: eval_any は MCP run_script・CLI の公開入口。先頭文字による
         // JSON/DSL 振り分けが両表現を同じ場へ落とすことを公開 API レベルで固定する。
-        assert_eval_any_agrees(
-            r#"{"op":"sphere","r":1.5}"#,
-            "sphere(1.5)",
-        );
+        assert_eval_any_agrees(r#"{"op":"sphere","r":1.5}"#, "sphere(1.5)");
         assert_eval_any_agrees(
             r#"{"op":"difference","a":{"op":"sphere","r":1.0},"b":{"op":"cylinder","r":0.3,"h":2.0}}"#,
             "difference(sphere(1.0), cylinder(0.3, 2.0))",
@@ -68,7 +65,8 @@ mod tests {
     fn leading_whitespace_before_brace_is_still_json() {
         // trim_start を使うため、JSON の前の空白・改行があっても JSON と判別される。
         // もし trim を忘れると "  {...}" が DSL 経路へ行き識別子パースで失敗する。
-        let sphere = eval_any("  \n\t{\"op\":\"sphere\",\"r\":2.0}").expect("leading-ws JSON must parse");
+        let sphere =
+            eval_any("  \n\t{\"op\":\"sphere\",\"r\":2.0}").expect("leading-ws JSON must parse");
         // 半径2の球: 原点で -2。
         assert!((sphere.eval(Vec3::ZERO) - (-2.0)).abs() < 1e-12);
     }
@@ -85,8 +83,14 @@ mod tests {
     #[test]
     fn malformed_input_returns_error_not_panic() {
         // どちらの経路でも不正入力は Err を返しパニックしない (公開入口の堅牢性)。
-        assert!(eval_any("{not valid json").is_err(), "broken JSON must error");
-        assert!(eval_any("nonexistent_fn(1)").is_err(), "unknown DSL fn must error");
+        assert!(
+            eval_any("{not valid json").is_err(),
+            "broken JSON must error"
+        );
+        assert!(
+            eval_any("nonexistent_fn(1)").is_err(),
+            "unknown DSL fn must error"
+        );
         assert!(eval_any("").is_err(), "empty input must error, not panic");
     }
 }

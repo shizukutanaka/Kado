@@ -30,6 +30,11 @@ fn main() {
         "version" | "--version" | "-V" => {
             println!("kado {}", env!("CARGO_PKG_VERSION"));
         }
+        // 問275: help は正常系 (stdout・exit 0)。unknown command のエラー経路
+        // (stderr・exit 2) と区別する — 市販 CLI の基本作法。
+        "help" | "--help" | "-h" => {
+            println!("{}", usage_text());
+        }
         "selftest" => {
             let d = demo_model().eval(Vec3::ZERO);
             println!("selftest ok: f(origin) = {d}");
@@ -185,10 +190,32 @@ fn main() {
         }
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: kado [version|selftest|export|screenshot|run|check|mcp]");
+            eprintln!("{}", usage_text());
             std::process::exit(2);
         }
     }
+}
+
+/// 全コマンドの使い方一覧 (問275)。`help` (正常系・stdout) と unknown command
+/// (エラー・stderr) の両方が同じ文面を使い、一覧の二重管理を避ける。
+/// ファイル冒頭のモジュールコメント (問272) と同内容を保つこと。
+fn usage_text() -> &'static str {
+    // 生の複数行リテラル: `\` 行継続は行頭空白を剥がしインデントが崩れるため使わない。
+    "usage: kado <command> [args]
+
+commands:
+  version                                    show version
+  selftest                                   minimal SDF evaluation check
+  export     [scene.json] <out.stl|.glb|.3mf|.html>
+                                             export mesh (format by extension)
+  screenshot [scene.json] <out.png> [view]   render PNG screenshot
+  run        <scene.json> [resolution]       show mesh statistics
+  check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]
+                                             DFM validation
+  mcp                                        start MCP server (stdio)
+  help                                       show this message
+
+running with no command prints the version."
 }
 
 fn load_scene_file(path: &str) -> String {
@@ -278,5 +305,33 @@ mod tests {
         let s = "abc".to_string();
         let r = parse_finite_arg(Some(&s), "min_wall_mm", 0.5);
         assert!(r.is_err(), "non-numeric string must be rejected, got {r:?}");
+    }
+
+    #[test]
+    fn usage_text_lists_every_command() {
+        // 問275: help が表示する一覧に全コマンドが含まれることを固定する
+        // (問272 型のドリフト防止: main() の match アームへコマンドを追加したら
+        // usage_text も更新しないとこのテストが落ちる)。
+        let text = usage_text();
+        for cmd in [
+            "version",
+            "selftest",
+            "export",
+            "screenshot",
+            "run",
+            "check",
+            "mcp",
+            "help",
+        ] {
+            assert!(
+                text.contains(cmd),
+                "usage_text must list command '{cmd}' (問275)"
+            );
+        }
+        // 引数仕様も要点を含む (問272 で直した [resolution] を含む)。
+        assert!(
+            text.contains("[resolution]"),
+            "usage_text must document the optional [resolution] arg"
+        );
     }
 }

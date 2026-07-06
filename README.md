@@ -49,6 +49,7 @@ echo '{"op":"sphere","r":1.0}' > scene.json
 | `run <scene.json> [resolution]` | メッシュ統計表示 |
 | `check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]` | DFM 検証 |
 | `mcp` | MCP サーバ（stdio）起動 |
+| `help` / `--help` / `-h` | 使い方一覧を表示 |
 
 ## MCP サーバ（AI エージェント向け）
 

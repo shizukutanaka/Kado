@@ -54,6 +54,11 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+      # API ドキュメント: rustdoc 警告 (broken intra-doc links 等) をゼロで強制 (問275)。
+      - name: Rustdoc (deny warnings)
+        shell: bash
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+
       # Test: ユニット + 統合 (eval_set / stress_probe)。
       # 各テスト内で polygonize/encode の 2 回実行バイト一致を検証 = 自己再現性。
       - name: Test

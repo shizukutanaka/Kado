@@ -6102,3 +6102,38 @@ top/bottom/iso は、そもそもエンジニアリング図面の**多面図・
 > このレビューが繰り返し実践してきた規律。
 > テスト数: 370 のまま変化なし（既存2テスト関数がそれぞれ6→8課題を反復する
 > ようになり、実行される検証の総量は増加）。
+
+---
+
+## 問275 — 市販レベルの品質へ: リリース準備の仕上げ (v141)
+
+*ユーザー要望「市販レベルの品質になるようにする」を受けた出荷準備監査*
+
+**問い:** 「370テスト・clippy/fmtクリーン・README/LICENSE/SECURITY/CI設定済みの
+現状に対し、『市販の CLI ツール』として出荷する場合に欠けているものは何か？」
+
+*監査結果と実装:*
+1. **CLI に help がなかった** — `kado --help`/`-h`/`help` が「unknown command」
+   (exit 2) になっていた。市販 CLI の最低限の作法違反。`usage_text()` を新設し、
+   help は stdout+exit 0、unknown command は同じ文面を stderr+exit 2 で再利用
+   (一覧の二重管理を回避)。`usage_text_lists_every_command` テストで
+   全8コマンドの記載を固定 (問272 型ドリフト防止)。
+2. **CHANGELOG.md がなかった** — Keep a Changelog 形式で新設し、0.1.0 の
+   全機能を要約。
+3. **version 0.0.1 のまま + crates.io メタデータ欠落** — 0.1.0 へバンプし
+   repository/readme/keywords/categories を追加。
+4. **rustdoc 警告 7件** — broken intra-doc links (threemf の \[Content_Types\]、
+   raster の \[R,G,B\]×2、script/mod の [`Value`]) + 冗長リンク (dsl.rs) を修正し、
+   docs/ci.yml に `RUSTDOCFLAGS="-D warnings" cargo doc` ゲートを追加。
+   API ドキュメントも clippy/fmt と同格の品質ゲートに昇格。
+
+## 反映サマリ v141
+| 問 | 実装 |
+|----|------|
+| 275 | CLI help・CHANGELOG・0.1.0バンプ+公開メタデータ・rustdoc警告ゼロ化+CIゲート |
+
+> 総括: v141 はコード品質 (それまでの140ラウンドの主対象) ではなく
+> 「製品としての外形」を監査した回。発見された欠落はどれも実装は小さいが、
+> ユーザーが最初に触れる面 (help・バージョン・変更履歴・API文書) に
+> 集中しており、市販品質の印象を決める部分だった。
+> テスト数: 360 ライブラリユニット + 5 CLI ユニット + 6 統合 = 371 合計。

@@ -21,11 +21,11 @@ pub struct Camera {
     pub up: Vec3,
     /// 垂直視野角 (ラジアン)。
     pub fov_y: f64,
-    /// 背景色 [R,G,B]。
+    /// 背景色 \[R,G,B\]。
     pub bg: [u8; 3],
     /// 拡散光のキーライト方向 (単位ベクトル、ワールド座標)。
     pub light_dir: Vec3,
-    /// メッシュの拡散色 [R,G,B]。
+    /// メッシュの拡散色 \[R,G,B\]。
     pub diffuse: [u8; 3],
     /// Ambient 強度 [0.0, 1.0]。
     pub ambient: f64,

@@ -5,7 +5,7 @@
 //! スライサが優先的に扱える。決定的・std のみ (問4/問5)。
 //!
 //! パッケージ構成 (最小):
-//!   [Content_Types].xml   — パーツの MIME 型宣言
+//!   \[Content_Types\].xml   — パーツの MIME 型宣言
 //!   _rels/.rels           — ルートからモデルへの関係
 //!   3D/3dmodel.model      — メッシュ本体 (vertices / triangles)
 

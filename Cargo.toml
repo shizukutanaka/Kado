@@ -1,10 +1,15 @@
 [package]
 name = "kado"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "AI-First local geometry engine (SDF kernel). External-transmission-free, deterministic, single self-contained binary."
 license = "MIT"
 rust-version = "1.94"
+# 問275: crates.io 公開メタデータ (市販品質のリリース準備)。
+repository = "https://github.com/shizukutanaka/Kado"
+readme = "README.md"
+keywords = ["sdf", "3d-printing", "mesh", "cad", "mcp"]
+categories = ["graphics", "rendering", "command-line-utilities"]
 
 # ADR-003 / 問4: コアは std のみ。実行時外部依存ゼロ。
 # 外部 crate を追加する場合は SPEC での個別承認を要する。
