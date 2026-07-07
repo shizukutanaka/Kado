@@ -324,6 +324,17 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
                 ("shape", a(1)),
             ]))
         }
+        // scale_xyz(sx, sy, sz, shape): 非一様スケール (問276)。
+        "scale_xyz" => {
+            want(4)?;
+            Ok(obj(vec![
+                ("op", json::s("scale_xyz")),
+                ("sx", a(0)),
+                ("sy", a(1)),
+                ("sz", a(2)),
+                ("shape", a(3)),
+            ]))
+        }
         "offset" => {
             want(2)?;
             Ok(obj(vec![
@@ -549,7 +560,7 @@ mod tests {
             &format!(r#"{{"op":"smooth_difference","k":0.3,"a":{a},"b":{b}}}"#),
         );
 
-        // 変形 (12; rotate 問266 追加)
+        // 変形 (13; rotate 問266・scale_xyz 問276 追加)
         assert_same(
             "translate(1, 0.5, -0.5, sphere(1))",
             r#"{"op":"translate","x":1,"y":0.5,"z":-0.5,"shape":{"op":"sphere","r":1}}"#,
@@ -557,6 +568,10 @@ mod tests {
         assert_same(
             "scale(2, sphere(1))",
             r#"{"op":"scale","s":2,"shape":{"op":"sphere","r":1}}"#,
+        );
+        assert_same(
+            "scale_xyz(2, 1, 0.5, sphere(1))",
+            r#"{"op":"scale_xyz","sx":2,"sy":1,"sz":0.5,"shape":{"op":"sphere","r":1}}"#,
         );
         assert_same(
             "offset(0.1, sphere(1))",

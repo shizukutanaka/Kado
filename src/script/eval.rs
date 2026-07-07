@@ -17,8 +17,9 @@
 //! プリミティブ: sphere, cuboid, cylinder, prism, torus, cone, capsule, rounded_box, ellipsoid
 //! ブーリアン:   union, intersection, difference,
 //!               smooth_union, smooth_intersection, smooth_difference
-//! 変形:         translate, scale, offset, shell, repeat, mirror_x, mirror_y, mirror_z,
-//!               rotate_x, rotate_y, rotate_z, rotate (任意軸), cut, flatten (angle は度)
+//! 変形:         translate, scale, scale_xyz, offset, shell, repeat, mirror_x, mirror_y,
+//!               mirror_z, rotate_x, rotate_y, rotate_z, rotate (任意軸), cut, flatten
+//!               (angle は度)
 
 use crate::core::{Sdf, Vec3};
 use crate::mcp::json::{parse, Value};
@@ -114,6 +115,7 @@ pub(crate) const ALL_DSL_OPS: &[&str] = &[
     // 変形
     "translate",
     "scale",
+    "scale_xyz",
     "offset",
     "shell",
     "repeat",
@@ -327,6 +329,23 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
                 )));
             }
             Ok(child.scale(s))
+        }
+        // 非一様スケール (問276): x/y/z 個別の係数。scale (一様) と違い距離場は
+        // 厳密には保たないが、符号は常に厳密・大きさは常に真の距離以下の安全な
+        // 保守的近似 (Sdf::ScaleXyz のドキュメント参照)。全成分 > 0 必須。
+        "scale_xyz" => {
+            let child = build_child(v, "shape", op, depth, budget)?;
+            let sx = req_f64(v, "sx")?;
+            let sy = req_f64(v, "sy")?;
+            let sz = req_f64(v, "sz")?;
+            for (n, val) in [("sx", sx), ("sy", sy), ("sz", sz)] {
+                if val <= 0.0 {
+                    return Err(ScriptError::new(format!(
+                        "scale_xyz \"{n}\" must be > 0, got {val}"
+                    )));
+                }
+            }
+            Ok(child.scale_xyz(Vec3::new(sx, sy, sz)))
         }
         "offset" => {
             let child = build_child(v, "shape", op, depth, budget)?;
@@ -894,6 +913,45 @@ mod tests {
         assert!(
             eval_scene(r#"{"op":"prism","n":6,"r":1.0}"#).is_err(),
             "missing h must be rejected"
+        );
+    }
+
+    #[test]
+    fn scale_xyz_via_script_validates_params_and_matches_uniform_when_isotropic() {
+        // 問276: scale_xyz(sx,sy,sz) は正常系で成功し、sx=sy=sz のとき一様 scale と一致する。
+        let iso = eval_scene(
+            r#"{"op":"scale_xyz","sx":2,"sy":2,"sz":2,"shape":{"op":"sphere","r":1.0}}"#,
+        )
+        .unwrap();
+        let uniform =
+            eval_scene(r#"{"op":"scale","s":2,"shape":{"op":"sphere","r":1.0}}"#).unwrap();
+        for p in [
+            Vec3::new(0.5, 0.3, 0.1),
+            Vec3::new(-1.0, 2.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ] {
+            assert!(
+                (iso.eval(p) - uniform.eval(p)).abs() < 1e-9,
+                "isotropic scale_xyz must match scale at {p:?}"
+            );
+        }
+
+        // sx/sy/sz いずれかが <= 0 は拒否。
+        for bad in [
+            r#"{"op":"scale_xyz","sx":0,"sy":1,"sz":1,"shape":{"op":"sphere","r":1.0}}"#,
+            r#"{"op":"scale_xyz","sx":1,"sy":-1,"sz":1,"shape":{"op":"sphere","r":1.0}}"#,
+            r#"{"op":"scale_xyz","sx":1,"sy":1,"sz":0,"shape":{"op":"sphere","r":1.0}}"#,
+        ] {
+            assert!(
+                eval_scene(bad).is_err(),
+                "non-positive scale component must be rejected: {bad}"
+            );
+        }
+        // 成分の欠落は拒否。
+        assert!(
+            eval_scene(r#"{"op":"scale_xyz","sx":1,"sy":1,"shape":{"op":"sphere","r":1.0}}"#)
+                .is_err(),
+            "missing sz must be rejected"
         );
     }
 

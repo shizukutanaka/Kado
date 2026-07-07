@@ -695,10 +695,16 @@ smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}  (a 
 ## Transforms
 
 translate     {"op":"translate","x":1.0,"y":0.0,"z":0.0,"shape":<sdf>}
-scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0 (UNIFORM only)
-              one factor for all axes; non-uniform scaling is unsupported because it
-              breaks the SDF distance metric. For different per-axis sizes use a
-              primitive with per-axis extents (cuboid x/y/z, ellipsoid x/y/z).
+scale         {"op":"scale","s":2.0,"shape":<sdf>}          s > 0 (uniform, exact)
+              one factor for all axes; distance field stays exact (Lipschitz=1).
+scale_xyz     {"op":"scale_xyz","sx":2.0,"sy":1.0,"sz":0.5,"shape":<sdf>}
+              sx,sy,sz > 0 (non-uniform). Distance is NOT exact off the
+              smallest-scale axis, but sign is always correct, magnitude is
+              always a safe UNDERESTIMATE of the true distance (never reports
+              a wall as thicker than it is), and the field stays Lipschitz=1
+              (same guarantee tier as every other primitive). For shapes with
+              per-axis extents as a primitive, cuboid/ellipsoid/rounded_box's
+              own x/y/z params are usually simpler than composing scale_xyz.
 offset        {"op":"offset","amount":0.1,"shape":<sdf>}    inflates/deflates
 shell         {"op":"shell","thickness":0.1,"shape":<sdf>}  thickness > 0.
               Hollows the solid INWARD: keeps the outer surface and carves a cavity,
@@ -749,7 +755,8 @@ DSL arg order mirrors the constructors:
   cone(r,h) · capsule(h,r) · rounded_box(s,r) or (x,y,z,r) · ellipsoid(s) or (x,y,z)
   prism(n,r,h)
   union/intersection/difference(a,b) · smooth_*(a,b[,k])
-  translate(x,y,z,shape) · scale(s,shape) · offset(amount,shape) · shell(t,shape)
+  translate(x,y,z,shape) · scale(s,shape) · scale_xyz(sx,sy,sz,shape)
+  offset(amount,shape) · shell(t,shape)
   rotate_x/y/z(deg,shape) · rotate(ax,ay,az,deg,shape) · mirror_x/y/z(shape)
   repeat(px,py,pz[,nx,ny,nz],shape)
   cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape) · flatten(shape) or flatten(at,shape)
@@ -1560,11 +1567,20 @@ mod tests {
             "help must state the mm unit convention for authoring (問95)"
         );
 
-        // 問100: scale が uniform 限定であることを help が明示しなければならない
-        // (AI が per-axis scale を期待して誤用しないため)。
+        // 問100/276: scale が一様限定であることを help が明示しなければならない
+        // (AI が per-axis scale を期待して誤用しないため)。問276 で scale_xyz
+        // (非一様) が追加されたため、文言は "UNIFORM only" という単独の警告から
+        // 「scale=一様/scale_xyz=非一様」という対比の説明へ変わったが、
+        // 「scale が一様であること」自体を明示する要件 (問100 の本質) は変わらない。
         assert!(
-            help.contains("UNIFORM only"),
-            "help must state scale is uniform-only (問100)"
+            help.contains("uniform"),
+            "help must state scale is uniform (問100/276)"
+        );
+        // 問276: scale_xyz の安全性保証 (符号厳密・保守的過小評価・Lipschitz=1) を
+        // help が明示しなければならない (AI が非一様スケールの信頼性を判断する材料)。
+        assert!(
+            help.contains("scale_xyz") && help.contains("UNDERESTIMATE"),
+            "help must document scale_xyz's conservative-underestimate guarantee (問276)"
         );
 
         // 評価器が実際にこれらを拒否することを確認 (help の主張が現実と一致)。

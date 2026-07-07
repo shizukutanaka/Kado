@@ -45,6 +45,17 @@ pub enum Sdf {
         half_height: f64,
     },
 
+    // ── 変形・修飾 (2/2: 距離場を厳密には保たない一般化) ──────────────────
+    /// 軸ごとに異なる係数を持つ非一様スケール (問276)。`scale` (一様) と違い、
+    /// 距離場は厳密には保てない——`eval(p) = child.eval(p⊘s) * min(s)` という
+    /// 保守的近似を採る (s⊘ は成分ごとの除算)。この式は数学的に以下を満たす
+    /// (証明は socratic-review.md 問276):
+    ///   - 符号は任意の子SDFに対して常に厳密 (内外判定を誤らない)
+    ///   - 大きさは常に真の距離以下 (安全側の過小評価。壁厚等を薄く見誤ることは
+    ///     あっても、実際より厚いと誤認することはない)
+    ///   - 結果の場は厳密に Lipschitz=1 (楕円体の "Lipschitz≈1" より強い保証)
+    ScaleXyz(Box<Sdf>, Vec3),
+
     // ── ブーリアン (場の代数。問11: 抽出健全性は別保証) ──────────────────────
     /// 和 (min)。
     Union(Box<Sdf>, Box<Sdf>),
@@ -186,6 +197,13 @@ impl Sdf {
                 d2.max(dz).min(0.0) + (ox * ox + oz * oz).sqrt()
             }
 
+            Sdf::ScaleXyz(child, s) => {
+                // 問276: 成分ごとに除算してから子を評価し、最小スケール成分を掛ける。
+                // 固定演算順序 (問5)。s の各成分は eval.rs 側で > 0 を保証する。
+                let q = Vec3::new(p.x / s.x, p.y / s.y, p.z / s.z);
+                child.eval(q) * s.x.min(s.y).min(s.z)
+            }
+
             Sdf::Union(a, b) => a.eval(p).min(b.eval(p)),
             Sdf::Intersection(a, b) => a.eval(p).max(b.eval(p)),
             Sdf::Difference(a, b) => a.eval(p).max(-b.eval(p)),
@@ -320,6 +338,14 @@ impl Sdf {
                 Vec3::new(-radius, -radius, -half_height),
                 Vec3::new(*radius, *radius, *half_height),
             ),
+            Sdf::ScaleXyz(c, s) => {
+                let (lo, hi) = c.aabb();
+                // s の各成分 > 0 前提 (eval.rs が保証) なので lo*s <= hi*s の順序は保たれる。
+                (
+                    Vec3::new(lo.x * s.x, lo.y * s.y, lo.z * s.z),
+                    Vec3::new(hi.x * s.x, hi.y * s.y, hi.z * s.z),
+                )
+            }
             // 和: 子ボックスの和集合。smooth は k 分だけ膨らみうるので余裕を足す。
             Sdf::Union(a, b) => union_box(a.aabb(), b.aabb()),
             Sdf::SmoothUnion(a, b, k) => {
@@ -437,6 +463,13 @@ impl Sdf {
             radius,
             half_height,
         }
+    }
+    /// 軸ごとに異なる係数 `s=(sx,sy,sz)` を持つ非一様スケール (問276)。
+    /// `s` の各成分は正であることが呼び出し側 (eval.rs) で保証される前提。
+    /// 距離場は厳密には保たないが、符号は常に厳密・大きさは常に真の距離以下
+    /// (安全側の保守的近似)・結果の場は厳密に Lipschitz=1 (型定義のコメント参照)。
+    pub fn scale_xyz(self, s: Vec3) -> Sdf {
+        Sdf::ScaleXyz(Box::new(self), s)
     }
 
     pub fn union(self, other: Sdf) -> Sdf {
@@ -878,6 +911,105 @@ mod tests {
         for p in grid() {
             assert_eq!(s.eval(p).to_bits(), s.eval(p).to_bits());
         }
+    }
+
+    #[test]
+    fn scale_xyz_matches_uniform_scale_when_isotropic() {
+        // 問276: sx=sy=sz=k のとき scale_xyz は一様 scale(k) と全格子点で厳密一致する
+        // (縮退ケース。同じ eval 式に帰着することの直接確認)。
+        let k = 1.7;
+        let via_xyz = Sdf::sphere(1.0).scale_xyz(Vec3::splat(k));
+        let via_uniform = Sdf::sphere(1.0).scale(k);
+        for p in grid() {
+            assert!(
+                (via_xyz.eval(p) - via_uniform.eval(p)).abs() < 1e-12,
+                "isotropic scale_xyz must match scale() exactly at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_xyz_is_exact_along_the_min_scale_axis() {
+        // 問276 (手計算で導出・証明): 最小スケール成分の軸方向では
+        // eval(p) = child.eval(p⊘s) * min(s) が真の距離と厳密に一致する
+        // (その軸には縮尺歪みが無いため)。scale=(2,1,1) の単位球で、
+        // y軸 (縮尺=1=min) 上の点 (0,3,0) は真の距離2にちょうど一致する。
+        let s = Sdf::sphere(1.0).scale_xyz(Vec3::new(2.0, 1.0, 1.0));
+        assert!(
+            (s.eval(Vec3::new(0.0, 3.0, 0.0)) - 2.0).abs() < 1e-9,
+            "distance along the min-scale axis must be exact, got {}",
+            s.eval(Vec3::new(0.0, 3.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn scale_xyz_is_a_conservative_underestimate_with_correct_sign() {
+        // 問276 (証明済み・手計算で検証): 非一様スケールされた立方体
+        // cuboid(half=1).scale_xyz(2,1,1) → 実質的に半幅(2,1,1)の直方体。
+        // 外部点 (3,0,0): 真の距離は 3-2=1。式の値は 0.5 (過小評価だが同符号)。
+        let s = Sdf::cuboid(Vec3::splat(1.0)).scale_xyz(Vec3::new(2.0, 1.0, 1.0));
+        let outside = s.eval(Vec3::new(3.0, 0.0, 0.0));
+        assert!(
+            (outside - 0.5).abs() < 1e-9,
+            "hand-derived conservative estimate must be exactly 0.5, got {outside}"
+        );
+        assert!(
+            outside > 0.0 && outside < 1.0,
+            "must be positive (correct sign) and strictly less than the true distance 1.0, got {outside}"
+        );
+        // 内部点 (1,0,0): 真の距離は -1 (最近接面まで1)。式の値は -0.5。
+        let inside = s.eval(Vec3::new(1.0, 0.0, 0.0));
+        assert!(
+            (inside - (-0.5)).abs() < 1e-9,
+            "hand-derived conservative estimate must be exactly -0.5, got {inside}"
+        );
+        assert!(
+            inside < 0.0 && inside > -1.0,
+            "must be negative (correct sign) and strictly greater than the true distance -1.0, got {inside}"
+        );
+    }
+
+    #[test]
+    fn scale_xyz_field_is_lipschitz_one() {
+        // 問276 (証明済み): g(p)=child.eval(p⊘s)*min(s) は厳密に Lipschitz=1。
+        // |g(p1)-g(p2)| <= |p1-p2| がどの点対でも成り立つことを格子上で経験的に確認する
+        // (証明の実地サニティチェック; 楕円体の "Lipschitz≈1" より強い保証)。
+        let s = Sdf::rounded_box(Vec3::new(0.8, 0.5, 0.3), 0.1).scale_xyz(Vec3::new(2.5, 0.6, 1.3));
+        let pts = grid();
+        // 全対比較は O(n^2) で高コストなので間引く。
+        let sampled: Vec<Vec3> = pts.iter().step_by(7).copied().collect();
+        for &p1 in &sampled {
+            for &p2 in &sampled {
+                let d_field = (s.eval(p1) - s.eval(p2)).abs();
+                let d_space = (p1 - p2).length();
+                assert!(
+                    d_field <= d_space + 1e-9,
+                    "Lipschitz=1 violated: |g(p1)-g(p2)|={d_field} > |p1-p2|={d_space} at {p1:?},{p2:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scale_xyz_is_deterministic() {
+        // 問5/276: 成分ごとの除算・乗算も同一バイナリ内でビット決定的。
+        let s = Sdf::cylinder(0.4, 1.0).scale_xyz(Vec3::new(1.5, 0.7, 2.2));
+        for p in grid() {
+            assert_eq!(s.eval(p).to_bits(), s.eval(p).to_bits());
+        }
+    }
+
+    #[test]
+    fn scale_xyz_aabb_scales_each_axis_independently() {
+        // 問276: aabb は各軸ごとに子の aabb をスケールする。
+        let s = Sdf::cuboid(Vec3::splat(1.0)).scale_xyz(Vec3::new(2.0, 0.5, 3.0));
+        let (lo, hi) = s.aabb();
+        assert!((hi.x - 2.0).abs() < 1e-9, "hi.x={}", hi.x);
+        assert!((hi.y - 0.5).abs() < 1e-9, "hi.y={}", hi.y);
+        assert!((hi.z - 3.0).abs() < 1e-9, "hi.z={}", hi.z);
+        assert!((lo.x + 2.0).abs() < 1e-9, "lo.x={}", lo.x);
+        assert!((lo.y + 0.5).abs() < 1e-9, "lo.y={}", lo.y);
+        assert!((lo.z + 3.0).abs() < 1e-9, "lo.z={}", lo.z);
     }
 
     #[test]

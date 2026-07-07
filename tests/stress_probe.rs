@@ -80,6 +80,15 @@ fn adversarial_models() -> Vec<Model> {
             script: r#"{"op":"rotate","ax":1,"ay":1,"az":1,"angle":25,
                 "shape":{"op":"capsule","h":3.0,"r":0.05}}"#,
         },
+        Model {
+            name: "extreme anisotropic scale_xyz thin shell (問276/277)",
+            // 問276 で証明した通り scale_xyz の場は常に厳密 Lipschitz=1 だが、
+            // 極端な軸間比率 (10:1:1) + 薄壁を組み合わせた場合でも実際に水密抽出が
+            // 保たれるかを実地で確認する (証明のサニティチェックを抽出パイプライン上で)。
+            script: r#"{"op":"shell","thickness":0.08,
+                "shape":{"op":"scale_xyz","sx":5.0,"sy":0.5,"sz":0.5,
+                         "shape":{"op":"sphere","r":1.0}}}"#,
+        },
     ]
 }
 

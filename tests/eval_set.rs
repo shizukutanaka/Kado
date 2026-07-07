@@ -120,6 +120,11 @@ fn eval_set() -> Vec<Task> {
             script: r#"{"op":"rotate","ax":1,"ay":1,"az":0,"angle":35,
                 "shape":{"op":"cuboid","x":1.0,"y":0.3,"z":0.3}}"#,
         },
+        Task {
+            name: "oval grommet (scale_xyz on torus, 問276/277)",
+            script: r#"{"op":"scale_xyz","sx":1.5,"sy":1.0,"sz":1.0,
+                "shape":{"op":"torus","major":1.0,"minor":0.3}}"#,
+        },
     ]
 }
 
