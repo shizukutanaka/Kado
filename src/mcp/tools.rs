@@ -1473,6 +1473,49 @@ mod tests {
     }
 
     #[test]
+    fn readme_operator_list_is_fully_documented() {
+        // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
+        // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
+        // rotate 任意軸 (問266)・scale_xyz (問276) が複数ラウンド分このリストから
+        // 漏れていた退行 (問278) を検知する。include_str! でリポジトリルートの
+        // README.md をコンパイル時に読み込む (問271 の自己参照パターンと同型、
+        // 対象がクレート外のファイルである点のみ異なる)。
+        let readme = include_str!("../../README.md");
+        let heading = "利用可能な演算子";
+        let heading_pos = readme
+            .find(heading)
+            .expect("README must have an operator list section");
+        // 見出し直後には空行 (heading→list の区切り) があるため、まずそれを
+        // 飛び越してから箇条書きリストの終端 (次の空行) を探す。
+        let list_start = readme[heading_pos..]
+            .find("\n\n")
+            .map(|i| heading_pos + i + 2)
+            .expect("README operator section must have a blank line after the heading");
+        let list_end = readme[list_start..]
+            .find("\n\n")
+            .map(|i| list_start + i)
+            .unwrap_or(readme.len());
+        let section = &readme[list_start..list_end];
+        // README は mirror_x/y/z・rotate_x/y/z のような同系列 op を "op_x/y/z" と
+        // 圧縮表記する (ドリフトではなく正当な慣例)。個別名か圧縮形のどちらかが
+        // あれば「記載済み」とみなす。
+        for op in crate::script::eval::ALL_DSL_OPS {
+            let compact = op
+                .strip_suffix("_x")
+                .or_else(|| op.strip_suffix("_y"))
+                .or_else(|| op.strip_suffix("_z"))
+                .map(|prefix| format!("{prefix}_x/y/z"));
+            let documented =
+                section.contains(op) || compact.as_deref().is_some_and(|c| section.contains(c));
+            assert!(
+                documented,
+                "DSL op '{op}' must be listed in README.md's operator section \
+                 (as itself or as a compact op_x/y/z group, 問278)"
+            );
+        }
+    }
+
+    #[test]
     fn every_advertised_tool_is_dispatchable() {
         // 問102: tools/list が広告する全ツールは call_tool で必ずディスパッチされなければ
         // ならない。広告されているのに未実装だと AI は「unknown tool」という混乱する

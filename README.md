@@ -93,9 +93,9 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 
 ### 利用可能な演算子
 
-- **プリミティブ**: `sphere` `cuboid` `cylinder` `torus` `cone` `capsule` `rounded_box` `ellipsoid`
+- **プリミティブ**: `sphere` `cuboid` `cylinder` `torus` `cone` `capsule` `rounded_box` `ellipsoid` `prism`
 - **CSG**: `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference`
-- **変換**: `translate` `scale` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z` `cut` `flatten`
+- **変換**: `translate` `scale` `scale_xyz` `offset` `shell` `repeat` `mirror_x/y/z` `rotate_x/y/z` `rotate` `cut` `flatten`
 
 `cut` は平面で形状を切る半空間カット、`flatten` はその最頻用途（FDM 印刷の**平坦な底面**づくり）の意図明示型ショートカットです:
 
