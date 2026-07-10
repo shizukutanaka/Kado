@@ -289,10 +289,17 @@ fn eval_set_models_export_to_all_formats_with_valid_structure() {
                 task.name
             );
         }
-        let hl = h.to_lowercase();
+        // 問284: テンプレート自体が `getShaderInfoLog` 等の正当な API 名を含むため
+        // (小文字化すると "info" → "inf" に誤ヒットする)、埋め込みデータ行だけを
+        // 対象に非有限リテラルの混入を検査する (src/io/html.rs のテストと同方針)。
+        let mesh_line = h
+            .lines()
+            .find(|l| l.trim_start().starts_with("const MESH ="))
+            .unwrap_or_else(|| panic!("[{}] HTML must embed a MESH data line", task.name));
+        let hl = mesh_line.to_lowercase();
         assert!(
             !hl.contains("nan") && !hl.contains("inf"),
-            "[{}] HTML no nan/inf",
+            "[{}] HTML MESH data no nan/inf",
             task.name
         );
         assert_eq!(
