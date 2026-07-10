@@ -69,5 +69,6 @@
 - テスト 371 本 (単体 + 統合 eval-set/敵対的ストレス) 全通過・
   clippy / rustfmt / rustdoc 警告ゼロ
 
-[Unreleased]: https://github.com/shizukutanaka/Kado/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/shizukutanaka/Kado/releases/tag/v0.1.0
+<!-- 問280: バージョン比較/リリースページへのリンクは、実際に git tag と
+     GitHub Release が作成されてから追加する。存在しないタグ/リリースへの
+     リンクを先に書くと 404 になるため、ここでは意図的に省略する。 -->
