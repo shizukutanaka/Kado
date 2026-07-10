@@ -23,6 +23,11 @@
   新設 (問278)
 - CHANGELOG.md 自身が、まだ作成されていない git tag / GitHub Release への
   リンクを先回りして記載していたのを削除 (問280)
+- `Plan.md` が「存在する」前提で書いていた `ADR-001`（カーネル選定）・
+  `ADR-002`（GUI非搭載）が実際には一度も作成されていなかったのを
+  `docs/adr/` に追加。`src/extract/mod.rs` の「Marching Tetrahedra は
+  暫定実装・dual contouring に置換予定」というコメントも、実際には
+  MT のまま全リリースを通過し置換の必要性が生じていない実態に更新 (問282)
 
 ## [0.1.0] - 2026-07-06
 
