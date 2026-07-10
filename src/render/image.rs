@@ -1,7 +1,7 @@
 //! RGB 画像バッファと決定的 PNG エンコーダ。
 //!
-//! 外部依存ゼロ。deflate "store" ブロック (非圧縮) で valid PNG を生成する。
-//! ファイルサイズは大きいが ≤2秒の screenshot KPI は達成できる (問7)。
+//! 外部依存ゼロ。IDAT は `deflate` モジュール (非公開) の RLE限定 DEFLATE で圧縮する
+//! (問281)。≤2秒の screenshot KPI は圧縮ありでも達成できる (問7)。
 //! 決定性: 同一画素列 → バイト同一 PNG (問5)。
 
 /// RGB 画像バッファ。原点は左上、row-major。
@@ -56,7 +56,11 @@ impl Image {
                         acc[2] += self.pixels[off + 2] as u32;
                     }
                 }
-                out.set(ox, oy, [(acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8]);
+                out.set(
+                    ox,
+                    oy,
+                    [(acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8],
+                );
             }
         }
         out
@@ -86,8 +90,8 @@ impl Image {
             raw.extend_from_slice(&self.pixels[row * stride..(row + 1) * stride]);
         }
 
-        // IDAT = zlib(deflate store blocks)
-        let idat = zlib_store(&raw);
+        // IDAT = zlib(deflate, RLE限定固定Huffman・問281)
+        let idat = super::deflate::zlib_compress(&raw);
         write_chunk(&mut out, b"IDAT", &idat);
 
         // IEND
@@ -110,38 +114,8 @@ fn write_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc.to_be_bytes());
 }
 
-/// zlib wrapper around deflate "stored" (type-0) blocks。
-fn zlib_store(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    // zlib header: CMF=0x78 (deflate, window=32KB), FLG makes it divisible by 31
-    out.push(0x78);
-    out.push(0x01);
-
-    // deflate stored blocks (max 65535 bytes each)
-    let mut pos = 0;
-    while pos < data.len() {
-        let end = (pos + 65535).min(data.len());
-        let bfinal = if end == data.len() { 1u8 } else { 0u8 };
-        let len = (end - pos) as u16;
-        out.push(bfinal); // BFINAL=1 if last, BTYPE=0 (stored)
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&(!len).to_le_bytes()); // NLEN
-        out.extend_from_slice(&data[pos..end]);
-        pos = end;
-    }
-    // empty last block if data was empty or exact multiple
-    if data.is_empty() {
-        out.extend_from_slice(&[0x01, 0x00, 0x00, 0xFF, 0xFF]);
-    }
-
-    // Adler-32 checksum (zlib trailer)
-    let (s1, s2) = adler32(data);
-    let adler = (s2 << 16) | s1;
-    out.extend_from_slice(&adler.to_be_bytes());
-    out
-}
-
-fn adler32(data: &[u8]) -> (u32, u32) {
+/// Adler-32 チェックサム (zlib トレーラ・問108)。[`super::deflate`] からも参照される。
+pub(super) fn adler32(data: &[u8]) -> (u32, u32) {
     let mut s1: u32 = 1;
     let mut s2: u32 = 0;
     for &b in data {
@@ -260,8 +234,20 @@ mod tests {
         }
         let ds = img.downsample(4);
         assert_eq!((ds.width, ds.height), (1, 1), "4×4 → 1×1 output");
-        assert_eq!(ds.pixels[0], 120, "R avg of 0..240 step 16 = 120, got {}", ds.pixels[0]);
-        assert_eq!(ds.pixels[1], 128, "G must be constant 128, got {}", ds.pixels[1]);
-        assert_eq!(ds.pixels[2], 64, "B must be constant 64, got {}", ds.pixels[2]);
+        assert_eq!(
+            ds.pixels[0], 120,
+            "R avg of 0..240 step 16 = 120, got {}",
+            ds.pixels[0]
+        );
+        assert_eq!(
+            ds.pixels[1], 128,
+            "G must be constant 128, got {}",
+            ds.pixels[1]
+        );
+        assert_eq!(
+            ds.pixels[2], 64,
+            "B must be constant 64, got {}",
+            ds.pixels[2]
+        );
     }
 }

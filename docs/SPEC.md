@@ -253,7 +253,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 | glTF（GLB） | io/gltf | インデックス付き＋境界（accessor min/max） |
 | 3MF | io/threemf | 製造（単位 mm 宣言） |
 | HTML | io/html | 自己完結ビューア |
-| PNG | render/image | スクリーンショット（deflate store・外部依存ゼロ） |
+| PNG | render/image, render/deflate | スクリーンショット（決定的 DEFLATE：固定 Huffman＋距離{1,3}限定 RLE と無圧縮の小さい方を採用・問281・外部依存ゼロ） |
 
 ---
 
@@ -269,7 +269,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 379 テスト（368 ライブラリユニット + 5 CLI ユニット + 6 統合）合格。
+- `cargo test`: 391 テスト（380 ライブラリユニット + 5 CLI ユニット + 6 統合）合格。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。

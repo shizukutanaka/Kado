@@ -10,6 +10,9 @@
 
 - 非一様スケール `scale_xyz(sx,sy,sz)`: 符号厳密・保守的過小評価・
   Lipschitz=1 を証明済みの安全な近似 (問276)
+- PNG screenshot 応答の実圧縮: 決定的 DEFLATE (RFC 1951, 固定 Huffman・
+  候補距離 {1,3} 限定 RLE) を std-only で新規実装。無圧縮 stored との
+  小さい方を採用するため退行の余地なし。実測で raw 比 8.3% まで縮小 (問281)
 
 ### 修正
 
@@ -18,6 +21,8 @@
 - `README.md` の演算子一覧から `prism`・任意軸 `rotate`・`scale_xyz` が
   漏れていたのを修正し、README を含む3箇所の演算子一覧の文書完全性テストを
   新設 (問278)
+- CHANGELOG.md 自身が、まだ作成されていない git tag / GitHub Release への
+  リンクを先回りして記載していたのを削除 (問280)
 
 ## [0.1.0] - 2026-07-06
 
