@@ -81,17 +81,21 @@ impl Image {
                      // compression/filter/interlace = 0
         write_chunk(&mut out, b"IHDR", &ihdr);
 
-        // 各スキャンラインにフィルタバイト 0x00 を付加
-        let stride = self.width * 3;
-        let raw_len = self.height * (1 + stride);
-        let mut raw = Vec::with_capacity(raw_len);
-        for row in 0..self.height {
-            raw.push(0x00); // no filter
-            raw.extend_from_slice(&self.pixels[row * stride..(row + 1) * stride]);
-        }
-
-        // IDAT = zlib(deflate, RLE限定固定Huffman・問281)
-        let idat = super::deflate::zlib_compress(&raw);
+        // スキャンラインに PNG 行フィルタを適用 (問287)。None(0)/Sub(1)/Up(2) を
+        // 各行で試し、絶対値和 (符号付き解釈) 最小のものを決定的に選ぶ。平坦背景や
+        // 陰影グラデーションは差分化でゼロ連長に変わり、問281 の RLE で強く縮む。
+        // 退行防止 (問281 の構造保証の踏襲): 全 None のバイト列も別途圧縮し、
+        // 適応フィルタが小さくならなければ None 版を採用する——旧実装 (常に None) より
+        // 悪化することは構造的にあり得ない。
+        let raw_none = self.filtered_scanlines(false);
+        let raw_adaptive = self.filtered_scanlines(true);
+        let idat_none = super::deflate::zlib_compress(&raw_none);
+        let idat_adaptive = super::deflate::zlib_compress(&raw_adaptive);
+        let idat = if idat_adaptive.len() < idat_none.len() {
+            idat_adaptive
+        } else {
+            idat_none
+        };
         write_chunk(&mut out, b"IDAT", &idat);
 
         // IEND
@@ -99,8 +103,77 @@ impl Image {
         out
     }
 
+    /// 全スキャンラインをフィルタして `[filter_byte, ...data]` を連結した
+    /// IDAT 前バイト列を返す (問287)。`adaptive` が false なら全行 None(0) 固定
+    /// (旧実装と同一)、true なら行ごとに None/Sub/Up の最小絶対値和を選ぶ。
+    fn filtered_scanlines(&self, adaptive: bool) -> Vec<u8> {
+        let stride = self.width * 3;
+        let mut raw = Vec::with_capacity(self.height * (1 + stride));
+        let mut prev: Option<&[u8]> = None;
+        for row in 0..self.height {
+            let cur = &self.pixels[row * stride..(row + 1) * stride];
+            if adaptive {
+                push_best_filter(&mut raw, cur, prev);
+            } else {
+                raw.push(0x00);
+                raw.extend_from_slice(cur);
+            }
+            prev = Some(cur);
+        }
+        raw
+    }
+
     pub fn write_png(&self, path: &std::path::Path) -> std::io::Result<()> {
         std::fs::write(path, self.encode_png())
+    }
+}
+
+/// RGB 8bit の1ピクセルあたりバイト数 (Sub フィルタの左参照距離)。
+const PNG_BPP: usize = 3;
+
+/// PNG 行フィルタのバイトを符号付き (i8) とみなした絶対値和 (問287)。
+/// PNG 仕様が推奨する最小絶対値和 (MSAD) ヒューリスティックの評価関数。
+fn filter_abs_sum(bytes: &[u8]) -> u64 {
+    bytes.iter().map(|&b| (b as i8).unsigned_abs() as u64).sum()
+}
+
+/// `row` に None(0)/Sub(1)/Up(2) を試し、絶対値和最小のフィルタで
+/// `[filter_type, ...filtered]` を `out` に追記する (問287)。
+/// タイブレークは番号の小さい順 (None < Sub < Up) で決定的。
+/// 全バイト演算は wrapping (mod 256) で PNG 仕様どおり。
+fn push_best_filter(out: &mut Vec<u8>, row: &[u8], prev: Option<&[u8]>) {
+    let n = row.len();
+    // None: そのまま。
+    let none = row;
+    // Sub: 左 (BPP 手前) との差。境界は 0。
+    let sub: Vec<u8> = (0..n)
+        .map(|i| {
+            let a = if i >= PNG_BPP { row[i - PNG_BPP] } else { 0 };
+            row[i].wrapping_sub(a)
+        })
+        .collect();
+    // Up: 直上との差。先頭行は prev=None → 0 (= None と一致)。
+    let up: Vec<u8> = (0..n)
+        .map(|i| row[i].wrapping_sub(prev.map_or(0, |p| p[i])))
+        .collect();
+
+    let mut best_type = 0u8;
+    let mut best_score = filter_abs_sum(none);
+    // 番号の小さいものを優先するため、厳密不等号 `<` で更新 (タイは既存を維持)。
+    let s_sub = filter_abs_sum(&sub);
+    if s_sub < best_score {
+        best_score = s_sub;
+        best_type = 1;
+    }
+    let s_up = filter_abs_sum(&up);
+    if s_up < best_score {
+        best_type = 2;
+    }
+    out.push(best_type);
+    match best_type {
+        1 => out.extend_from_slice(&sub),
+        2 => out.extend_from_slice(&up),
+        _ => out.extend_from_slice(none),
     }
 }
 
@@ -158,6 +231,105 @@ mod tests {
     fn png_encoding_is_deterministic() {
         let img = Image::new(8, 8, [255, 0, 128]);
         assert_eq!(img.encode_png(), img.encode_png());
+    }
+
+    // ── PNG 行フィルタ (問287) ────────────────────────────────────────────────
+
+    #[test]
+    fn filter_abs_sum_treats_bytes_as_signed() {
+        // 0x00→0, 0x01→1, 0xFF→1 (=-1), 0x80→128 (=-128)。合計 130。
+        assert_eq!(filter_abs_sum(&[0x00, 0x01, 0xFF, 0x80]), 130);
+    }
+
+    #[test]
+    fn sub_filter_chosen_and_correct_for_horizontal_ramp() {
+        // 横方向に一定勾配の1行 → Sub フィルタで (先頭ピクセルを除き) 一定差分になり
+        // 絶対値和が None より小さくなる。BPP=3 なので各チャンネル独立に左を引く。
+        // R チャンネルが 10,20,30,40、G/B は 0 固定の 4px 行。
+        let row: Vec<u8> = vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40, 0, 0];
+        let mut out = Vec::new();
+        push_best_filter(&mut out, &row, None);
+        assert_eq!(out[0], 1, "horizontal ramp must pick Sub(1)");
+        // filtered: 先頭 [10,0,0]、以降は左との差 [10,0,0] ×3。
+        assert_eq!(&out[1..], &[10, 0, 0, 10, 0, 0, 10, 0, 0, 10, 0, 0]);
+    }
+
+    #[test]
+    fn up_filter_chosen_and_correct_for_vertical_repeat() {
+        // 前行と同一の行 → Up フィルタで全ゼロになり、None より確実に小さい。
+        let prev: Vec<u8> = vec![50, 60, 70, 80, 90, 100];
+        let row = prev.clone();
+        let mut out = Vec::new();
+        push_best_filter(&mut out, &row, Some(&prev));
+        assert_eq!(out[0], 2, "row identical to the one above must pick Up(2)");
+        assert_eq!(&out[1..], &[0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn first_row_up_equals_none_and_ties_to_none() {
+        // 先頭行 (prev=None) では Up は None と同一バイト列。幅1px (3バイト) なら
+        // Sub も左参照が無く None と同一 → 3フィルタ全て同点 → タイブレークで None(0)。
+        let row: Vec<u8> = vec![100, 50, 25];
+        let mut out = Vec::new();
+        push_best_filter(&mut out, &row, None);
+        assert_eq!(out[0], 0, "an all-tie row must resolve to None(0)");
+        assert_eq!(&out[1..], &row[..]);
+    }
+
+    #[test]
+    fn adaptive_filtering_never_regresses_vs_none() {
+        // 構造保証 (問281 の踏襲): encode_png が生成する IDAT は、常に全 None 版の
+        // IDAT 以下の長さ。フラット・勾配・ランダム風のどのパターンでも成立する。
+        for seed in 0u32..6 {
+            let mut img = Image::new(24, 24, [200, 210, 220]);
+            for y in 0..24 {
+                for x in 0..24 {
+                    // 決定的な擬似パターン (勾配 + 市松) — 乱数は使わない。
+                    let v = ((x * 7 + y * 13 + seed as usize * 29) % 256) as u8;
+                    img.set(x, y, [v, v.wrapping_add(40), 220u8.wrapping_sub(v)]);
+                }
+            }
+            let none = super::super::deflate::zlib_compress(&img.filtered_scanlines(false));
+            let produced_len = idat_len(&img.encode_png());
+            assert!(
+                produced_len <= none.len(),
+                "seed {seed}: adaptive IDAT {produced_len} must be <= none-only IDAT {}",
+                none.len()
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_rows_strictly_smaller_with_filter() {
+        // 全行が同一の横グラデーション。問281 の RLE は距離 {1,3} 限定で行をまたいだ
+        // 参照 (距離 = stride) ができないため None では各行を圧縮しきれない。Up フィルタは
+        // 2 行目以降を全ゼロ化する → IDAT が確実に小さくなる (フィルタの実利益の証明)。
+        let mut img = Image::new(32, 64, [0, 0, 0]);
+        for y in 0..64 {
+            for x in 0..32 {
+                let v = (x * 8) as u8; // 行内は横方向の勾配、全行で同一。
+                img.set(x, y, [v, 255u8.wrapping_sub(v), v / 2]);
+            }
+        }
+        let none = super::super::deflate::zlib_compress(&img.filtered_scanlines(false)).len();
+        let adaptive = super::super::deflate::zlib_compress(&img.filtered_scanlines(true)).len();
+        assert!(
+            adaptive < none,
+            "repeated rows must compress smaller via Up filter: adaptive={adaptive} none={none}"
+        );
+    }
+
+    /// テスト用: PNG バイト列から最初の IDAT チャンクの本体長を取り出す。
+    fn idat_len(png: &[u8]) -> usize {
+        let mut i = 8; // シグネチャをスキップ。
+        loop {
+            let len = u32::from_be_bytes(png[i..i + 4].try_into().unwrap()) as usize;
+            let tag = &png[i + 4..i + 8];
+            if tag == b"IDAT" {
+                return len;
+            }
+            i += 12 + len; // len(4)+tag(4)+data(len)+crc(4)
+        }
     }
 
     #[test]
