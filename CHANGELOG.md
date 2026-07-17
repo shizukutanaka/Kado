@@ -34,6 +34,12 @@
   決定的に選び各軸に垂直な短い目盛りを刻む。応答に目盛り間隔を記した text を
   添え、VLM が画像から寸法を概算できるようにした (文字描画はせず std-only 維持)。
   `axes=false` のときは従来通り image のみ (問288)
+- 出力フォーマットの仕様適合強化: binary STL の 50 バイト三角形レコード
+  (法線+3頂点+属性) のバイト配置と頂点往復を独立検証するテストを追加。
+  さらに STL/3MF/GLB を **Kado 以外の標準ツール** (Python `struct`/`zipfile`/
+  `xml.etree`) で開けることを確認 (3MF は `zipfile.testzip()` が全 CRC を独自
+  再計算)。品質ゲートを自動実行する GitHub Actions CI の推奨定義を
+  `docs/ci-recommendation.md` に追加 (問289)
 
 ### 修正
 

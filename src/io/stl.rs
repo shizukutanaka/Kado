@@ -72,6 +72,43 @@ mod tests {
     }
 
     #[test]
+    fn per_triangle_record_layout_round_trips_vertices() {
+        // 問289: 既存テストはヘッダ・三角形数・法線までしか見ておらず、50バイトの
+        // 三角形レコード (法線12 + 頂点3×12 + 属性2) のバイト配置と、書き出した頂点が
+        // メッシュ頂点と一致することを独立に読み戻して検証していなかった。binary STL の
+        // レイアウトを外部パーサと同じ手順で復元し、仕様適合を固定する。
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 8);
+        assert!(!m.triangles.is_empty());
+        let bytes = encode_binary(&m);
+        let read_f32 = |off: usize| f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        for (i, t) in m.triangles.iter().enumerate() {
+            let base = 84 + i * 50;
+            // 属性バイト数 (レコード末尾 +48) は 0。
+            let attr = u16::from_le_bytes(bytes[base + 48..base + 50].try_into().unwrap());
+            assert_eq!(attr, 0, "tri {i}: attribute byte count must be 0");
+            // 法線 (先頭12バイト) は単位長またはゼロ (退化)。
+            let n = [read_f32(base), read_f32(base + 4), read_f32(base + 8)];
+            let nlen = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                nlen == 0.0 || (nlen - 1.0).abs() < 1e-4,
+                "tri {i}: normal must be unit or zero, got len {nlen}"
+            );
+            // 3頂点 (法線の後、各12バイト) がメッシュ頂点と f32 精度で一致する。
+            for (k, &vi) in t.iter().enumerate() {
+                let voff = base + 12 + k * 12;
+                let got = [read_f32(voff), read_f32(voff + 4), read_f32(voff + 8)];
+                let want = m.vertices[vi as usize];
+                assert!(
+                    (got[0] - want.x as f32).abs() < 1e-6
+                        && (got[1] - want.y as f32).abs() < 1e-6
+                        && (got[2] - want.z as f32).abs() < 1e-6,
+                    "tri {i} vertex {k}: STL bytes {got:?} != mesh vertex {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn face_normal_is_unit_for_valid_triangle_and_zero_for_degenerate() {
         // 問133: face_normal は有効三角形で単位長法線、退化三角形で Vec3::ZERO を返す。
         // STL 仕様では法線はオプション/参考値だが 0 を書いてもパーサは受け入れる。
