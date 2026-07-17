@@ -6728,10 +6728,57 @@ k/4 を引くのと同型の内部歪み)。抽出 (marching tetrahedra) は符�
   `docs/feature-triage.md` のインベントリ表 (ブーリアン 6→9・合計 30→33・
   実装済み不足 5→6件) を更新。
 
+## 問286 — MCP プロトコル版が2世代遅れていた (最新安定版 2025-11-25 未対応)
+
+*同上ユーザー要望「最新情報を調べて改善点を洗い出す」への対応 (v151)。
+MCP サーバ面を最新仕様と突き合わせて監査した*
+
+**問い:**
+「Kado の `protocolVersion` 版交渉は `2025-06-18` / `2024-11-05` の2版のまま
+だが、MCP には既に新しい安定版が出ていないか？出ているなら、tools-only の
+stdio サーバである Kado に関係する変更は何か——単に版番号を足すだけか、
+振る舞いの変更が要るか？」
+
+*調査 (最新仕様・出典):*
+[MCP 2025-11-25 changelog](https://modelcontextprotocol.io/specification/2025-11-25/changelog)
+を確認。最新安定版は **2025-11-25** (2025-06-18 の次)。tools-only stdio
+サーバに関係する変更:
+1. **入力検証エラーは Protocol Error でなく Tool Execution Error
+   (`isError:true`) で返す**ことを明確化 (モデルの自己修正を可能にするため)。
+2. **JSON Schema 2020-12** を既定方言に確定。
+3. Implementation に任意の **`description`** フィールドを追加 (registry の
+   server.json と整合)。
+4. tool/resource/prompt に任意の **icon** メタデータを許可。
+5. stdio サーバは stderr を(エラーに限らず)全ログに使ってよいと明確化。
+また [2026-07-28 リリース候補](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/)
+が公開済みだが、まだ RC のため採用は見送り (下記 watch 項目)。
+
+**設計判断 (「振る舞い変更ゼロで適合済み」の確認):**
+上記のうち Kado に実質的な作業が要るのは版番号の追加のみだった——理由:
+- (1) の「入力検証は `isError:true`」は、Kado が **問106 以来**すでにこの形で
+  返している (`handle_tools_call` が全ツール結果を `{content, isError}` に統一)。
+  新規テストで「不正な `run_script` が JSON-RPC error でなく `isError:true` を
+  返す」ことを固定し、仕様適合を退行から守った。
+- (2) の JSON Schema 2020-12 は、Kado の `inputSchema`
+  (`type`/`properties`/`required` のみ) が方言宣言なしでそのまま 2020-12 互換。
+- (4) の icon は任意で、std-only・最小依存の方針では持ち込まない (フォント/
+  画像資産を増やさない、問284 のフォント非採用と同じ規律)。
+
+**実装:**
+- `src/mcp/server.rs`: `SUPPORTED_PROTOCOL_VERSIONS` の先頭に `"2025-11-25"` を
+  追加し `MCP_PROTOCOL_VERSION` の既定に採用 (旧2版は後方互換で維持)。
+  (3) の `serverInfo.description` を宣言。
+- テスト5本を追加: 既定が 2025-11-25 であること・要求時に同版を返すこと・
+  直前既定 2025-06-18 の後方互換・`serverInfo.description` の存在・
+  入力検証エラーが Tool Execution Error (`isError:true`) であること。
+- `docs/SPEC.md` §5・`README.md`・`docs/feature-triage.md` の watch 項目・
+  `CHANGELOG.md` を更新。
+
 ## 反映サマリ v151
 | 問 | 実装 |
 |----|------|
 | 285 | 面取りブーリアン `chamfer_union`/`chamfer_intersection`/`chamfer_difference` を IQ/hg_sdf の閉形式で追加。表面厳密・内部近似の契約を SPEC に明記 |
+| 286 | MCP 最新安定版 2025-11-25 に版交渉対応 (既定化)・`serverInfo.description` 宣言。入力検証=Tool Execution Error 規約への適合 (問106以来) をテストで固定 |
 
 > 総括: v151 は「長所短所改善点を洗い出して実行/市販レベルの品質に/
 > 最新情報を調べて改善点を洗い出す」という3つのユーザー要望に対し、

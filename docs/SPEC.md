@@ -135,11 +135,14 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 ## 5. MCP サーバ（道具）
 
 トランスポートは **stdio + Content-Length フレーミング**（LSP スタイル）。
-プロトコルは JSON-RPC 2.0。`protocolVersion` は **2025-06-18 / 2024-11-05 を版交渉**
-（クライアントが要求した対応版を返し、未対応なら最新を返す・問251）。
-各ツールは `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint` /
-`openWorldHint`）を宣言し、クライアント/LLM が読み取り専用ツールと状態変更ツールを
-区別できる（問251）。validate レポートは `bed_contact_area`（build_dir 最下層の接地
+プロトコルは JSON-RPC 2.0。`protocolVersion` は **2025-11-25 / 2025-06-18 / 2024-11-05
+を版交渉**（クライアントが要求した対応版を返し、未対応なら最新を返す・問251/問286）。
+最新安定版 **2025-11-25** を既定とし、`serverInfo.description`（同版で Implementation
+に追加された任意フィールド）を宣言する。同版が明確化した「入力検証エラーは Protocol
+Error でなく Tool Execution Error（`isError:true`）で返す」規約に Kado は問106 以来
+適合している。各ツールは `annotations`（`readOnlyHint` / `destructiveHint` /
+`idempotentHint` / `openWorldHint`）を宣言し、クライアント/LLM が読み取り専用ツールと
+状態変更ツールを区別できる（問251）。validate レポートは `bed_contact_area`（build_dir 最下層の接地
 面積; 反り・剥がれ抵抗の指標）を測定値として公開する（問252）。
 
 `id` を持つリクエストは必ず応答を受け取る（`method` 欠落/非文字列でも無応答のまま

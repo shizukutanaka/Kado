@@ -54,6 +54,8 @@ echo '{"op":"sphere","r":1.0}' > scene.json
 ## MCP サーバ（AI エージェント向け）
 
 Kado は MCP（Model Context Protocol, JSON-RPC 2.0）サーバとして AI に道具を提供します。
+`protocolVersion` は最新安定版 **2025-11-25** を既定に、2025-06-18 / 2024-11-05 とも
+版交渉します。
 
 ```sh
 ./target/release/kado mcp   # stdin/stdout で JSON-RPC を待ち受け

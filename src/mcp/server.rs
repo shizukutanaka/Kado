@@ -1,7 +1,7 @@
 //! MCP stdio サーバー。
 //!
 //! トランスポート: Content-Length フレーミング (LSP スタイル)。
-//! プロトコル: MCP (2025-06-18 / 2024-11-05 を版交渉) / JSON-RPC 2.0。
+//! プロトコル: MCP (2025-11-25 / 2025-06-18 / 2024-11-05 を版交渉) / JSON-RPC 2.0。
 //! `run_stdio()` は stdin/stdout をブロッキングで読み書きし、
 //! 永続的に動作する (SIGPIPE または stdin EOF で終了)。
 
@@ -11,12 +11,19 @@ use crate::mcp::json::{self, Value};
 use crate::mcp::tools;
 
 /// 既定 (最新) の MCP プロトコル版。クライアント未指定/未対応時に返す。
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-/// 対応する MCP プロトコル版 (新しい順, 問251)。tool annotations は 2025-03-26 で
-/// 標準化されたため最新版を主とし、旧クライアント互換のため 2024-11-05 も維持する。
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2024-11-05"];
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+/// 対応する MCP プロトコル版 (新しい順, 問251/問286)。tool annotations は 2025-03-26 で
+/// 標準化され、2025-11-25 で「入力検証エラーは Protocol Error でなく Tool Execution
+/// Error として返す」ことが明確化された (Kado は問106 以来この形——`{content, isError:true}`
+/// ——で返しており既に適合)。最新版を主とし、旧クライアント互換のため 2025-06-18 /
+/// 2024-11-05 も維持する。
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
 const SERVER_NAME: &str = "kado";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// serverInfo.description。2025-11-25 で Implementation に追加された任意フィールド
+/// (MCP registry の server.json と整合する人間可読の説明, 問286)。
+const SERVER_DESCRIPTION: &str =
+    "AI-First local geometry engine (SDF kernel): generate, verify (DFM), and export 3D shapes.";
 
 /// 1 フレームの本文バイト数上限 (問118: トランスポート層の DoS 防御)。
 ///
@@ -187,6 +194,7 @@ fn handle_initialize(params: &Value) -> Value {
             json::obj([
                 ("name", json::s(SERVER_NAME)),
                 ("version", json::s(SERVER_VERSION)),
+                ("description", json::s(SERVER_DESCRIPTION)),
             ]),
         ),
         (
@@ -334,6 +342,92 @@ mod tests {
             ver,
             Some(MCP_PROTOCOL_VERSION),
             "unknown requested version must fall back to the latest supported"
+        );
+    }
+
+    #[test]
+    fn default_protocol_version_is_2025_11_25() {
+        // 問286: 最新安定版 2025-11-25 を既定にした。未指定時はこれを返す。
+        assert_eq!(MCP_PROTOCOL_VERSION, "2025-11-25");
+        let mut s = tools::Session::new();
+        let resp = handle(&mut s, &req("initialize", 1, None)).unwrap();
+        let ver = resp
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str());
+        assert_eq!(ver, Some("2025-11-25"));
+    }
+
+    #[test]
+    fn initialize_negotiates_2025_11_25_when_requested() {
+        // 問286: クライアントが 2025-11-25 を要求したら同版を返す。
+        let mut s = tools::Session::new();
+        let params = json::obj([("protocolVersion", json::s("2025-11-25"))]);
+        let resp = handle(&mut s, &req("initialize", 1, Some(params))).unwrap();
+        let ver = resp
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str());
+        assert_eq!(ver, Some("2025-11-25"));
+    }
+
+    #[test]
+    fn initialize_still_negotiates_prior_default_2025_06_18() {
+        // 問286: 直前の既定 2025-06-18 を要求する既存クライアントとの後方互換。
+        let mut s = tools::Session::new();
+        let params = json::obj([("protocolVersion", json::s("2025-06-18"))]);
+        let resp = handle(&mut s, &req("initialize", 1, Some(params))).unwrap();
+        let ver = resp
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str());
+        assert_eq!(ver, Some("2025-06-18"));
+    }
+
+    #[test]
+    fn initialize_serverinfo_has_description() {
+        // 問286: 2025-11-25 で Implementation.description が追加された。
+        let mut s = tools::Session::new();
+        let resp = handle(&mut s, &req("initialize", 1, None)).unwrap();
+        let desc = resp
+            .get("result")
+            .and_then(|r| r.get("serverInfo"))
+            .and_then(|si| si.get("description"))
+            .and_then(|v| v.as_str());
+        assert_eq!(desc, Some(SERVER_DESCRIPTION));
+        assert!(
+            desc.unwrap().contains("SDF"),
+            "serverInfo.description should describe the engine"
+        );
+    }
+
+    #[test]
+    fn tool_input_validation_error_is_tool_execution_error_not_protocol_error() {
+        // 問286: 2025-11-25 は「入力検証エラーは Protocol Error でなく Tool Execution
+        // Error (isError:true) で返す」ことを明確化した。Kado は問106 以来この形。
+        // 不正な run_script (負半径) が JSON-RPC error でなく {isError:true} を返すこと。
+        let mut s = tools::Session::new();
+        let params = json::obj([
+            ("name", json::s("run_script")),
+            (
+                "arguments",
+                json::obj([("script", json::s("sphere(-1.0)"))]),
+            ),
+        ]);
+        let resp = handle(&mut s, &req("tools/call", 1, Some(params))).unwrap();
+        // JSON-RPC 層は success (error フィールドを持たない)。
+        assert!(
+            resp.get("error").is_none(),
+            "input validation must NOT surface as a JSON-RPC protocol error (2025-11-25)"
+        );
+        let is_error = resp
+            .get("result")
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(
+            is_error,
+            Some(true),
+            "invalid tool input must be a Tool Execution Error (isError:true)"
         );
     }
 
