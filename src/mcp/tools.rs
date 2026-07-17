@@ -71,7 +71,9 @@ pub fn tool_list() -> Value {
                 (
                     "axes",
                     "boolean",
-                    "Overlay an X(red)/Y(green)/Z(blue) orientation gnomon (default: true)",
+                    "Overlay an X(red)/Y(green)/Z(blue) orientation gnomon with mm scale ticks \
+                     (default: true). When on, the response includes a text note with the tick \
+                     spacing so you can estimate dimensions from the image.",
                     false,
                 ),
                 (
@@ -310,6 +312,21 @@ impl ToolResult {
             is_error: false,
         }
     }
+    /// 画像に説明テキストを添える (問288: 軸目盛りの寸法凡例など)。
+    /// MCP のツール結果は複数コンテンツを許すため、text と image を並べて返す。
+    fn image_with_text(b64: String, note: impl Into<String>) -> Self {
+        ToolResult {
+            content: vec![
+                json::obj([("type", json::s("text")), ("text", json::s(note))]),
+                json::obj([
+                    ("type", json::s("image")),
+                    ("data", json::s(b64)),
+                    ("mimeType", json::s("image/png")),
+                ]),
+            ],
+            is_error: false,
+        }
+    }
 }
 
 /// 既定シーン (デモ形状)。`run_script` 実行前の初期状態。
@@ -418,12 +435,27 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let mut img = big.downsample(samples);
     // 向きの基準として座標軸グノモンを重ねる (問66; axes=false で無効化)。
     let show_axes = args.get("axes").and_then(|v| v.as_bool()).unwrap_or(true);
-    if show_axes {
+    let tick_step = if show_axes {
         let center = (lo + hi) * 0.5;
         let length = (hi - lo).length() * 0.35;
-        draw_axes(&mut img, &cam, center, length);
+        draw_axes(&mut img, &cam, center, length)
+    } else {
+        0.0
+    };
+    let png = base64_encode(&img.encode_png());
+    if show_axes && tick_step > 0.0 {
+        // 軸目盛りの寸法凡例を添える (問288): AI が画像から寸法を概算できる。
+        ToolResult::image_with_text(
+            png,
+            format!(
+                "Axis gnomon at the model center: X=red, Y=green, Z=blue (1 unit = 1 mm). \
+                 Tick marks are spaced every {tick_step} mm along each axis — use them to \
+                 estimate dimensions from the image."
+            ),
+        )
+    } else {
+        ToolResult::image(png)
     }
-    ToolResult::image(base64_encode(&img.encode_png()))
 }
 
 /// SSAA 係数を `[1, 4]` に収め、かつ `dim * samples <= MAX_IMAGE_DIM` を保証する (問56/問18)。
@@ -1173,6 +1205,53 @@ mod tests {
         assert!(
             txt.contains("unknown view"),
             "error must name the problem: {txt}"
+        );
+    }
+
+    #[test]
+    fn screenshot_with_axes_includes_tick_spacing_note_and_image() {
+        // 問288: axes=true (既定) のとき、応答は image に加えて目盛り間隔を記した
+        // text を含み、AI が画像から寸法を概算できる。
+        let mut s = Session::new();
+        let args = json::obj([
+            ("width", json::n(64.0)),
+            ("height", json::n(64.0)),
+            ("resolution", json::n(24.0)),
+        ]);
+        let r = call_tool(&mut s, "screenshot", &args);
+        assert!(!r.is_error);
+        let has_image = r.content.iter().any(|c| {
+            c.get("type").and_then(|v| v.as_str()) == Some("image")
+                && c.get("mimeType").and_then(|v| v.as_str()) == Some("image/png")
+        });
+        assert!(has_image, "response must include the PNG image");
+        let note = r
+            .content
+            .iter()
+            .find_map(|c| c.get("text").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        assert!(
+            note.contains("Tick marks") && note.contains("mm"),
+            "axes response must note the mm tick spacing, got: {note}"
+        );
+    }
+
+    #[test]
+    fn screenshot_without_axes_is_image_only() {
+        // 問288: axes=false のときは目盛りが無いので text 凡例も付けず、従来通り image のみ。
+        let mut s = Session::new();
+        let args = json::obj([
+            ("width", json::n(64.0)),
+            ("height", json::n(64.0)),
+            ("resolution", json::n(24.0)),
+            ("axes", json::b(false)),
+        ]);
+        let r = call_tool(&mut s, "screenshot", &args);
+        assert!(!r.is_error);
+        assert_eq!(r.content.len(), 1, "no-axes response must be image-only");
+        assert_eq!(
+            r.content[0].get("type").and_then(|v| v.as_str()),
+            Some("image")
         );
     }
 

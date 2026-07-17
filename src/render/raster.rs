@@ -183,12 +183,29 @@ pub fn render(mesh: &Mesh, cam: &Camera, width: usize, height: usize) -> Image {
 
 // ── 座標軸グノモン (問66) ───────────────────────────────────────────────────────
 
+/// 軸の目盛り間隔 (mm) を `length` から決定的に選ぶ (問288)。
+/// 1/10/100/… のうち `length/2` を超えない最大の 10 の冪 (最小 1mm)。
+/// これにより目盛りは常に 2 本以上引かれ、AI/人間が画像から寸法を概算できる。
+pub fn axis_tick_step_mm(length: f64) -> f64 {
+    // 非有限 (NaN/∞) や非正の長さは目盛りなし。∞ を弾くことで下の while が停止する。
+    if !length.is_finite() || length <= 0.0 {
+        return 0.0;
+    }
+    let mut step = 1.0;
+    while step * 10.0 <= length / 2.0 {
+        step *= 10.0;
+    }
+    step
+}
+
 /// `origin` を起点に X=赤・Y=緑・Z=青の軸線を `length` だけ描き、向きの基準を与える。
-/// オーバーレイ (深度無視) で最後に重ねる。AI/人間が向き・鏡像・座標系を判読できる。
-pub fn draw_axes(img: &mut Image, cam: &Camera, origin: Vec3, length: f64) {
+/// さらに [`axis_tick_step_mm`] 間隔で短い目盛りを各軸に垂直に刻み、寸法の手がかりを
+/// 与える (問288)。オーバーレイ (深度無視) で最後に重ねる。
+/// 戻り値は採用した目盛り間隔 (mm)。目盛りを引かなかった場合は 0.0。
+pub fn draw_axes(img: &mut Image, cam: &Camera, origin: Vec3, length: f64) -> f64 {
     let (w, h) = (img.width, img.height);
     if w == 0 || h == 0 {
-        return;
+        return 0.0;
     }
     let (view, proj) = build_matrices(cam, w, h);
     let project = |p: Vec3| -> Option<(f64, f64)> {
@@ -202,18 +219,42 @@ pub fn draw_axes(img: &mut Image, cam: &Camera, origin: Vec3, length: f64) {
     };
     let o = match project(origin) {
         Some(o) => o,
-        None => return,
+        None => return 0.0,
     };
     let axes = [
-        (Vec3::new(length, 0.0, 0.0), [235u8, 70, 70]), // X 赤
-        (Vec3::new(0.0, length, 0.0), [70, 200, 70]),   // Y 緑
-        (Vec3::new(0.0, 0.0, length), [90, 130, 245]),  // Z 青
+        (Vec3::new(1.0, 0.0, 0.0), [235u8, 70, 70]), // X 赤
+        (Vec3::new(0.0, 1.0, 0.0), [70, 200, 70]),   // Y 緑
+        (Vec3::new(0.0, 0.0, 1.0), [90, 130, 245]),  // Z 青
     ];
-    for (dir, color) in axes {
-        if let Some(end) = project(origin + dir) {
-            draw_line(img, o, end, color);
+    let step = axis_tick_step_mm(length);
+    // 目盛りの画面上の半長 (px)。軸線に垂直な短い線分として刻む。
+    const TICK_HALF_PX: f64 = 4.0;
+    for (unit, color) in axes {
+        let end = match project(origin + unit * length) {
+            Some(e) => e,
+            None => continue,
+        };
+        draw_line(img, o, end, color);
+        if step <= 0.0 {
+            continue;
+        }
+        // 軸の画面方向に垂直な単位ベクトル (目盛りの向き)。
+        let (dx, dy) = (end.0 - o.0, end.1 - o.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-9 {
+            continue;
+        }
+        let (px, py) = (-dy / len * TICK_HALF_PX, dx / len * TICK_HALF_PX);
+        // origin から step 間隔で length まで目盛りを打つ (両端の origin/先端は除く)。
+        let mut d = step;
+        while d < length - 1e-9 {
+            if let Some(t) = project(origin + unit * d) {
+                draw_line(img, (t.0 - px, t.1 - py), (t.0 + px, t.1 + py), color);
+            }
+            d += step;
         }
     }
+    step
 }
 
 /// 2点間に色付き線を描く (DDA, 2px 太, 画面外はクリップ)。
@@ -453,9 +494,89 @@ mod tests {
         let mut a = render(&mesh, cam, 64, 64);
         let mut b = render(&mesh, cam, 64, 64);
         let center = (lo + hi) * 0.5;
-        draw_axes(&mut a, cam, center, 1.0);
-        draw_axes(&mut b, cam, center, 1.0);
+        // 目盛りが引かれる長さ (>=2mm) で描いて決定性を確認する。
+        draw_axes(&mut a, cam, center, 40.0);
+        draw_axes(&mut b, cam, center, 40.0);
         assert_eq!(a.pixels, b.pixels);
+    }
+
+    // ── 軸目盛り (問288) ─────────────────────────────────────────────────────
+
+    #[test]
+    fn axis_tick_step_is_deterministic_power_of_ten() {
+        // length/2 を超えない最大の 10 の冪。
+        assert_eq!(axis_tick_step_mm(8.0), 1.0); // 8/2=4 → 1
+        assert_eq!(axis_tick_step_mm(40.0), 10.0); // 40/2=20 → 10
+        assert_eq!(axis_tick_step_mm(50.0), 10.0); // 50/2=25 → 10
+        assert_eq!(axis_tick_step_mm(500.0), 100.0); // 500/2=250 → 100
+        assert_eq!(axis_tick_step_mm(2000.0), 1000.0); // 2000/2=1000 → 1000
+        assert_eq!(axis_tick_step_mm(1.0), 1.0); // 最小 1mm
+        assert_eq!(axis_tick_step_mm(0.0), 0.0); // 非正は 0
+        assert_eq!(axis_tick_step_mm(-5.0), 0.0);
+    }
+
+    #[test]
+    fn draw_axes_returns_tick_step_used() {
+        let mesh = sphere_mesh();
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
+        let mut img = render(&mesh, cam, 96, 96);
+        let center = (lo + hi) * 0.5;
+        let step = draw_axes(&mut img, cam, center, 40.0);
+        assert_eq!(step, 10.0, "draw_axes must report the tick spacing it used");
+    }
+
+    #[test]
+    fn ticks_add_colored_pixels_beyond_bare_axis_lines() {
+        // 目盛りが実際に描かれている証拠: 3 本の軸線「だけ」を描いた基準画像より、
+        // draw_axes (軸線 + 目盛り) の方が軸色の画素が厳密に多い。基準は draw_axes と
+        // 同一の投影 (project_to_screen) と同一の描線 (draw_line) で軸線のみを再現する。
+        // 目盛りが確実に画面内に来るよう、モデルを 20mm 半径へ拡大して枠取りする。
+        let mut mesh = sphere_mesh();
+        for v in mesh.vertices.iter_mut() {
+            *v = *v * 20.0;
+        }
+        let (lo, hi) = mesh.bounds().unwrap();
+        let presets = Camera::presets(lo, hi);
+        let (_, cam) = presets.iter().find(|(n, _)| *n == "iso").unwrap();
+        let center = (lo + hi) * 0.5;
+        let length = 30.0; // step=10 → 画面内の目盛り 10mm・20mm。
+        let (w, h) = (160usize, 160usize);
+        let colors = [[235u8, 70, 70], [70, 200, 70], [90, 130, 245]];
+        let units = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let count_axis_px = |img: &Image| -> usize {
+            img.pixels
+                .chunks(3)
+                .filter(|px| colors.iter().any(|c| *px == c))
+                .count()
+        };
+        // 基準: 軸線のみ。draw_axes と同じクリップ (clip w>0) を適用して線を一致させる。
+        let mut base = render(&mesh, cam, w, h);
+        let o = project_to_screen(cam, center, w, h);
+        if o.2 > 1e-9 {
+            for (unit, color) in units.iter().zip(colors.iter()) {
+                let e = project_to_screen(cam, center + *unit * length, w, h);
+                if e.2 > 1e-9 {
+                    draw_line(&mut base, (o.0, o.1), (e.0, e.1), *color);
+                }
+            }
+        }
+        // 本番: 軸線 + 目盛り。
+        let mut ticked = render(&mesh, cam, w, h);
+        let step = draw_axes(&mut ticked, cam, center, length);
+        assert_eq!(step, 10.0);
+        assert!(
+            count_axis_px(&ticked) > count_axis_px(&base),
+            "ticks must paint axis-colored pixels beyond the bare axis lines: \
+             ticked={} base={}",
+            count_axis_px(&ticked),
+            count_axis_px(&base)
+        );
     }
 
     #[test]

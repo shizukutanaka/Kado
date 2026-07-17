@@ -168,7 +168,7 @@ JSON-RPC エラーではなく、`result.isError=true` を伴うツール結果�
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 | `script` |
 | `eval` | 1 点の符号付き距離を返す | `x, y, z` |
 | `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, bed_contact_area, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248）。`bed_contact_area` は造形プレート接地面積（点接地は ~0・問252） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
-| `screenshot` | シーンを PNG レンダリング（base64） | `view, width, height, samples, axes, projection` |
+| `screenshot` | シーンを PNG レンダリング（base64）。`axes=true`（既定）のとき X=赤/Y=緑/Z=青のグノモンに **mm 目盛り**（1/10/100mm を軸長から決定的に選択・問288）を刻み、応答に目盛り間隔を記した text を添えて AI が画像から寸法を概算できるようにする | `view, width, height, samples, axes, projection` |
 | `export` | STL/GLB/3MF をプロジェクト直下へ書き出し | `path, resolution` |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す | — |
 | `undo_script` | 1 段階 undo（`prev_scene`） | — |
