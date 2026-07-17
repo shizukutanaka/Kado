@@ -9,6 +9,7 @@
 //! 距離関数の式は Inigo Quilez の標準SDFに準拠。
 
 use super::math::{clamp, mix, Vec3};
+use std::f64::consts::FRAC_1_SQRT_2;
 
 /// SDF木。各ノードは点 `p` における符号付き距離 (内部 < 0, 表面 = 0, 外部 > 0)
 /// を [`Sdf::eval`] で返す。
@@ -69,6 +70,13 @@ pub enum Sdf {
     SmoothIntersection(Box<Sdf>, Box<Sdf>, f64),
     /// 多項式 smooth difference。`k` はブレンド幅 (>0)。
     SmoothDifference(Box<Sdf>, Box<Sdf>, f64),
+    /// 面取り union (IQ/hg_sdf `fOpUnionChamfer`)。`k` は面取り幅 (>0)。
+    /// `smooth_*` の丸いフィレットと違い**平面 (45°) の面取り**を作る (問285)。
+    ChamferUnion(Box<Sdf>, Box<Sdf>, f64),
+    /// 面取り intersection。`k` は面取り幅 (>0)。
+    ChamferIntersection(Box<Sdf>, Box<Sdf>, f64),
+    /// 面取り difference `a - b`。`k` は面取り幅 (>0)。
+    ChamferDifference(Box<Sdf>, Box<Sdf>, f64),
 
     // ── 変形・変換 ────────────────────────────────────────────────────────────
     /// 平行移動。
@@ -229,6 +237,28 @@ impl Sdf {
                 mix(da, -db, h) + k * h * (1.0 - h)
             }
 
+            // 面取り (chamfer) — IQ/hg_sdf。丸い smooth_* と違い平面 (45°) の遷移を作る。
+            // 追加項 (da+db∓k)*√0.5 は面取り平面までの (準) 距離。min/max を取るため
+            // 結果は常に hard union/intersection の側に厳密に囲われる (問285)。
+            Sdf::ChamferUnion(a, b, k) => {
+                let da = a.eval(p);
+                let db = b.eval(p);
+                da.min(db).min((da + db - k) * FRAC_1_SQRT_2)
+            }
+
+            Sdf::ChamferIntersection(a, b, k) => {
+                let da = a.eval(p);
+                let db = b.eval(p);
+                da.max(db).max((da + db + k) * FRAC_1_SQRT_2)
+            }
+
+            Sdf::ChamferDifference(a, b, k) => {
+                // a - b = a ∩ complement(b)。chamfer intersection に -db を渡す。
+                let da = a.eval(p);
+                let db = b.eval(p);
+                da.max(-db).max((da - db + k) * FRAC_1_SQRT_2)
+            }
+
             Sdf::Translate(child, offset) => child.eval(p - *offset),
 
             Sdf::Scale(child, factor) => factor * child.eval(p / *factor),
@@ -370,6 +400,23 @@ impl Sdf {
                 let (lo, hi) = a.aabb();
                 (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
             }
+            // 面取りは smooth と同様、面取り平面が k 分だけ外側へ張り出しうる。
+            // union は凹シームに材料を足し、intersection/difference は凸角を削るが、
+            // いずれも k 余白の付加は安全側 (過剰確保はメッシュ欠損を生まない)。
+            Sdf::ChamferUnion(a, b, k) => {
+                let (lo, hi) = union_box(a.aabb(), b.aabb());
+                (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
+            }
+            Sdf::ChamferIntersection(a, b, k) => {
+                let (alo, ahi) = a.aabb();
+                let (blo, bhi) = b.aabb();
+                let e = Vec3::splat(*k);
+                (alo.max(blo) - e, ahi.min(bhi) + e)
+            }
+            Sdf::ChamferDifference(a, _, k) => {
+                let (lo, hi) = a.aabb();
+                (lo - Vec3::splat(*k), hi + Vec3::splat(*k))
+            }
             Sdf::Translate(c, o) => {
                 let (lo, hi) = c.aabb();
                 (lo + *o, hi + *o)
@@ -489,6 +536,18 @@ impl Sdf {
     }
     pub fn smooth_difference(self, other: Sdf, k: f64) -> Sdf {
         Sdf::SmoothDifference(Box::new(self), Box::new(other), k)
+    }
+    /// 面取り union。`k` は面取り幅 (>0)。平面 (45°) の遷移を作る (問285)。
+    pub fn chamfer_union(self, other: Sdf, k: f64) -> Sdf {
+        Sdf::ChamferUnion(Box::new(self), Box::new(other), k)
+    }
+    /// 面取り intersection。`k` は面取り幅 (>0)。
+    pub fn chamfer_intersection(self, other: Sdf, k: f64) -> Sdf {
+        Sdf::ChamferIntersection(Box::new(self), Box::new(other), k)
+    }
+    /// 面取り difference `a - b`。`k` は面取り幅 (>0)。
+    pub fn chamfer_difference(self, other: Sdf, k: f64) -> Sdf {
+        Sdf::ChamferDifference(Box::new(self), Box::new(other), k)
     }
 
     pub fn translate(self, offset: Vec3) -> Sdf {
@@ -1697,6 +1756,111 @@ mod tests {
                 "smooth_diff(k→0) must converge to hard at {p:?}"
             );
         }
+    }
+
+    // ── 面取り (chamfer) — 問285 ─────────────────────────────────────────────
+    // 面取りは min/max に面取り平面項を追加/減算するため、結果は常に対応する hard 演算の
+    // 「側」に厳密に囲われる (union は ≤ hard, intersection/difference は ≥ hard)。
+    // これは smooth_* の下限/上限性 (上記テスト) と同型で、hard 演算からの単調な逸脱を保証する。
+
+    #[test]
+    fn chamfer_union_is_lower_bound_of_hard_union() {
+        // chamfer_union = min(min(a,b), plane) ≤ min(a,b) = hard union、everywhere。
+        // 面取りは凹シームに材料を足す (= SDF を下げる) ため hard 以下に張り出す。
+        let a = Sdf::cuboid(Vec3::splat(1.0));
+        let b = Sdf::cuboid(Vec3::splat(1.0)).translate(Vec3::new(1.2, 1.2, 0.0));
+        let soft = a.clone().chamfer_union(b.clone(), 0.4);
+        let hard = a.union(b);
+        for p in grid() {
+            assert!(
+                soft.eval(p) <= hard.eval(p) + 1e-12,
+                "chamfer_union must be ≤ hard union at {p:?}: soft={} hard={}",
+                soft.eval(p),
+                hard.eval(p)
+            );
+        }
+    }
+
+    #[test]
+    fn chamfer_union_surface_converges_to_hard_as_k_shrinks() {
+        // 面取りは k→0 で**表面 (ゼロ等位面) と外部**が hard union に収束する。
+        // 内部 (da,db 共に負) では面取り平面項 (da+db-k)*√0.5 が min に勝ち続けるため
+        // 距離場が歪む (より深い負値) — これは smooth_union が自己 union で k/4 を全域で
+        // 引くのと同型の内部歪みで、抽出 (符号のみ使用) には影響しない。よって収束の主張は
+        // SDF が実際にトレースに使われる外部・表面 (hard ≥ 0) に限定して検証する。
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(1.0).translate(Vec3::new(1.0, 0.0, 0.0));
+        let hard = a.clone().union(b.clone());
+        let soft = a.chamfer_union(b, 1e-6);
+        for p in grid() {
+            if hard.eval(p) >= 0.0 {
+                assert!(
+                    (soft.eval(p) - hard.eval(p)).abs() < 1e-4,
+                    "chamfer_union(k→0) must converge to hard on the exterior at {p:?}: \
+                     soft={} hard={}",
+                    soft.eval(p),
+                    hard.eval(p)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chamfer_intersection_is_upper_bound_of_hard_intersection() {
+        let a = Sdf::cuboid(Vec3::splat(1.0));
+        let b = Sdf::cuboid(Vec3::splat(1.0)).translate(Vec3::new(0.8, 0.8, 0.0));
+        let soft = a.clone().chamfer_intersection(b.clone(), 0.4);
+        let hard = a.intersection(b);
+        for p in grid() {
+            assert!(
+                soft.eval(p) >= hard.eval(p) - 1e-12,
+                "chamfer_intersection must be ≥ hard at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chamfer_difference_is_upper_bound_of_hard_difference() {
+        let a = Sdf::sphere(1.0);
+        let b = Sdf::sphere(0.6).translate(Vec3::new(0.5, 0.0, 0.0));
+        let soft = a.clone().chamfer_difference(b.clone(), 0.4);
+        let hard = a.difference(b);
+        for p in grid() {
+            assert!(
+                soft.eval(p) >= hard.eval(p) - 1e-12,
+                "chamfer_diff must be ≥ hard at {p:?}: soft={} hard={}",
+                soft.eval(p),
+                hard.eval(p)
+            );
+        }
+    }
+
+    #[test]
+    fn chamfer_union_makes_a_flat_bevel_distinct_from_round_smooth() {
+        // 面取りが smooth_* の丸フィレットと**本質的に異なる** (= 代替不可) ことの証明。
+        // 直交する 2 つの半空間 a=x (x≤0 が内)、b=y (y≤0 が内) の union は、原点で凹角を
+        // 持つ 270° 領域。凹角に対し chamfer は平面 x+y=k を、smooth は円弧を作る。
+        // 面取り平面 (x+y-k)*√0.5=0 ⟺ x+y=k。第一象限のその平面上の点 (k/2,k/2) では
+        // chamfer.eval = min(min(x,y),0) = 0 (面取り表面上)。一方 smooth の多項式ブレンドは
+        // 同点で 0 から明確に離れる → 2 つの遷移形状は幾何的に別物であることが分かる。
+        let a = Sdf::cuboid(Vec3::new(1.0, 4.0, 4.0)).translate(Vec3::new(-1.0, 0.0, 0.0));
+        let b = Sdf::cuboid(Vec3::new(4.0, 1.0, 4.0)).translate(Vec3::new(0.0, -1.0, 0.0));
+        let k = 0.6;
+        let cham = a.clone().chamfer_union(b.clone(), k);
+        let smooth = a.smooth_union(b, k);
+        let p = Vec3::new(k * 0.5, k * 0.5, 0.0); // x+y=k の平面上。
+        assert!(
+            cham.eval(p).abs() < 0.05,
+            "flat chamfer surface must pass ~through the plane x+y=k, got {}",
+            cham.eval(p)
+        );
+        assert!(
+            (smooth.eval(p) - cham.eval(p)).abs() > 0.05,
+            "round smooth fillet must differ measurably from the flat chamfer at {p:?}: \
+             chamfer={} smooth={} (proves chamfer is not replaceable by smooth_*)",
+            cham.eval(p),
+            smooth.eval(p)
+        );
     }
 
     #[test]

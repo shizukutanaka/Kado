@@ -691,6 +691,15 @@ smooth_intersection  {"op":"smooth_intersection","a":<sdf>,"b":<sdf>,"k":0.3}
 smooth_difference    {"op":"smooth_difference","a":<sdf>,"b":<sdf>,"k":0.3}  (a minus b, blended)
               k: blend radius > 0 (default 0.3; k<=0 rejected — use the hard
               union/intersection/difference op for a sharp boundary)
+              smooth_* make a ROUND (filleted) transition.
+
+chamfer_union        {"op":"chamfer_union","a":<sdf>,"b":<sdf>,"k":0.3}
+chamfer_intersection {"op":"chamfer_intersection","a":<sdf>,"b":<sdf>,"k":0.3}
+chamfer_difference   {"op":"chamfer_difference","a":<sdf>,"b":<sdf>,"k":0.3}  (a minus b, chamfered)
+              k: chamfer width > 0 (default 0.3; k<=0 rejected — use the hard op).
+              chamfer_* make a FLAT (45deg beveled) transition — the angular
+              counterpart to smooth_* (round). Use for print-bed bevels,
+              deburred edges, and assembly clearances.
 
 ## Transforms
 
@@ -754,7 +763,7 @@ DSL arg order mirrors the constructors:
   sphere(r) · cuboid(s) or cuboid(x,y,z) · cylinder(r,h) · torus(major,minor)
   cone(r,h) · capsule(h,r) · rounded_box(s,r) or (x,y,z,r) · ellipsoid(s) or (x,y,z)
   prism(n,r,h)
-  union/intersection/difference(a,b) · smooth_*(a,b[,k])
+  union/intersection/difference(a,b) · smooth_*(a,b[,k]) · chamfer_*(a,b[,k])
   translate(x,y,z,shape) · scale(s,shape) · scale_xyz(sx,sy,sz,shape)
   offset(amount,shape) · shell(t,shape)
   rotate_x/y/z(deg,shape) · rotate(ax,ay,az,deg,shape) · mirror_x/y/z(shape)

@@ -16,7 +16,8 @@
 //! `ALL_DSL_OPS` の全項目をこのコメントと KADOSCENE_HELP の双方に固定する):
 //! プリミティブ: sphere, cuboid, cylinder, prism, torus, cone, capsule, rounded_box, ellipsoid
 //! ブーリアン:   union, intersection, difference,
-//!               smooth_union, smooth_intersection, smooth_difference
+//!               smooth_union, smooth_intersection, smooth_difference,
+//!               chamfer_union, chamfer_intersection, chamfer_difference
 //! 変形:         translate, scale, scale_xyz, offset, shell, repeat, mirror_x, mirror_y,
 //!               mirror_z, rotate_x, rotate_y, rotate_z, rotate (任意軸), cut, flatten
 //!               (angle は度)
@@ -112,6 +113,9 @@ pub(crate) const ALL_DSL_OPS: &[&str] = &[
     "smooth_union",
     "smooth_intersection",
     "smooth_difference",
+    "chamfer_union",
+    "chamfer_intersection",
+    "chamfer_difference",
     // 変形
     "translate",
     "scale",
@@ -309,6 +313,44 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
                 )));
             }
             Ok(a.smooth_difference(b, k))
+        }
+        "chamfer_union" => {
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
+            let k = opt_f64(v, "k").unwrap_or(0.3);
+            // smooth_* と同じ理由 (問75): k=0 は面取りゼロ (= 硬い union) だが、
+            // 面取り演算の意図と矛盾するため明示的に拒否し union へ誘導する。
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "chamfer_union \"k\" chamfer width must be > 0, got {k} \
+                     (use union for a hard corner)"
+                )));
+            }
+            Ok(a.chamfer_union(b, k))
+        }
+        "chamfer_intersection" => {
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
+            let k = opt_f64(v, "k").unwrap_or(0.3);
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "chamfer_intersection \"k\" chamfer width must be > 0, got {k} \
+                     (use intersection for a hard corner)"
+                )));
+            }
+            Ok(a.chamfer_intersection(b, k))
+        }
+        "chamfer_difference" => {
+            let a = build_child(v, "a", op, depth, budget)?;
+            let b = build_child(v, "b", op, depth, budget)?;
+            let k = opt_f64(v, "k").unwrap_or(0.3);
+            if k <= 0.0 {
+                return Err(ScriptError::new(format!(
+                    "chamfer_difference \"k\" chamfer width must be > 0, got {k} \
+                     (use difference for a hard corner)"
+                )));
+            }
+            Ok(a.chamfer_difference(b, k))
         }
 
         // ── 変形 ──────────────────────────────────────────────────────────────
@@ -1329,6 +1371,69 @@ mod tests {
             eval_scene(&pos_u).is_ok(),
             "smooth_union positive k must succeed"
         );
+    }
+
+    #[test]
+    fn chamfer_operations_via_script() {
+        // 問285: chamfer_{union,intersection,difference} が DSL 経由で評価でき、
+        // 正しい内外符号を返すことを確認する (smooth_operations_via_script と同型)。
+        let a = r#"{"op":"sphere","r":1.0}"#;
+        let b = r#"{"op":"translate","x":0.5,"y":0,"z":0,"shape":{"op":"sphere","r":1.0}}"#;
+
+        let cu = eval_scene(&format!(
+            r#"{{"op":"chamfer_union","k":0.3,"a":{a},"b":{b}}}"#
+        ))
+        .unwrap();
+        assert!(
+            cu.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0,
+            "chamfer_union inside"
+        );
+        assert!(
+            cu.eval(Vec3::new(5.0, 0.0, 0.0)) > 0.0,
+            "chamfer_union far outside"
+        );
+
+        let ci = eval_scene(&format!(
+            r#"{{"op":"chamfer_intersection","k":0.3,"a":{a},"b":{b}}}"#
+        ))
+        .unwrap();
+        assert!(
+            ci.eval(Vec3::new(0.25, 0.0, 0.0)) < 0.0,
+            "chamfer_intersection overlap inside"
+        );
+        assert!(
+            ci.eval(Vec3::new(-1.5, 0.0, 0.0)) > 0.0,
+            "chamfer_intersection non-overlap outside"
+        );
+
+        let cd = eval_scene(&format!(
+            r#"{{"op":"chamfer_difference","k":0.3,"a":{a},"b":{b}}}"#
+        ))
+        .unwrap();
+        assert!(
+            cd.eval(Vec3::new(-0.9, 0.0, 0.0)) < 0.0,
+            "chamfer_diff inside a minus b"
+        );
+    }
+
+    #[test]
+    fn chamfer_k_zero_or_negative_is_rejected() {
+        // 問285: chamfer_* も smooth_* と同じく k<=0 を拒否する
+        // (k=0 は面取りゼロだが面取り演算の意図と矛盾し、hard op へ誘導すべき)。
+        let a = r#"{"op":"sphere","r":1.0}"#;
+        let b = r#"{"op":"sphere","r":0.8}"#;
+        for op in [
+            "chamfer_union",
+            "chamfer_intersection",
+            "chamfer_difference",
+        ] {
+            let zero = format!(r#"{{"op":"{op}","k":0,"a":{a},"b":{b}}}"#);
+            assert!(eval_scene(&zero).is_err(), "{op} k=0 must be rejected");
+            let neg = format!(r#"{{"op":"{op}","k":-0.5,"a":{a},"b":{b}}}"#);
+            assert!(eval_scene(&neg).is_err(), "{op} k<0 must be rejected");
+            let pos = format!(r#"{{"op":"{op}","k":0.2,"a":{a},"b":{b}}}"#);
+            assert!(eval_scene(&pos).is_ok(), "{op} positive k must succeed");
+        }
     }
 
     #[test]

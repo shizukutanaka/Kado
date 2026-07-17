@@ -74,9 +74,12 @@ AI エージェントに「形状を作る・検証する・書き出す」道�
 | 和 | `union(a, b)` | `min(da, db)` |
 | 積 | `intersection(a, b)` | `max(da, db)` |
 | 差 | `difference(a, b)` | `max(da, -db)` |
-| 平滑和 | `smooth_union(a, b, k)` | k > 0 の多項式ブレンド |
+| 平滑和 | `smooth_union(a, b, k)` | k > 0 の多項式ブレンド（**丸い**フィレット） |
 | 平滑積 | `smooth_intersection(a, b, k)` | k > 0 |
 | 平滑差 | `smooth_difference(a, b, k)` | k > 0 |
+| 面取り和 | `chamfer_union(a, b, k)` | k > 0。**平面（45°）**の面取り（IQ/hg_sdf）。丸い smooth_* の角度版（問285） |
+| 面取り積 | `chamfer_intersection(a, b, k)` | k > 0 |
+| 面取り差 | `chamfer_difference(a, b, k)` | k > 0 |
 
 ### 3.3 変換・修飾
 
@@ -264,6 +267,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 - **楕円体の軸外厳密距離**: IQ 近似（符号と軸上距離のみ厳密）。
 - **メッシュ CSG**: 採用しない（数値破綻回避のため SDF 経由）。
 - **無限反復**: `repeat` は count による有限反復のみ。
+- **面取り/平滑ブーリアンの内部厳密距離**: `chamfer_*`/`smooth_*` は**符号・表面（ゼロ等位面）は厳密**だが、内部の距離場は真のメトリックからずれる（面取り平面/ブレンド項が深部で min/max に勝ち続けるため）。抽出は符号のみ使用するため水密性に影響しない。`offset`/`shell` を面取り・平滑結果に適用する場合は近似（問285）。
 
 ---
 

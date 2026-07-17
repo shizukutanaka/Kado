@@ -34,9 +34,9 @@ JSON-RPC 2.0) 経由でこれを呼び出す。詳細仕様は `docs/SPEC.md`、
 |----|------|------|
 | MCPツール | 8 | `run_script` `eval` `validate` `screenshot` `export` `get_scene` `undo_script` `help` |
 | DSLプリミティブ | 9 | `sphere` `cuboid` `cylinder` `prism` `torus` `cone` `capsule` `rounded_box` `ellipsoid` |
-| DSLブーリアン | 6 | `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference` |
+| DSLブーリアン | 9 | `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference` `chamfer_union` `chamfer_intersection` `chamfer_difference` |
 | DSL変形・修飾 | 15 | `translate` `scale` `scale_xyz` `offset` `shell` `repeat` `mirror_x` `mirror_y` `mirror_z` `rotate_x` `rotate_y` `rotate_z` `rotate` `cut` `flatten` |
-| DSL演算子 合計 | 30 | 上記3行の合計 (プリミティブ+ブーリアン+変形) |
+| DSL演算子 合計 | 33 | 上記3行の合計 (プリミティブ+ブーリアン+変形) |
 | DFM issue コード | 11 | `EMPTY_MESH` `OPEN_MESH` `NON_MANIFOLD` `NEGATIVE_VOLUME` `MULTIPLE_BODIES` `THIN_WALL` `SUSPICIOUS_SCALE` `OVERHANG` `UNSTABLE` `HIGH_ASPECT_RATIO` `ENCLOSED_CAVITY` |
 | 出力形式 | 4+1 | STL (binary) / GLB (glTF2.0) / 3MF / 自己完結HTML ビューア + PNG screenshot (透視・正射影) |
 
@@ -111,8 +111,9 @@ r·Δθ に対応するため、軸から離れるほど歪みが増大し、**L
 ## 7. 総括
 
 3巡のレビューを通じて「過剰」と判定して削除した機能は0件 (8ツール・
-30演算子・11コードのすべてに独立した存在理由がある)。「不足」と判定して
-実装した機能は5件 (任意軸rotate・正射影・prism・scale_xyz・PNG実圧縮)。
+33演算子・11コードのすべてに独立した存在理由がある)。「不足」と判定して
+実装した機能は6件 (任意軸rotate・正射影・prism・scale_xyz・PNG実圧縮・
+面取りブーリアン chamfer_*)。
 根拠付きで却下・見送りにした候補は6件。現時点で未解決のまま残っている
 候補はメッシュインポート1件のみで、ユーザーの設計判断を待っている。
 
