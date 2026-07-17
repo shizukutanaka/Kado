@@ -403,7 +403,7 @@ mod tests {
                     let len = br.read_bits(16) as usize;
                     let _nlen = br.read_bits(16);
                     for _ in 0..len {
-                        out.push(br.data[br.byte_pos] as u8);
+                        out.push(br.data[br.byte_pos]);
                         br.byte_pos += 1;
                     }
                 }

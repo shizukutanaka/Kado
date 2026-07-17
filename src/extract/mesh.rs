@@ -578,15 +578,16 @@ mod tests {
     fn first_nonmanifold_edge_midpoint_is_deterministic_and_correct() {
         // 問257: 3枚の三角形がエッジ (v0,v1) を共有するメッシュで、
         // first_nonmanifold_edge_midpoint が最小インデックスのエッジ中点 (0.5,0,0) を返す。
-        let mut mesh = Mesh::default();
-        mesh.vertices = vec![
-            Vec3::new(0.0, 0.0, 0.0),  // v0
-            Vec3::new(1.0, 0.0, 0.0),  // v1
-            Vec3::new(0.0, 1.0, 0.0),  // v2
-            Vec3::new(0.0, 0.0, 1.0),  // v3
-            Vec3::new(0.0, -1.0, 0.0), // v4
-        ];
-        mesh.triangles = vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]];
+        let mesh = Mesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),  // v0
+                Vec3::new(1.0, 0.0, 0.0),  // v1
+                Vec3::new(0.0, 1.0, 0.0),  // v2
+                Vec3::new(0.0, 0.0, 1.0),  // v3
+                Vec3::new(0.0, -1.0, 0.0), // v4
+            ],
+            triangles: vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]],
+        };
         let mid = mesh
             .first_nonmanifold_edge_midpoint()
             .expect("3-shared-edge mesh must return Some");

@@ -70,7 +70,10 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
             json::obj([("version", json::s("2.0")), ("generator", json::s("kado"))]),
         ),
         ("scene", json::n(0.0)),
-        ("scenes", json::arr([json::obj([("nodes", json::arr([json::n(0.0)]))])])),
+        (
+            "scenes",
+            json::arr([json::obj([("nodes", json::arr([json::n(0.0)]))])]),
+        ),
         ("nodes", json::arr([json::obj([("mesh", json::n(0.0))])])),
         (
             "meshes",
@@ -171,10 +174,17 @@ mod tests {
     #[test]
     fn glb_header_is_valid() {
         let bytes = encode_glb(&sphere_mesh());
-        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), MAGIC_GLTF);
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            MAGIC_GLTF
+        );
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2);
         let total = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-        assert_eq!(total, bytes.len(), "header total length must equal byte length");
+        assert_eq!(
+            total,
+            bytes.len(),
+            "header total length must equal byte length"
+        );
     }
 
     #[test]
@@ -182,11 +192,15 @@ mod tests {
         let bytes = encode_glb(&sphere_mesh());
         // JSON チャンク。
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), CHUNK_JSON);
+        assert_eq!(
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            CHUNK_JSON
+        );
         assert_eq!(json_len % 4, 0, "JSON chunk must be 4-byte aligned");
         let json_end = 20 + json_len;
         // BIN チャンク。
-        let bin_len = u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
+        let bin_len =
+            u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
         assert_eq!(
             u32::from_le_bytes(bytes[json_end + 4..json_end + 8].try_into().unwrap()),
             CHUNK_BIN
@@ -200,7 +214,9 @@ mod tests {
         let mesh = sphere_mesh();
         let bytes = encode_glb(&mesh);
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len])
+            .unwrap()
+            .trim_end();
         let doc = parse(json_str).expect("GLB JSON chunk must be valid JSON");
         // POSITION accessor の count が頂点数と一致。
         let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
@@ -219,10 +235,19 @@ mod tests {
         // 配線が入れ替わると GLB ビューアが頂点/索引を取り違える。
         let bytes = encode_glb(&sphere_mesh());
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let doc = parse(std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end()).unwrap();
+        let doc = parse(
+            std::str::from_utf8(&bytes[20..20 + json_len])
+                .unwrap()
+                .trim_end(),
+        )
+        .unwrap();
         let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
         let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(views.len(), 2, "must have exactly 2 bufferViews (POSITION, INDEX)");
+        assert_eq!(
+            views.len(),
+            2,
+            "must have exactly 2 bufferViews (POSITION, INDEX)"
+        );
         assert_eq!(
             accessors[0].get("bufferView").and_then(|x| x.as_f64()),
             Some(0.0),
@@ -251,11 +276,20 @@ mod tests {
         let bytes = encode_glb(&sphere_mesh());
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
         let json_end = 20 + json_len;
-        let bin_len_header = u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
-        let doc = parse(std::str::from_utf8(&bytes[20..json_end]).unwrap().trim_end()).unwrap();
+        let bin_len_header =
+            u32::from_le_bytes(bytes[json_end..json_end + 4].try_into().unwrap()) as usize;
+        let doc = parse(
+            std::str::from_utf8(&bytes[20..json_end])
+                .unwrap()
+                .trim_end(),
+        )
+        .unwrap();
 
         let buffers = doc.get("buffers").and_then(|a| a.as_array()).unwrap();
-        let declared_total = buffers[0].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+        let declared_total = buffers[0]
+            .get("byteLength")
+            .and_then(|x| x.as_f64())
+            .unwrap() as usize;
         let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
         let v0_off = views[0].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
         let v0_len = views[0].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
@@ -264,12 +298,25 @@ mod tests {
 
         // view0 は先頭、view1 は view0 の直後 (連続配置)。
         assert_eq!(v0_off, 0, "POSITION bufferView must start at offset 0");
-        assert_eq!(v1_off, v0_len, "INDEX bufferView must start right after POSITION");
+        assert_eq!(
+            v1_off, v0_len,
+            "INDEX bufferView must start right after POSITION"
+        );
         // bufferView の合計 == buffer 宣言長 (パディング前は厳密一致)。
-        assert_eq!(v0_len + v1_len, declared_total, "bufferView byteLengths must sum to buffer byteLength");
+        assert_eq!(
+            v0_len + v1_len,
+            declared_total,
+            "bufferView byteLengths must sum to buffer byteLength"
+        );
         // BIN チャンクヘッダ長は宣言長以上 (4 バイト境界パディングを許容)。
-        assert!(bin_len_header >= declared_total, "BIN chunk must hold the full buffer (+padding)");
-        assert!(bin_len_header - declared_total < 4, "BIN padding must be < 4 bytes");
+        assert!(
+            bin_len_header >= declared_total,
+            "BIN chunk must hold the full buffer (+padding)"
+        );
+        assert!(
+            bin_len_header - declared_total < 4,
+            "BIN padding must be < 4 bytes"
+        );
     }
 
     #[test]
@@ -290,10 +337,16 @@ mod tests {
             Vec3::new(0.0, 2.0, 3.0), // outlier
         ]]);
         // from_soup は重複除去するので頂点数は 3 になるはず。
-        assert_eq!(mesh.vertices.len(), 3, "single triangle must have 3 vertices");
+        assert_eq!(
+            mesh.vertices.len(),
+            3,
+            "single triangle must have 3 vertices"
+        );
         let bytes = encode_glb(&mesh);
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len])
+            .unwrap()
+            .trim_end();
         let doc = parse(json_str).expect("single-triangle GLB must be valid JSON");
         let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
         let pos_min = accessors[0].get("min").and_then(|a| a.as_array()).unwrap();
@@ -315,15 +368,27 @@ mod tests {
         let empty = Mesh::default();
         let bytes = encode_glb(&empty);
         // GLB magic/version ヘッダ。
-        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), MAGIC_GLTF);
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            MAGIC_GLTF
+        );
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2);
         // JSON チャンクが valid (panic せず parse できる)。
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let json_str = std::str::from_utf8(&bytes[20..20 + json_len]).unwrap().trim_end();
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_len])
+            .unwrap()
+            .trim_end();
         let doc = parse(json_str).expect("empty mesh GLB JSON chunk must be valid JSON");
         // 両 accessor の count が 0。
-        let accessors = doc.get("accessors").and_then(|a| a.as_array()).expect("must have accessors");
-        assert_eq!(accessors.len(), 2, "must have exactly 2 accessors (POSITION, INDEX)");
+        let accessors = doc
+            .get("accessors")
+            .and_then(|a| a.as_array())
+            .expect("must have accessors");
+        assert_eq!(
+            accessors.len(),
+            2,
+            "must have exactly 2 accessors (POSITION, INDEX)"
+        );
         for (k, acc) in accessors.iter().enumerate() {
             let count = acc.get("count").and_then(|c| c.as_f64()).unwrap_or(-1.0) as i64;
             assert_eq!(count, 0, "accessor {k} count must be 0 for empty mesh");

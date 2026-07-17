@@ -153,7 +153,9 @@ fn escape(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => { let _ = fmt::write(&mut out, format_args!("\\u{:04x}", c as u32)); }
+            c if (c as u32) < 0x20 => {
+                let _ = fmt::write(&mut out, format_args!("\\u{:04x}", c as u32));
+            }
             c => out.push(c),
         }
     }
@@ -524,7 +526,10 @@ mod tests {
         assert_eq!(parse("false").unwrap(), Value::Bool(false));
         assert_eq!(parse("null").unwrap(), Value::Null);
         // 配列内でも厳密に照合される。
-        assert!(parse("[nul,1]").is_err(), "malformed literal in array must fail");
+        assert!(
+            parse("[nul,1]").is_err(),
+            "malformed literal in array must fail"
+        );
         assert_eq!(
             parse("[true,null,false]").unwrap(),
             arr([Value::Bool(true), Value::Null, Value::Bool(false)])
@@ -537,8 +542,14 @@ mod tests {
         // parse_value_inner の peek が None になり "unexpected" エラーになる。
         // MCP フレームが空ボディを送っても黙って null 等に化けないことを固定。
         assert!(parse("").is_err(), "empty input must be rejected");
-        assert!(parse("   ").is_err(), "whitespace-only input must be rejected");
-        assert!(parse("\n\t ").is_err(), "whitespace-only input must be rejected");
+        assert!(
+            parse("   ").is_err(),
+            "whitespace-only input must be rejected"
+        );
+        assert!(
+            parse("\n\t ").is_err(),
+            "whitespace-only input must be rejected"
+        );
         // エラーメッセージが pos 起点を含むこと (デバッグ可能性)。
         assert!(
             parse("").unwrap_err().contains("unexpected"),
@@ -553,10 +564,16 @@ mod tests {
         // 先頭コンマ [,1] や中間コンマ [1,,2] も値欠落として拒否されることを固定。
         // parse_value が ',' を unexpected として弾く経路。
         assert!(parse("[,1]").is_err(), "leading comma must be rejected");
-        assert!(parse("[1,,2]").is_err(), "middle double-comma must be rejected");
+        assert!(
+            parse("[1,,2]").is_err(),
+            "middle double-comma must be rejected"
+        );
         assert!(parse("[ , ]").is_err(), "comma-only array must be rejected");
         // 回帰: 正常な配列は通る。
-        assert_eq!(parse("[1,2]").unwrap(), arr([Value::Number(1.0), Value::Number(2.0)]));
+        assert_eq!(
+            parse("[1,2]").unwrap(),
+            arr([Value::Number(1.0), Value::Number(2.0)])
+        );
     }
 
     #[test]
@@ -570,9 +587,21 @@ mod tests {
             "unknown escape \\q must be rejected, got: {err}"
         );
         // 有効なエスケープは引き続き正しく機能する (回帰防止)。
-        assert_eq!(parse(r#""a\nb""#).unwrap().as_str(), Some("a\nb"), "\\n must still work");
-        assert_eq!(parse(r#""a\\b""#).unwrap().as_str(), Some("a\\b"), "\\\\ must still work");
-        assert_eq!(parse(r#""a\"b""#).unwrap().as_str(), Some("a\"b"), "\\\" must still work");
+        assert_eq!(
+            parse(r#""a\nb""#).unwrap().as_str(),
+            Some("a\nb"),
+            "\\n must still work"
+        );
+        assert_eq!(
+            parse(r#""a\\b""#).unwrap().as_str(),
+            Some("a\\b"),
+            "\\\\ must still work"
+        );
+        assert_eq!(
+            parse(r#""a\"b""#).unwrap().as_str(),
+            Some("a\"b"),
+            "\\\" must still work"
+        );
 
         // バックスラッシュ直後が EOF の場合も明確にエラー (黙って壊れた値を返さない)。
         let backslash_eof = "\"a\\"; // 開きクオート + a + バックスラッシュ + EOF
@@ -587,7 +616,12 @@ mod tests {
     fn multibyte_utf8_strings_roundtrip() {
         // 問49: マルチバイト UTF-8 (日本語・絵文字・アクセント記号) が
         // パース→シリアライズで破壊されないこと。MCP クライアントは UTF-8 JSON を送る。
-        for original in &["日本語のテスト", "emoji 🎲 mix", "café résumé", "混在 ascii 123"] {
+        for original in &[
+            "日本語のテスト",
+            "emoji 🎲 mix",
+            "café résumé",
+            "混在 ascii 123",
+        ] {
             let parsed = parse(&format!(r#""{original}""#)).unwrap();
             assert_eq!(
                 parsed.as_str(),
@@ -647,7 +681,11 @@ mod tests {
         }
 
         // 非有限が混入したオブジェクト全体も valid JSON のままであること。
-        let v = obj([("vol", n(f64::NAN)), ("dim", n(f64::INFINITY)), ("ok", n(1.5))]);
+        let v = obj([
+            ("vol", n(f64::NAN)),
+            ("dim", n(f64::INFINITY)),
+            ("ok", n(1.5)),
+        ]);
         let serialized = v.to_string();
         let reparsed = parse(&serialized).expect("object with non-finite must stay valid JSON");
         // 有限値は保持され、非有限は null になる。
@@ -662,7 +700,10 @@ mod tests {
         // -0.0 は "0" になり符号ビットが失われる。-0.0 == +0.0 なので幾何・算術に
         // 影響はなく、出力は決定的 (-0.0 は常に "0")。この意図された良性挙動を固定する。
         let serialized = Value::Number(-0.0_f64).to_string();
-        assert_eq!(serialized, "0", "-0.0 must serialize as \"0\" (sign-bit loss is benign)");
+        assert_eq!(
+            serialized, "0",
+            "-0.0 must serialize as \"0\" (sign-bit loss is benign)"
+        );
         // 再パースは +0.0 になり、数値的に 0.0 と等価。
         let reparsed = parse(&serialized).unwrap().as_f64().unwrap();
         assert_eq!(reparsed, 0.0, "re-parsed value must equal 0.0");
@@ -696,8 +737,14 @@ mod tests {
         // 問144: JSON 仕様は配列・オブジェクトの末尾カンマを禁止する。
         // 現パーサはカンマ後に再度 parse_value() を呼ぶ仕組み上自然に拒否するが、
         // この動作が退行で壊れないことを明示的に固定する。
-        assert!(parse("[1,2,]").is_err(), "trailing comma in array must be rejected");
-        assert!(parse(r#"{"a":1,}"#).is_err(), "trailing comma in object must be rejected");
+        assert!(
+            parse("[1,2,]").is_err(),
+            "trailing comma in array must be rejected"
+        );
+        assert!(
+            parse(r#"{"a":1,}"#).is_err(),
+            "trailing comma in object must be rejected"
+        );
         // 正常系 (末尾カンマなし) は通る。
         assert!(parse("[1,2]").is_ok());
         assert!(parse(r#"{"a":1}"#).is_ok());

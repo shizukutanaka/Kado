@@ -25,7 +25,11 @@ fn edge_vertex(a: &Corner, b: &Corner) -> Vec3 {
     let denom = p.val - q.val;
     // 問86: t を [0,1] にクランプする。浮動小数点誤差で両隅が同符号になると
     // t が [0,1] 外になり四面体セル外へ外挿してしまい、非多様体頂点を生む。
-    let t = if denom == 0.0 { 0.5 } else { (p.val / denom).clamp(0.0, 1.0) };
+    let t = if denom == 0.0 {
+        0.5
+    } else {
+        (p.val / denom).clamp(0.0, 1.0)
+    };
     p.pos + (q.pos - p.pos) * t
 }
 
@@ -191,7 +195,8 @@ fn push_tri(sdf: &Sdf, soup: &mut Vec<[Vec3; 3]>, p0: Vec3, p1: Vec3, p2: Vec3) 
     let centroid = (p0 + p1 + p2) / 3.0;
     // 問87: 固定 h=1e-4 はシェル厚 < 0.2mm のとき壁を突き抜け外向きを誤判定する。
     // 三角形最短辺の 1% を h とし、シェルより小さいステップで勾配を推定する。
-    let min_edge = (p1 - p0).length()
+    let min_edge = (p1 - p0)
+        .length()
         .min((p2 - p0).length())
         .min((p2 - p1).length());
     let h = (min_edge * 0.01).clamp(1e-9, 1e-4);
@@ -335,7 +340,9 @@ mod tests {
             ),
             (
                 "rotate",
-                Sdf::cuboid(Vec3::new(1.2, 0.4, 0.4)).rotate_z(0.6).rotate_x(0.3),
+                Sdf::cuboid(Vec3::new(1.2, 0.4, 0.4))
+                    .rotate_z(0.6)
+                    .rotate_x(0.3),
             ),
         ];
         for (name, sdf) in &battery {
@@ -433,8 +440,16 @@ mod tests {
     fn edge_vertex_clamp_produces_valid_interpolation() {
         // 問86: 両隅が同符号 (浮動小数点誤差) のとき t がクランプされ
         // セル内に留まることを確認する。
-        let a = Corner { coord: [0, 0, 0], pos: Vec3::new(0.0, 0.0, 0.0), val: 0.5 };
-        let b = Corner { coord: [1, 0, 0], pos: Vec3::new(1.0, 0.0, 0.0), val: 1.0 };
+        let a = Corner {
+            coord: [0, 0, 0],
+            pos: Vec3::new(0.0, 0.0, 0.0),
+            val: 0.5,
+        };
+        let b = Corner {
+            coord: [1, 0, 0],
+            pos: Vec3::new(1.0, 0.0, 0.0),
+            val: 1.0,
+        };
         // 両方正 (同符号): denom = 0.5 - 1.0 = -0.5, t = 0.5 / -0.5 = -1 → クランプで 0.0。
         let v = edge_vertex(&a, &b);
         // クランプ後 t=0, 補間結果 = p.pos + (q.pos - p.pos) * 0 = a.pos = (0,0,0)
@@ -446,11 +461,23 @@ mod tests {
         );
 
         // 正常ケース (異符号): t ∈ (0,1) → 等号チェック。
-        let neg = Corner { coord: [0, 0, 0], pos: Vec3::new(0.0, 0.0, 0.0), val: -0.3 };
-        let pos = Corner { coord: [1, 0, 0], pos: Vec3::new(1.0, 0.0, 0.0), val: 0.7 };
+        let neg = Corner {
+            coord: [0, 0, 0],
+            pos: Vec3::new(0.0, 0.0, 0.0),
+            val: -0.3,
+        };
+        let pos = Corner {
+            coord: [1, 0, 0],
+            pos: Vec3::new(1.0, 0.0, 0.0),
+            val: 0.7,
+        };
         let v2 = edge_vertex(&neg, &pos);
         // t = -0.3 / (-0.3 - 0.7) = -0.3 / -1.0 = 0.3 → x = 0 + 1*0.3 = 0.3
-        assert!((v2.x - 0.3).abs() < 1e-12, "normal sign-change: x should be 0.3, got {}", v2.x);
+        assert!(
+            (v2.x - 0.3).abs() < 1e-12,
+            "normal sign-change: x should be 0.3, got {}",
+            v2.x
+        );
     }
 
     #[test]
@@ -473,7 +500,8 @@ mod tests {
     fn zero_gradient_region_does_not_produce_inverted_mesh() {
         // 問88: smooth_union ブレンド境界はゼロ勾配を持ちうる (鞍点)。
         // ゼロ勾配時に反転しないことで水密性が保たれることを確認。
-        let sdf = Sdf::sphere(1.0).smooth_union(Sdf::sphere(1.0).translate(Vec3::new(1.5, 0.0, 0.0)), 0.5);
+        let sdf = Sdf::sphere(1.0)
+            .smooth_union(Sdf::sphere(1.0).translate(Vec3::new(1.5, 0.0, 0.0)), 0.5);
         let (lo, hi) = sdf.sampling_box();
         let m = polygonize(&sdf, lo, hi, 32);
         assert!(
@@ -501,7 +529,11 @@ mod tests {
             "sphere extraction digest must remain byte-stable across internal refactors"
         );
         assert_eq!(m.vertices.len(), 1586, "sphere vertex count must be stable");
-        assert_eq!(m.triangles.len(), 3168, "sphere triangle count must be stable");
+        assert_eq!(
+            m.triangles.len(),
+            3168,
+            "sphere triangle count must be stable"
+        );
 
         // 全4ケース (内0/1/2/3) を踏む穴あき形状でも固定する。
         let diff = Sdf::sphere(1.0).difference(Sdf::cylinder(0.4, 2.0));
@@ -512,7 +544,11 @@ mod tests {
             "boolean-difference extraction digest must remain byte-stable"
         );
         assert_eq!(md.vertices.len(), 3036, "diff vertex count must be stable");
-        assert_eq!(md.triangles.len(), 6072, "diff triangle count must be stable");
+        assert_eq!(
+            md.triangles.len(),
+            6072,
+            "diff triangle count must be stable"
+        );
     }
 
     #[test]
@@ -522,16 +558,22 @@ mod tests {
         // 重複や欠損があれば和が 1 を外れる。
         //
         // 四面体 (a,b,c,d) の符号付き体積 = (b-a)·((c-a)×(d-a)) / 6。
-        let cube_f = CUBE.map(|v| {
-            crate::core::Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
-        });
-        let total_vol: f64 = TETS.iter().map(|tet| {
-            let [a, b, c, d] = [cube_f[tet[0]], cube_f[tet[1]], cube_f[tet[2]], cube_f[tet[3]]];
-            let ab = b - a;
-            let ac = c - a;
-            let ad = d - a;
-            ab.dot(ac.cross(ad)) / 6.0
-        }).sum();
+        let cube_f = CUBE.map(|v| crate::core::Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64));
+        let total_vol: f64 = TETS
+            .iter()
+            .map(|tet| {
+                let [a, b, c, d] = [
+                    cube_f[tet[0]],
+                    cube_f[tet[1]],
+                    cube_f[tet[2]],
+                    cube_f[tet[3]],
+                ];
+                let ab = b - a;
+                let ac = c - a;
+                let ad = d - a;
+                ab.dot(ac.cross(ad)) / 6.0
+            })
+            .sum();
         assert!(
             (total_vol.abs() - 1.0).abs() < 1e-12,
             "6 tetrahedra must fill unit cube exactly: sum of volumes = {total_vol}"

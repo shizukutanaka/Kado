@@ -2508,16 +2508,17 @@ mod tests {
         // 問257: 3枚の三角形がエッジ (v0,v1) を共有 → NON_MANIFOLD issue が
         // そのエッジの中点 (0.5, 0, 0) を location として持つ。
         use crate::extract::Mesh;
-        let mut mesh = Mesh::default();
-        mesh.vertices = vec![
-            Vec3::new(0.0, 0.0, 0.0),  // v0
-            Vec3::new(1.0, 0.0, 0.0),  // v1
-            Vec3::new(0.0, 1.0, 0.0),  // v2
-            Vec3::new(0.0, 0.0, 1.0),  // v3
-            Vec3::new(0.0, -1.0, 0.0), // v4
-        ];
         // エッジ (0,1) を 3 枚が共有 → 非多様体。
-        mesh.triangles = vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]];
+        let mesh = Mesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),  // v0
+                Vec3::new(1.0, 0.0, 0.0),  // v1
+                Vec3::new(0.0, 1.0, 0.0),  // v2
+                Vec3::new(0.0, 0.0, 1.0),  // v3
+                Vec3::new(0.0, -1.0, 0.0), // v4
+            ],
+            triangles: vec![[0, 1, 2], [1, 0, 3], [0, 1, 4]],
+        };
         let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
         let nm = r
             .issues

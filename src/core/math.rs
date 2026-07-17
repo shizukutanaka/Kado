@@ -217,7 +217,10 @@ mod tests {
         let a = Vec3::new(3.0, 0.0, 0.0);
         let b = Vec3::new(0.0, 4.0, 0.0);
         let area = a.cross(b).length();
-        assert!((area - 12.0).abs() < 1e-12, "area of 3×4 rectangle = 12, got {area}");
+        assert!(
+            (area - 12.0).abs() < 1e-12,
+            "area of 3×4 rectangle = 12, got {area}"
+        );
     }
 
     // ── 算術演算子 ────────────────────────────────────────────────────────────
@@ -305,4 +308,3 @@ mod tests {
         assert_eq!(v.cross(v * 0.001), Vec3::ZERO, "v × 0.001v must be zero");
     }
 }
-

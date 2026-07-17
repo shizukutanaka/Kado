@@ -151,10 +151,8 @@ mod tests {
         //   [LFH][data][LFH][data] [CD1][CD2] [EOCD]
         // LFH の CRC オフセット: 署名4+version2+flag2+method2+time2+date2 = +14
         // CD の CRC オフセット:  署名4+ver2+ver2+flag2+method2+time2+date2 = +16
-        let entries: &[(&str, &[u8])] = &[
-            ("a.xml", b"<hello/>"),
-            ("b.bin", b"\x00\x01\x02\x03\xff"),
-        ];
+        let entries: &[(&str, &[u8])] =
+            &[("a.xml", b"<hello/>"), ("b.bin", b"\x00\x01\x02\x03\xff")];
         let z = build_zip(entries);
 
         // エントリ 0 のローカルヘッダ先頭 = 0。
@@ -164,17 +162,31 @@ mod tests {
         let lfh1_crc = u32::from_le_bytes(z[lfh0_size + 14..lfh0_size + 18].try_into().unwrap());
 
         // 中央ディレクトリは EOCD から遡る。
-        let eocd_pos = z.windows(4).rposition(|w| w == [0x50, 0x4B, 0x05, 0x06]).unwrap();
-        let cd_start = u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
+        let eocd_pos = z
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4B, 0x05, 0x06])
+            .unwrap();
+        let cd_start =
+            u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
 
         // CD エントリ 0 (先頭)。
         let cd0_crc = u32::from_le_bytes(z[cd_start + 16..cd_start + 20].try_into().unwrap());
         // CD エントリ 1 (46 バイト後 + name0.len() = 5)。
         let cd0_size = 46 + 5; // name "a.xml"=5
-        let cd1_crc = u32::from_le_bytes(z[cd_start + cd0_size + 16..cd_start + cd0_size + 20].try_into().unwrap());
+        let cd1_crc = u32::from_le_bytes(
+            z[cd_start + cd0_size + 16..cd_start + cd0_size + 20]
+                .try_into()
+                .unwrap(),
+        );
 
-        assert_eq!(lfh0_crc, cd0_crc, "entry 0: local header CRC must match central directory CRC");
-        assert_eq!(lfh1_crc, cd1_crc, "entry 1: local header CRC must match central directory CRC");
+        assert_eq!(
+            lfh0_crc, cd0_crc,
+            "entry 0: local header CRC must match central directory CRC"
+        );
+        assert_eq!(
+            lfh1_crc, cd1_crc,
+            "entry 1: local header CRC must match central directory CRC"
+        );
 
         // CRCs は独立に計算した正解と一致する。
         assert_eq!(lfh0_crc, crc32(b"<hello/>"));
@@ -196,24 +208,40 @@ mod tests {
         let z = build_zip(entries);
 
         // EOCD から中央ディレクトリ開始位置とエントリ数を取得。
-        let eocd_pos = z.windows(4).rposition(|w| w == [0x50, 0x4B, 0x05, 0x06]).unwrap();
+        let eocd_pos = z
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4B, 0x05, 0x06])
+            .unwrap();
         let cd_count = u16::from_le_bytes(z[eocd_pos + 10..eocd_pos + 12].try_into().unwrap());
-        assert_eq!(cd_count as usize, entries.len(), "EOCD entry count must match");
-        let cd_start = u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
+        assert_eq!(
+            cd_count as usize,
+            entries.len(),
+            "EOCD entry count must match"
+        );
+        let cd_start =
+            u32::from_le_bytes(z[eocd_pos + 16..eocd_pos + 20].try_into().unwrap()) as usize;
 
         // 各 CD エントリを辿り、その LFH オフセットが有効な署名を指すことを確認。
         let mut cd_pos = cd_start;
         for (i, (name, _)) in entries.iter().enumerate() {
             // CD 署名 = PK\x01\x02。
             let cd_sig = u32::from_le_bytes(z[cd_pos..cd_pos + 4].try_into().unwrap());
-            assert_eq!(cd_sig, 0x0201_4b50, "entry {i}: central directory signature");
+            assert_eq!(
+                cd_sig, 0x0201_4b50,
+                "entry {i}: central directory signature"
+            );
             // CD の +42 に LFH オフセット。
-            let lfh_off = u32::from_le_bytes(z[cd_pos + 42..cd_pos + 46].try_into().unwrap()) as usize;
+            let lfh_off =
+                u32::from_le_bytes(z[cd_pos + 42..cd_pos + 46].try_into().unwrap()) as usize;
             // そのオフセットが有効な LFH 署名 (PK\x03\x04) を指す。
             let lfh_sig = u32::from_le_bytes(z[lfh_off..lfh_off + 4].try_into().unwrap());
-            assert_eq!(lfh_sig, 0x0403_4b50, "entry {i}: offset {lfh_off} must point to valid LFH");
+            assert_eq!(
+                lfh_sig, 0x0403_4b50,
+                "entry {i}: offset {lfh_off} must point to valid LFH"
+            );
             // LFH のファイル名がエントリ名と一致 (オフセットが正しいエントリを指す確証)。
-            let name_len = u16::from_le_bytes(z[lfh_off + 26..lfh_off + 28].try_into().unwrap()) as usize;
+            let name_len =
+                u16::from_le_bytes(z[lfh_off + 26..lfh_off + 28].try_into().unwrap()) as usize;
             let lfh_name = std::str::from_utf8(&z[lfh_off + 30..lfh_off + 30 + name_len]).unwrap();
             assert_eq!(lfh_name, *name, "entry {i}: LFH name must match");
             // 次の CD エントリへ (固定 46 + 名前長)。

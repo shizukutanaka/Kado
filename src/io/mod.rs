@@ -122,21 +122,31 @@ mod tests {
         let mf = dir.join("kado_fmt_test.3mf");
         ExportFormat::ThreeMf.write(&mesh, &mf).unwrap();
         let mf_bytes = std::fs::read(&mf).unwrap();
-        assert_eq!(&mf_bytes[0..4], &[0x50, 0x4B, 0x03, 0x04], "3MF must be a ZIP");
+        assert_eq!(
+            &mf_bytes[0..4],
+            &[0x50, 0x4B, 0x03, 0x04],
+            "3MF must be a ZIP"
+        );
         let _ = std::fs::remove_file(&mf);
 
         // HTML: "<!DOCTYPE html>" で始まる。
         let html = dir.join("kado_fmt_test.html");
         ExportFormat::Html.write(&mesh, &html).unwrap();
         let html_bytes = std::fs::read(&html).unwrap();
-        assert!(html_bytes.starts_with(b"<!DOCTYPE html>"), "HTML must start with doctype");
+        assert!(
+            html_bytes.starts_with(b"<!DOCTYPE html>"),
+            "HTML must start with doctype"
+        );
         let _ = std::fs::remove_file(&html);
 
         // STL: 80 バイトヘッダ "kado binary stl"。
         let stl = dir.join("kado_fmt_test.stl");
         ExportFormat::Stl.write(&mesh, &stl).unwrap();
         let stl_bytes = std::fs::read(&stl).unwrap();
-        assert!(stl_bytes.starts_with(b"kado binary stl"), "STL must have kado header");
+        assert!(
+            stl_bytes.starts_with(b"kado binary stl"),
+            "STL must have kado header"
+        );
         let _ = std::fs::remove_file(&stl);
     }
 
@@ -150,11 +160,31 @@ mod tests {
         use crate::extract::polygonize;
         let mesh = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 12);
 
-        assert_eq!(stl::encode_binary(&mesh), stl::encode_binary(&mesh), "STL must re-encode identically");
-        assert_eq!(gltf::encode_glb(&mesh), gltf::encode_glb(&mesh), "GLB must re-encode identically");
-        assert_eq!(threemf::encode_3mf(&mesh), threemf::encode_3mf(&mesh), "3MF must re-encode identically");
-        assert_eq!(html::encode_html(&mesh), html::encode_html(&mesh), "HTML must re-encode identically");
+        assert_eq!(
+            stl::encode_binary(&mesh),
+            stl::encode_binary(&mesh),
+            "STL must re-encode identically"
+        );
+        assert_eq!(
+            gltf::encode_glb(&mesh),
+            gltf::encode_glb(&mesh),
+            "GLB must re-encode identically"
+        );
+        assert_eq!(
+            threemf::encode_3mf(&mesh),
+            threemf::encode_3mf(&mesh),
+            "3MF must re-encode identically"
+        );
+        assert_eq!(
+            html::encode_html(&mesh),
+            html::encode_html(&mesh),
+            "HTML must re-encode identically"
+        );
         // メッシュダイジェスト (観測可能な決定性プロキシ) も安定。
-        assert_eq!(mesh.digest(), mesh.digest(), "mesh digest must be deterministic");
+        assert_eq!(
+            mesh.digest(),
+            mesh.digest(),
+            "mesh digest must be deterministic"
+        );
     }
 }
