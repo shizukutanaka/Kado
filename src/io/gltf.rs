@@ -124,9 +124,32 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
                         json::obj([("POSITION", json::n(0.0)), ("NORMAL", json::n(1.0))]),
                     ),
                     ("indices", json::n(2.0)),
+                    ("material", json::n(0.0)),
                     ("mode", json::n(MODE_TRIANGLES)),
                 ])]),
             )])]),
+        ),
+        // 中立なマット材質を明示する (問291)。法線があると (問290) ビューアは
+        // 材質未指定でも glTF 既定材質 (metallic=1, roughness=1 = 暗いラフ金属) で
+        // 描くため、印刷プレビューとして見栄えが悪い。metallic=0・roughness=0.6・
+        // 明るいグレーの誘電体にすると、どのビューアでも素直なマット表示になる。
+        // これは幾何ではなく表示上の既定値で、ビューア側で上書き可能。
+        (
+            "materials",
+            json::arr([json::obj([
+                ("name", json::s("kado-default")),
+                (
+                    "pbrMetallicRoughness",
+                    json::obj([
+                        (
+                            "baseColorFactor",
+                            json::arr([json::n(0.8), json::n(0.8), json::n(0.82), json::n(1.0)]),
+                        ),
+                        ("metallicFactor", json::n(0.0)),
+                        ("roughnessFactor", json::n(0.6)),
+                    ]),
+                ),
+            ])]),
         ),
         (
             "buffers",
@@ -484,6 +507,52 @@ mod tests {
             let dot = v.x as f32 * n[0] + v.y as f32 * n[1] + v.z as f32 * n[2];
             assert!(dot > 0.0, "sphere normal {i} must point outward, dot={dot}");
         }
+    }
+
+    #[test]
+    fn glb_declares_neutral_matte_default_material() {
+        // 問291: primitive は material 0 を参照し、その材質は metallic=0・roughness=0.6・
+        // 明るいグレーの baseColor を持つ (ビューアの既定材質フォールバックを避ける)。
+        let bytes = encode_glb(&sphere_mesh());
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let doc = parse(
+            std::str::from_utf8(&bytes[20..20 + json_len])
+                .unwrap()
+                .trim_end(),
+        )
+        .unwrap();
+        let prim = &doc.get("meshes").and_then(|m| m.as_array()).unwrap()[0]
+            .get("primitives")
+            .and_then(|p| p.as_array())
+            .unwrap()[0];
+        assert_eq!(
+            prim.get("material").and_then(|x| x.as_f64()),
+            Some(0.0),
+            "primitive must reference material 0"
+        );
+        let mats = doc.get("materials").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(mats.len(), 1, "must declare exactly one default material");
+        let pbr = mats[0].get("pbrMetallicRoughness").unwrap();
+        assert_eq!(
+            pbr.get("metallicFactor").and_then(|x| x.as_f64()),
+            Some(0.0),
+            "default material must be a dielectric (metallic=0)"
+        );
+        let rough = pbr.get("roughnessFactor").and_then(|x| x.as_f64()).unwrap();
+        assert!(
+            (0.0..=1.0).contains(&rough),
+            "roughness must be a valid [0,1] factor, got {rough}"
+        );
+        let base = pbr
+            .get("baseColorFactor")
+            .and_then(|x| x.as_array())
+            .unwrap();
+        assert_eq!(base.len(), 4, "baseColorFactor is RGBA");
+        assert_eq!(
+            base[3].as_f64(),
+            Some(1.0),
+            "default material must be fully opaque"
+        );
     }
 
     #[test]
