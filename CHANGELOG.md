@@ -58,6 +58,12 @@
   には追加したが、テキスト DSL の関数ディスパッチ (`dsl.rs`) への追加を
   忘れていた。あわせて `ALL_DSL_OPS` の全 op がテキスト DSL でディスパッチ
   されることを保証するメタテストを新設し、同種の取りこぼしを防ぐ (問292)
+- MCP エンドツーエンド統合テスト (`tests/mcp_workflow.rs`) を新設: 実 `kado mcp`
+  バイナリを子プロセスとして起動し、AI ワークフロー (initialize→run_script→
+  validate→screenshot) を stdio JSON-RPC で通しテストする。問292 の回帰
+  (chamfer のテキスト DSL) はこのテストで即座に落ちることを確認済み。
+  `src/mcp/mod.rs` の古いモジュール説明 (2024-11-05・Phase 0.5・ツール数≤12) も
+  実態 (2025-11-25 版交渉・8ツール) に更新 (問293)
 - `docs/SPEC.md` の対象バージョンヘッダが 0.0.1 のまま更新漏れしていたのを
   0.1.0 へ修正 (問277)
 - `README.md` の演算子一覧から `prism`・任意軸 `rotate`・`scale_xyz` が
