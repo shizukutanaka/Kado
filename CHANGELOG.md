@@ -40,6 +40,12 @@
   `xml.etree`) で開けることを確認 (3MF は `zipfile.testzip()` が全 CRC を独自
   再計算)。品質ゲートを自動実行する GitHub Actions CI の推奨定義を
   `docs/ci-recommendation.md` に追加 (問289)
+- GLB 出力に **頂点法線 (NORMAL)** を追加: 面積重み付きの平滑法線を決定的に
+  計算し `POSITION`/`NORMAL`/`indices` の 3 アクセサ構成で書き出す。従来は
+  POSITION と索引のみで、ブラウザ・Windows 3D ビューア・Blender 等が
+  平坦/既定シェーディングになっていたのを、正しい滑らかな陰影で表示できる
+  ようにした (std-only・決定性維持)。独立 glTF パーサで全法線が単位長で
+  あることを検証 (問290)
 
 ### 修正
 

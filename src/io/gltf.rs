@@ -6,6 +6,7 @@
 //! STL と違い**インデックス付き**ジオメトリと境界 (accessor min/max) を持ち、
 //! ブラウザ・Windows 3D ビューア・Blender 等で直接閲覧できる。圧縮は使わない。
 
+use crate::core::Vec3;
 use crate::extract::Mesh;
 use crate::mcp::json;
 
@@ -21,10 +22,42 @@ const MODE_TRIANGLES: f64 = 4.0;
 const TARGET_ARRAY_BUFFER: f64 = 34962.0; // 頂点属性
 const TARGET_ELEMENT_ARRAY: f64 = 34963.0; // インデックス
 
+/// 面積重み付きの滑らかな頂点法線を決定的に計算する (問290)。
+///
+/// 各三角形の外積 `(b-a)×(c-a)`（長さ = 2×面積なので**面積重み**が自然に入る）を
+/// 3 頂点へ加算し、最後に正規化する。加算順は三角形順で固定、`Vec3` の演算は
+/// FMA 不使用なので決定的 (同一arch内でバイト同一)。すべての面が退化して累積が
+/// ゼロになる稀な頂点は `[0,0,1]` にフォールバックする (glTF は単位法線を要求する
+/// ため; 通常の SDF 抽出ではゼロ面積の頂点は生じない)。
+fn vertex_normals(mesh: &Mesh) -> Vec<[f32; 3]> {
+    let mut acc = vec![Vec3::ZERO; mesh.vertices.len()];
+    for t in &mesh.triangles {
+        let a = mesh.vertices[t[0] as usize];
+        let b = mesh.vertices[t[1] as usize];
+        let c = mesh.vertices[t[2] as usize];
+        let fn_weighted = (b - a).cross(c - a); // 長さ = 2×三角形面積。
+        for &i in t {
+            acc[i as usize] = acc[i as usize] + fn_weighted;
+        }
+    }
+    acc.into_iter()
+        .map(|n| {
+            let len = n.length();
+            if len > 0.0 {
+                let u = n * (1.0 / len);
+                [u.x as f32, u.y as f32, u.z as f32]
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        })
+        .collect()
+}
+
 /// メッシュを GLB バイト列にエンコードする。
 pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
-    // ── BIN バッファ: POSITION(f32×3) … その後 indices(u32) ──
-    let mut bin = Vec::with_capacity(mesh.vertices.len() * 12 + mesh.triangles.len() * 12);
+    // ── BIN バッファ: POSITION(f32×3) → NORMAL(f32×3) → indices(u32) ──
+    let normals = vertex_normals(mesh);
+    let mut bin = Vec::with_capacity(mesh.vertices.len() * 24 + mesh.triangles.len() * 12);
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for v in &mesh.vertices {
@@ -40,12 +73,18 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
         }
     }
     let pos_len = bin.len();
+    for n in &normals {
+        for &c in n {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let nrm_len = bin.len() - pos_len;
     for t in &mesh.triangles {
         for &i in t {
             bin.extend_from_slice(&i.to_le_bytes());
         }
     }
-    let idx_len = bin.len() - pos_len;
+    let idx_len = bin.len() - pos_len - nrm_len;
     // 空メッシュでは min/max が無限大のままなので 0 に正規化する。
     if mesh.vertices.is_empty() {
         min = [0.0; 3];
@@ -80,8 +119,11 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
             json::arr([json::obj([(
                 "primitives",
                 json::arr([json::obj([
-                    ("attributes", json::obj([("POSITION", json::n(0.0))])),
-                    ("indices", json::n(1.0)),
+                    (
+                        "attributes",
+                        json::obj([("POSITION", json::n(0.0)), ("NORMAL", json::n(1.0))]),
+                    ),
+                    ("indices", json::n(2.0)),
                     ("mode", json::n(MODE_TRIANGLES)),
                 ])]),
             )])]),
@@ -102,6 +144,12 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
                 json::obj([
                     ("buffer", json::n(0.0)),
                     ("byteOffset", json::n(pos_len as f64)),
+                    ("byteLength", json::n(nrm_len as f64)),
+                    ("target", json::n(TARGET_ARRAY_BUFFER)),
+                ]),
+                json::obj([
+                    ("buffer", json::n(0.0)),
+                    ("byteOffset", json::n((pos_len + nrm_len) as f64)),
                     ("byteLength", json::n(idx_len as f64)),
                     ("target", json::n(TARGET_ELEMENT_ARRAY)),
                 ]),
@@ -120,6 +168,12 @@ pub fn encode_glb(mesh: &Mesh) -> Vec<u8> {
                 ]),
                 json::obj([
                     ("bufferView", json::n(1.0)),
+                    ("componentType", json::n(COMPONENT_FLOAT)),
+                    ("count", json::n(vcount)),
+                    ("type", json::s("VEC3")),
+                ]),
+                json::obj([
+                    ("bufferView", json::n(2.0)),
                     ("componentType", json::n(COMPONENT_UINT)),
                     ("count", json::n(icount)),
                     ("type", json::s("SCALAR")),
@@ -222,17 +276,20 @@ mod tests {
         let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
         let pos_count = accessors[0].get("count").and_then(|c| c.as_f64()).unwrap();
         assert_eq!(pos_count as usize, mesh.vertices.len());
+        // NORMAL accessor (問290) の count も頂点数と一致。
+        let nrm_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap();
+        assert_eq!(nrm_count as usize, mesh.vertices.len());
         // indices accessor の count が三角形数×3 と一致。
-        let idx_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap();
+        let idx_count = accessors[2].get("count").and_then(|c| c.as_f64()).unwrap();
         assert_eq!(idx_count as usize, mesh.triangles.len() * 3);
     }
 
     #[test]
     fn glb_accessor_bufferview_indices_are_correctly_wired() {
-        // 問221: glb_json_describes_mesh_accurately は count のみ確認。
-        // accessor[0]→bufferView 0 (POSITION)、accessor[1]→bufferView 1 (INDEX) の
-        // 参照配線と bufferView が厳密に 2 個であることが未検証だった。
-        // 配線が入れ替わると GLB ビューアが頂点/索引を取り違える。
+        // 問221/問290: accessor[0]→bufferView 0 (POSITION)、accessor[1]→bufferView 1
+        // (NORMAL)、accessor[2]→bufferView 2 (INDEX) の参照配線と bufferView が厳密に
+        // 3 個であることを検証する。配線が入れ替わると GLB ビューアが頂点/法線/索引を
+        // 取り違える。primitive の attributes も POSITION/NORMAL を正しく指すこと。
         let bytes = encode_glb(&sphere_mesh());
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
         let doc = parse(
@@ -245,19 +302,27 @@ mod tests {
         let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
         assert_eq!(
             views.len(),
-            2,
-            "must have exactly 2 bufferViews (POSITION, INDEX)"
+            3,
+            "must have exactly 3 bufferViews (POSITION, NORMAL, INDEX)"
         );
-        assert_eq!(
-            accessors[0].get("bufferView").and_then(|x| x.as_f64()),
-            Some(0.0),
-            "POSITION accessor must reference bufferView 0"
-        );
-        assert_eq!(
-            accessors[1].get("bufferView").and_then(|x| x.as_f64()),
-            Some(1.0),
-            "INDEX accessor must reference bufferView 1"
-        );
+        for (acc_idx, want_view) in [(0usize, 0.0), (1, 1.0), (2, 2.0)] {
+            assert_eq!(
+                accessors[acc_idx]
+                    .get("bufferView")
+                    .and_then(|x| x.as_f64()),
+                Some(want_view),
+                "accessor {acc_idx} must reference bufferView {want_view}"
+            );
+        }
+        // primitive attributes: POSITION→accessor 0, NORMAL→accessor 1, indices→2。
+        let prim = &doc.get("meshes").and_then(|m| m.as_array()).unwrap()[0]
+            .get("primitives")
+            .and_then(|p| p.as_array())
+            .unwrap()[0];
+        let attrs = prim.get("attributes").unwrap();
+        assert_eq!(attrs.get("POSITION").and_then(|x| x.as_f64()), Some(0.0));
+        assert_eq!(attrs.get("NORMAL").and_then(|x| x.as_f64()), Some(1.0));
+        assert_eq!(prim.get("indices").and_then(|x| x.as_f64()), Some(2.0));
         // 各 bufferView は buffer 0 を参照する。
         for (k, view) in views.iter().enumerate() {
             assert_eq!(
@@ -291,20 +356,25 @@ mod tests {
             .and_then(|x| x.as_f64())
             .unwrap() as usize;
         let views = doc.get("bufferViews").and_then(|v| v.as_array()).unwrap();
-        let v0_off = views[0].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
-        let v0_len = views[0].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
-        let v1_off = views[1].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
-        let v1_len = views[1].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+        let off = |i: usize| views[i].get("byteOffset").and_then(|x| x.as_f64()).unwrap() as usize;
+        let len = |i: usize| views[i].get("byteLength").and_then(|x| x.as_f64()).unwrap() as usize;
+        let (v0_off, v0_len) = (off(0), len(0)); // POSITION
+        let (v1_off, v1_len) = (off(1), len(1)); // NORMAL (問290)
+        let (v2_off, v2_len) = (off(2), len(2)); // INDEX
 
-        // view0 は先頭、view1 は view0 の直後 (連続配置)。
+        // 連続配置: POSITION → NORMAL → INDEX。
         assert_eq!(v0_off, 0, "POSITION bufferView must start at offset 0");
+        assert_eq!(v1_off, v0_len, "NORMAL must start right after POSITION");
         assert_eq!(
-            v1_off, v0_len,
-            "INDEX bufferView must start right after POSITION"
+            v2_off,
+            v0_len + v1_len,
+            "INDEX must start right after NORMAL"
         );
+        // POSITION と NORMAL はどちらも VEC3 f32 なので同じ長さ。
+        assert_eq!(v0_len, v1_len, "POSITION and NORMAL byteLengths must match");
         // bufferView の合計 == buffer 宣言長 (パディング前は厳密一致)。
         assert_eq!(
-            v0_len + v1_len,
+            v0_len + v1_len + v2_len,
             declared_total,
             "bufferView byteLengths must sum to buffer byteLength"
         );
@@ -386,12 +456,61 @@ mod tests {
             .expect("must have accessors");
         assert_eq!(
             accessors.len(),
-            2,
-            "must have exactly 2 accessors (POSITION, INDEX)"
+            3,
+            "must have exactly 3 accessors (POSITION, NORMAL, INDEX)"
         );
         for (k, acc) in accessors.iter().enumerate() {
             let count = acc.get("count").and_then(|c| c.as_f64()).unwrap_or(-1.0) as i64;
             assert_eq!(count, 0, "accessor {k} count must be 0 for empty mesh");
+        }
+    }
+
+    #[test]
+    fn vertex_normals_are_unit_length_and_outward_for_sphere() {
+        // 問290: 球メッシュの頂点法線は単位長で、球面では外向き (頂点方向と正の内積)。
+        // 面積重み付き平均 → 正規化。SDF 抽出の巻き順は外向きに補正済みなので
+        // 法線も外を向く。
+        let mesh = sphere_mesh();
+        let normals = vertex_normals(&mesh);
+        assert_eq!(normals.len(), mesh.vertices.len());
+        for (i, n) in normals.iter().enumerate() {
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-4,
+                "normal {i} must be unit length, got {len}"
+            );
+            // 中心 (原点付近) の球なので、頂点位置ベクトルと法線は正の内積 (外向き)。
+            let v = mesh.vertices[i];
+            let dot = v.x as f32 * n[0] + v.y as f32 * n[1] + v.z as f32 * n[2];
+            assert!(dot > 0.0, "sphere normal {i} must point outward, dot={dot}");
+        }
+    }
+
+    #[test]
+    fn vertex_normals_are_deterministic() {
+        // 決定性 (問5): 同一メッシュ → 同一法線バイト列。
+        let m = sphere_mesh();
+        assert_eq!(vertex_normals(&m), vertex_normals(&m));
+    }
+
+    #[test]
+    fn degenerate_vertex_normal_falls_back_to_unit() {
+        // すべての隣接面が退化 (面積0) して累積がゼロになる頂点は [0,0,1] にフォールバック
+        // (glTF は単位法線を要求する)。共線3頂点の単一三角形で確認。
+        let mesh = Mesh {
+            vertices: vec![
+                Vec3::ZERO,
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0), // 共線 → 面積0
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        for n in vertex_normals(&mesh) {
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-6,
+                "degenerate normal must still be unit length, got {len}"
+            );
         }
     }
 }

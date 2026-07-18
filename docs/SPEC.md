@@ -256,7 +256,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 | 形式 | モジュール | 用途 |
 |------|-----------|------|
 | STL（binary） | io/stl | 汎用メッシュ |
-| glTF（GLB） | io/gltf | インデックス付き＋境界（accessor min/max） |
+| glTF（GLB） | io/gltf | インデックス付き＋境界（accessor min/max）＋**頂点法線**（面積重み付き平滑法線・問290; ビューアが正しく陰影付けできる） |
 | 3MF | io/threemf | 製造（単位 mm 宣言） |
 | HTML | io/html | 自己完結ビューア |
 | PNG | render/image, render/deflate | スクリーンショット（PNG 行フィルタ None/Sub/Up を行ごとに最小絶対値和で選択・問287、決定的 DEFLATE：固定 Huffman＋距離{1,3}限定 RLE と無圧縮の小さい方を採用・問281。全 None 版とも比較し小さい方を採る＝旧実装より悪化しない・外部依存ゼロ） |

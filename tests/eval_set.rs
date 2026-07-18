@@ -238,13 +238,21 @@ fn eval_set_models_export_to_all_formats_with_valid_structure() {
                 .trim_end(),
         )
         .unwrap_or_else(|e| panic!("[{}] GLB JSON must parse: {e}", task.name));
+        // accessor 0=POSITION, 1=NORMAL, 2=INDEX (問290 で NORMAL を追加)。
         let accessors = doc.get("accessors").and_then(|a| a.as_array()).unwrap();
         let pos_count = accessors[0].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
-        let idx_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
+        let nrm_count = accessors[1].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
+        let idx_count = accessors[2].get("count").and_then(|c| c.as_f64()).unwrap() as usize;
         assert_eq!(
             pos_count,
             mesh.vertices.len(),
             "[{}] GLB POSITION count",
+            task.name
+        );
+        assert_eq!(
+            nrm_count,
+            mesh.vertices.len(),
+            "[{}] GLB NORMAL count",
             task.name
         );
         assert_eq!(
