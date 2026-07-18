@@ -6786,8 +6786,9 @@ stdio サーバである Kado に関係する変更は何か——単に版番�
 | 291 | GLB に既定 PBR 材質 (metallic=0/roughness=0.6/中立グレー) を明示。暗い既定材質フォールバックを避け素直なマットプレビューに |
 | 292 | (修正) chamfer_* が JSON では動くのにテキスト DSL で "unknown function" だったのを修正。全 op の DSL↔JSON 等価性とディスパッチ網羅をメタテストで固定 |
 | 293 | 実 MCP バイナリを起動して stdio JSON-RPC を通す統合テストを新設 (問292 を恒久ガード化)。mcp/mod.rs の古い説明も更新 |
+| 294 | MCP ツールの3箇所 (tool_list/call_tool/tool_annotations) の整合をメタテストで固定 (問292 と同型のドリフトを防ぐ) |
 
-（問287〜293 の詳細は下記）
+（問287〜294 の詳細は下記）
 
 ## 問287 — PNG が行フィルタ type 0 (None) 固定で、陰影面の圧縮を取りこぼしていた
 
@@ -7040,6 +7041,40 @@ stdio JSON-RPC を流す統合テスト**が要るのではないか。ユニッ
 > 不整合」を多重に防ぐ。
 >
 > テスト数: 426 (413 ライブラリユニット + 5 CLI ユニット + 8 統合)。
+
+## 問294 — MCP ツールも3箇所に並んでおり、問292 と同型のドリフト余地があった
+
+*問292/293 の「表面積の不整合」監査を、DSL op から MCP ツール面へ横展開した回 (v151)*
+
+**問い:**
+「問292 は DSL op が JSON 評価器・`ALL_DSL_OPS`・DSL ディスパッチの3箇所に
+並び、片方への追加漏れでバグった。**MCP ツールも同じ構造**ではないか——
+`tool_list` (スキーマ宣言)・`call_tool` (ディスパッチ)・`tool_annotations`
+(安全ヒント) の3箇所に並ぶ。ここがドリフトすると『宣言したのに呼べない』
+『read-only なのに destructive と注釈される』といった、AI に嘘の安全情報を
+渡すバグが起きる。特に `tool_annotations` は `_ => (name, false, true, false)`
+という**サイレントフォールバック**を持ち、注釈漏れが destructive 扱いとして
+黙って通ってしまう。」
+
+**実装:**
+- `every_declared_tool_is_dispatched_and_explicitly_annotated` を新設。
+  `tool_list` を真実源に、全8ツールが (1) `call_tool` でディスパッチされ
+  (「unknown tool」を返さない)、(2) `tool_annotations` に明示エントリを持つ
+  (フォールバックは title=name を返すので `title != name` で検出) ことを固定。
+  ツール数=8 も SPEC §5 と照合。
+- 副作用回避の工夫: `export` はファイルを書くため、パストラバーサル
+  `"../..."` を渡して**ディスパッチ後にサンドボックスで弾かせる**——
+  ファイルを作らず、かつ「unknown tool」でもない状態を作り、ディスパッチの
+  有無だけを純粋に検査する。
+- 回帰ガードの実証: `tool_annotations` から `help` を一時的に外すと、
+  「tool `help` has no explicit tool_annotations entry」で実際に落ちることを確認。
+
+> これで「表面積の不整合」ガードは DSL op (問292: dispatch メタ + DSL↔JSON
+> 等価) と MCP ツール (問294: dispatch + annotation 網羅) の両面を覆った。
+> いずれも「片側だけに足すと即テストが落ちる」不変条件で、機能追加時の
+> 人的ミスを構造的に捕まえる。
+>
+> テスト数: 427 (414 ライブラリユニット + 5 CLI ユニット + 8 統合)。
 
 ## 問289 — 出力フォーマットは Kado 自身の理解でしかテストされておらず、CI も無かった
 

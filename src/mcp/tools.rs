@@ -999,6 +999,62 @@ fn base64_encode(data: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_declared_tool_is_dispatched_and_explicitly_annotated() {
+        // 問294: ツールは3箇所に並ぶ — tool_list (スキーマ)・call_tool (ディスパッチ)・
+        // tool_annotations (安全ヒント)。これらがドリフトすると、問292 の DSL と同型の
+        // 「宣言したのに呼べない / 別物として注釈される」表面積バグが生じる。
+        // tool_list を真実源に、全ツールが (1) call_tool でディスパッチされ
+        // (=「unknown tool」にならない)、(2) tool_annotations に明示エントリを持つ
+        // (=フォールバック `_ => (name, ...)` に落ちない) ことを固定する。
+        let list = tool_list();
+        let names: Vec<String> = list
+            .as_array()
+            .expect("tool_list is an array")
+            .iter()
+            .map(|t| {
+                t.get("name")
+                    .and_then(|v| v.as_str())
+                    .expect("each tool has a name")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names.len(), 8, "tool_list must declare 8 tools (SPEC §5)");
+
+        for name in &names {
+            // (2) 注釈の網羅: フォールバックは title=name を返すので、title != name なら
+            // 明示エントリがある。
+            let ann = tool_annotations(name);
+            let title = ann.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            assert_ne!(
+                title, name,
+                "tool `{name}` has no explicit tool_annotations entry (hit the fallback, \
+                 so it would be mislabeled destructive/non-read-only)"
+            );
+
+            // (1) ディスパッチの網羅: call_tool が「unknown tool」を返さない。
+            // export はファイルを書くので、パストラバーサルを渡して**ディスパッチ後に**
+            // サンドボックスで弾かせる (ファイルを作らず、かつ unknown tool でもない)。
+            let mut s = Session::new();
+            let args = if name == "export" {
+                json::obj([("path", json::s("../should-be-rejected.stl"))])
+            } else {
+                json::obj([])
+            };
+            let r = call_tool(&mut s, name, &args);
+            let txt = r
+                .content
+                .first()
+                .and_then(|c| c.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            assert!(
+                !txt.contains(&format!("unknown tool: {name}")),
+                "tool `{name}` is declared in tool_list but not dispatched in call_tool"
+            );
+        }
+    }
+
     /// tool_list から指定ツールの annotations オブジェクトを取り出す。
     fn annotations_of(name: &str) -> Value {
         let list = tool_list();
