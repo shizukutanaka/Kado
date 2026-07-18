@@ -292,7 +292,12 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             want(2)?;
             Ok(obj(vec![("op", json::s(name)), ("a", a(0)), ("b", a(1))]))
         }
-        "smooth_union" | "smooth_intersection" | "smooth_difference" => match args.len() {
+        "smooth_union"
+        | "smooth_intersection"
+        | "smooth_difference"
+        | "chamfer_union"
+        | "chamfer_intersection"
+        | "chamfer_difference" => match args.len() {
             2 => Ok(obj(vec![("op", json::s(name)), ("a", a(0)), ("b", a(1))])),
             3 => Ok(obj(vec![
                 ("op", json::s(name)),
@@ -444,7 +449,28 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
 mod tests {
     use super::*;
     use crate::core::Vec3;
-    use crate::script::eval::eval_scene;
+    use crate::script::eval::{eval_scene, ALL_DSL_OPS};
+
+    #[test]
+    fn every_documented_op_is_dispatchable_in_text_dsl() {
+        // 問291: chamfer_* を JSON eval と ALL_DSL_OPS には足したのに、テキスト DSL の
+        // 関数ディスパッチ (build_call の match) への追加を忘れ、`chamfer_union(...)` が
+        // "unknown function" になっていた (JSON 形式では動くが text DSL で動かない)。
+        // 二度と起きないよう、ALL_DSL_OPS の全 op がテキスト DSL で**ディスパッチされる**
+        // (=「unknown function」にならない) ことを固定する。引数を多めに与えるため
+        // arity/型エラーは起こりうるが、それは許容 (未ディスパッチだけを検出する)。
+        for op in ALL_DSL_OPS {
+            let src = format!("{op}(sphere(1.0),sphere(1.0),sphere(1.0),1.0,1.0,1.0,1.0)");
+            if let Err(e) = parse_dsl(&src) {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("unknown function"),
+                    "op `{op}` is in ALL_DSL_OPS but the text DSL parser does not \
+                     dispatch it: {msg}"
+                );
+            }
+        }
+    }
 
     /// DSL と等価 JSON が同一の場を生むことを確認する。
     fn assert_same(dsl: &str, json: &str) {
@@ -530,7 +556,7 @@ mod tests {
             r#"{"op":"prism","n":6,"r":1.0,"h":0.5}"#,
         );
 
-        // ブーリアン (6): a,b はそれぞれ離れた球で領域差が出るようにする。
+        // ブーリアン (9; chamfer_* 問285 追加): a,b は離れた球で領域差が出るようにする。
         let a = r#"{"op":"sphere","r":1}"#;
         let b = r#"{"op":"translate","x":0.5,"y":0,"z":0,"shape":{"op":"sphere","r":1}}"#;
         let da = "sphere(1)";
@@ -558,6 +584,18 @@ mod tests {
         assert_same(
             &format!("smooth_difference({da}, {db}, 0.3)"),
             &format!(r#"{{"op":"smooth_difference","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("chamfer_union({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"chamfer_union","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("chamfer_intersection({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"chamfer_intersection","k":0.3,"a":{a},"b":{b}}}"#),
+        );
+        assert_same(
+            &format!("chamfer_difference({da}, {db}, 0.3)"),
+            &format!(r#"{{"op":"chamfer_difference","k":0.3,"a":{a},"b":{b}}}"#),
         );
 
         // 変形 (13; rotate 問266・scale_xyz 問276 追加)

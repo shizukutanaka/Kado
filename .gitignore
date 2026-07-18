@@ -1,2 +1,12 @@
 /target
 Cargo.lock
+
+# Export/screenshot artifacts written to the project root
+/*.glb
+/*.stl
+/*.3mf
+/*.png
+/*.html
+kado-export.*
+kado-screenshot.*
+kado-demo.*
