@@ -8,6 +8,12 @@
 
 ### 追加
 
+- **STL インポート（検証専用）**: `validate-stl <file.stl>` CLI コマンドで外部
+  binary STL を読み込み DFM 検証する（`io::stl::decode_binary`）。長く保留されていた
+  唯一の backlog を、ADR-001「SDF が唯一の正本」を保存する保守的設計で実装——
+  インポートしたメッシュは検証・可視化専用で **SDF シーン正本にはしない**、
+  mesh→SDF 再構成もしない、MCP には出さず CLI に局所化。厳格検証（長さ不一致・
+  ASCII・非有限・上限超過を確保前拒否）で不正 STL をサイレント故障させない (問296)
 - AI エージェント向け作業指示書を新設: `CLAUDE.md`（共通ガードレール・表面積
   チェックリスト・完了の定義・禁止事項）・`docs/agents/opus-instructions.md`
   （設計判断を伴うタスク）・`docs/agents/sonnet-instructions.md`（仕様が明確な

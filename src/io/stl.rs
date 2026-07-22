@@ -39,6 +39,71 @@ pub fn write_binary(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> 
     std::fs::write(path, encode_binary(mesh))
 }
 
+/// binary STL インポートのリソース上限 (SECURITY.md §4)。50 バイト/三角形なので
+/// 5M 三角形 ≈ 250 MB。病的に巨大なファイルでの確保爆発を防ぐ。
+pub const MAX_STL_TRIANGLES: usize = 5_000_000;
+
+/// binary STL バイト列を [`Mesh`] へデコードする (問296)。
+///
+/// **設計上の制約 (ADR-001)**: インポートしたメッシュは **検証・可視化・再書き出し
+/// 専用**であり、SDF シーン正本には決してしない。「SDF が唯一の正本」原則を保存する
+/// ため、mesh→SDF 再構成 (Kado が避けてきた数値破綻の温床) は行わない。
+///
+/// 厳格に検証し、不正入力をサイレントに空メッシュへ落とさず明示エラーにする
+/// (CONTRIBUTING §4 の「サイレント故障を作らない」):
+/// - 84 バイト未満、宣言三角形数と実バイト長の不一致 (`84 + n*50`) を拒否する
+///   (ASCII STL・切り詰め・破損はここで弾かれる)。
+/// - `MAX_STL_TRIANGLES` 超過を**確保前**に拒否する (OOM 防御・SECURITY §4)。
+/// - 非有限座標 (NaN/±Inf) を拒否する (問128 の NaN 伝播防止と同型)。
+///
+/// STL の法線フィールドは信頼できない参考値のため無視し、巻き順はファイルの
+/// 頂点順に従う。頂点は [`Mesh::from_soup`] で正準キー化・重複統合され、退化三角形は
+/// 落ちる。座標は STL の f32 から f64 へ広げる。
+pub fn decode_binary(bytes: &[u8]) -> Result<Mesh, String> {
+    if bytes.len() < 84 {
+        return Err(format!(
+            "binary STL too short: {} bytes < 84 (80-byte header + 4-byte count)",
+            bytes.len()
+        ));
+    }
+    let count = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+    // 確保前に上限チェック (OOM 防御)。長さチェックより先に行う。
+    if count > MAX_STL_TRIANGLES {
+        return Err(format!(
+            "binary STL declares {count} triangles, over the limit {MAX_STL_TRIANGLES}"
+        ));
+    }
+    let expected = 84 + count * 50;
+    if bytes.len() != expected {
+        return Err(format!(
+            "binary STL length mismatch: got {} bytes, but {count} triangles need {expected} \
+             (ASCII STL is not supported; the file may be ASCII or truncated)",
+            bytes.len()
+        ));
+    }
+    let read_f32 = |off: usize| -> f32 {
+        f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+    };
+    let mut soup: Vec<[Vec3; 3]> = Vec::with_capacity(count);
+    for i in 0..count {
+        // レコード = 法線12 + 頂点3×12 + 属性2 = 50 バイト。法線は読み飛ばす。
+        let base = 84 + i * 50;
+        let mut verts = [Vec3::ZERO; 3];
+        for (v, vert) in verts.iter_mut().enumerate() {
+            let off = base + 12 + v * 12;
+            let (x, y, z) = (read_f32(off), read_f32(off + 4), read_f32(off + 8));
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return Err(format!(
+                    "binary STL triangle {i} has a non-finite vertex coordinate"
+                ));
+            }
+            *vert = Vec3::new(x as f64, y as f64, z as f64);
+        }
+        soup.push(verts);
+    }
+    Ok(Mesh::from_soup(&soup))
+}
+
 fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let n = (b - a).cross(c - a);
     let len = n.length();
@@ -182,6 +247,100 @@ mod tests {
             len == 0.0 || (len - 1.0).abs() < 1e-9,
             "near-degenerate normal must be zero or unit-length, got length={len}"
         );
+    }
+
+    // ── binary STL デコード (問296, validate 専用インポート) ──────────────────
+
+    #[test]
+    fn decode_round_trips_geometry_through_encode() {
+        // encode→decode で**幾何 (頂点座標)** が f32 精度で往復する。STL の法線は
+        // 頂点から導出する参考値 (encode が f64 頂点から、再 encode が f32 頂点から計算する
+        // ため 1ULP ずれうる) なので、法線ではなく頂点座標と三角形順序を比較する。
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 12);
+        assert!(!m.triangles.is_empty());
+        let bytes = encode_binary(&m);
+        let decoded = decode_binary(&bytes).expect("valid STL must decode");
+        assert_eq!(
+            decoded.triangles.len(),
+            m.triangles.len(),
+            "decode must preserve triangle count"
+        );
+        // 各三角形の3頂点が、元メッシュの頂点を f32 に丸めた値と厳密一致する。
+        for (dt, mt) in decoded.triangles.iter().zip(m.triangles.iter()) {
+            for k in 0..3 {
+                let dv = decoded.vertices[dt[k] as usize];
+                let mv = m.vertices[mt[k] as usize];
+                assert_eq!(dv.x, mv.x as f32 as f64, "vertex x must round-trip at f32");
+                assert_eq!(dv.y, mv.y as f32 as f64, "vertex y must round-trip at f32");
+                assert_eq!(dv.z, mv.z as f32 as f64, "vertex z must round-trip at f32");
+            }
+        }
+        // インポートしたメッシュは水密性を検証できる (validate 経路の前提)。
+        assert!(
+            decoded.is_edge_manifold(),
+            "a sphere STL must decode to an edge-manifold mesh"
+        );
+        // decode は決定的。
+        assert_eq!(
+            decode_binary(&bytes).unwrap().vertices,
+            decoded.vertices,
+            "decode must be deterministic"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_length_mismatch_and_ascii() {
+        // 宣言三角形数と実バイト長が合わない (切り詰め・ASCII STL) を明示エラーに。
+        let m = polygonize(&Sdf::sphere(1.0), Vec3::splat(-1.5), Vec3::splat(1.5), 8);
+        let mut bytes = encode_binary(&m);
+        bytes.truncate(bytes.len() - 10); // 末尾を欠損させる。
+        assert!(
+            decode_binary(&bytes)
+                .unwrap_err()
+                .contains("length mismatch"),
+            "truncated STL must be rejected"
+        );
+        // "solid ..." で始まる ASCII STL 風データも長さ不一致で弾かれる。
+        let ascii = b"solid teapot\nfacet normal 0 0 0\n".to_vec();
+        assert!(decode_binary(&ascii).is_err(), "ASCII STL must be rejected");
+        // 84 バイト未満。
+        assert!(decode_binary(&[0u8; 40]).unwrap_err().contains("too short"));
+    }
+
+    #[test]
+    fn decode_rejects_excessive_triangle_count_before_allocating() {
+        // 巨大な宣言三角形数を、実データを持たない84バイトのヘッダだけで拒否する
+        // (確保前チェック = OOM 防御)。
+        let mut header = vec![0u8; 84];
+        let huge = (MAX_STL_TRIANGLES as u32).saturating_add(1);
+        header[80..84].copy_from_slice(&huge.to_le_bytes());
+        let err = decode_binary(&header).unwrap_err();
+        assert!(
+            err.contains("over the limit"),
+            "excessive count must be rejected before allocation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_non_finite_coordinates() {
+        // 1三角形の STL を組み、頂点に NaN を仕込んで拒否されることを確認 (問128 と同型)。
+        let mut bytes = vec![0u8; 84 + 50];
+        bytes[80..84].copy_from_slice(&1u32.to_le_bytes());
+        // 最初の頂点 x (レコード base=84, 法線12バイト後 = 96) に NaN を書く。
+        bytes[96..100].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(
+            decode_binary(&bytes).unwrap_err().contains("non-finite"),
+            "NaN vertex must be rejected"
+        );
+    }
+
+    #[test]
+    fn decode_empty_mesh_stl_yields_empty_mesh() {
+        // count=0 の STL (84バイト) は空メッシュへ。パニックしない。
+        let empty = encode_binary(&Mesh::default());
+        assert_eq!(empty.len(), 84);
+        let m = decode_binary(&empty).expect("empty STL decodes");
+        assert!(m.triangles.is_empty() && m.vertices.is_empty());
     }
 
     #[test]

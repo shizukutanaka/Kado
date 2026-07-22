@@ -7,6 +7,7 @@
 //!   screenshot [scene.json] <out.png> [view]  PNG スクリーンショット出力
 //!   run        <scene.json> [resolution]  メッシュ統計表示
 //!   check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]  DFM 検証
+//!   validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]  外部 binary STL を DFM 検証
 //!   mcp        MCP サーバー (stdio) 起動
 
 use kado::core::{Sdf, Vec3};
@@ -184,6 +185,52 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "validate-stl" => {
+            // validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]
+            // 外部 binary STL を読み込み DFM 検証する (問296)。
+            // 重要 (ADR-001): インポートしたメッシュは検証専用であり SDF シーン正本には
+            // しない。SDF 場を持たないため、mesh-only 検証 (局所薄肉の内向き探針は無効・
+            // 場非依存の検査のみ) を行う。
+            let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
+                eprintln!("usage: kado validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]");
+                std::process::exit(2);
+            });
+            let min_wall =
+                parse_finite_arg(args.get(3), "min_wall_mm", 0.5).unwrap_or_else(|e| fail(e));
+            let max_overhang =
+                parse_finite_arg(args.get(4), "max_overhang_deg", 45.0).unwrap_or_else(|e| fail(e));
+            let bytes = load_binary_file(path);
+            let mesh = match kado::io::stl::decode_binary(&bytes) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("cannot import STL: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if mesh.triangles.is_empty() {
+                eprintln!("imported STL has no (non-degenerate) triangles");
+                std::process::exit(1);
+            }
+            // SDF=None で mesh-only 検証。ビルド方向 +Z (問68)。
+            let report = validate_with_field(
+                &mesh,
+                None,
+                min_wall,
+                max_overhang,
+                Vec3::new(0.0, 0.0, 1.0),
+            );
+            let status = if report.is_ok() { "PASS" } else { "FAIL" };
+            println!("[{status}] {}", report.summary());
+            for issue in &report.issues {
+                println!("  [{:?}] {} — {}", issue.severity, issue.code, issue.cause);
+                for hint in &issue.fix_hints {
+                    println!("    hint: {hint}");
+                }
+            }
+            if !report.is_ok() {
+                std::process::exit(1);
+            }
+        }
         "mcp" => {
             // MCP サーバーモード (stdin/stdout・返らない)。
             run_stdio();
@@ -212,6 +259,9 @@ commands:
   run        <scene.json> [resolution]       show mesh statistics
   check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]
                                              DFM validation
+  validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]
+                                             DFM-validate an external binary STL
+                                             (import is validate-only; ADR-001)
   mcp                                        start MCP server (stdio)
   help                                       show this message
 
@@ -221,6 +271,28 @@ running with no command prints the version."
 fn load_scene_file(path: &str) -> String {
     match std::fs::read_to_string(path) {
         Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {path}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// バイナリファイルを読み込む (問296)。読み込む**前に**ファイルサイズを binary STL の
+/// 上限と照合し、病的に巨大なファイルでの OOM を防ぐ (SECURITY.md §4)。
+fn load_binary_file(path: &str) -> Vec<u8> {
+    let max_bytes = 84 + kado::io::stl::MAX_STL_TRIANGLES * 50;
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() as usize > max_bytes {
+            eprintln!(
+                "file too large: {} bytes exceeds the {max_bytes}-byte limit",
+                meta.len()
+            );
+            std::process::exit(1);
+        }
+    }
+    match std::fs::read(path) {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("cannot read {path}: {e}");
             std::process::exit(1);
@@ -320,6 +392,7 @@ mod tests {
             "screenshot",
             "run",
             "check",
+            "validate-stl",
             "mcp",
             "help",
         ] {

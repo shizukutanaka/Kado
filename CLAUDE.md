@@ -81,8 +81,8 @@ cargo build --release
 - モデル識別子（`claude-*` 等）をコミット/PR/コード/成果物へ書くこと（チャット限定）。
 - feature-triage の判断軸を通さない機能追加。
 
-## 7. 未解決 backlog（着手前にユーザー方針が要る）
+## 7. backlog
 
-- **STL インポート**: 「SDF が唯一の正本」原則（ADR-001）と衝突し、かつファイル
-  読み込みという新たなセキュリティ表面を導入する。validate 専用にするか SDF
-  再構成まで許すかの設計判断がユーザー待ち（`docs/feature-triage.md` §5）。
+- **STL インポート**: 問296 で**検証専用**として実装済み（`validate-stl` CLI・
+  ADR-001 を保存し SDF 正本にはしない・MCP には出さない）。SDF 再構成は引き続き
+  非目標。現時点でユーザー方針待ちの未解決候補はなし（`docs/feature-triage.md`）。
