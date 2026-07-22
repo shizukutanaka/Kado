@@ -8,6 +8,10 @@
 
 ### 追加
 
+- AI エージェント向け作業指示書を新設: `CLAUDE.md`（共通ガードレール・表面積
+  チェックリスト・完了の定義・禁止事項）・`docs/agents/opus-instructions.md`
+  （設計判断を伴うタスク）・`docs/agents/sonnet-instructions.md`（仕様が明確な
+  タスクの手順書 + エスカレーション基準）。セッションを跨ぐ規律喪失を防ぐ (問295)
 - 非一様スケール `scale_xyz(sx,sy,sz)`: 符号厳密・保守的過小評価・
   Lipschitz=1 を証明済みの安全な近似 (問276)
 - PNG screenshot 応答の実圧縮: 決定的 DEFLATE (RFC 1951, 固定 Huffman・
@@ -38,8 +42,9 @@
   (法線+3頂点+属性) のバイト配置と頂点往復を独立検証するテストを追加。
   さらに STL/3MF/GLB を **Kado 以外の標準ツール** (Python `struct`/`zipfile`/
   `xml.etree`) で開けることを確認 (3MF は `zipfile.testzip()` が全 CRC を独自
-  再計算)。品質ゲートを自動実行する GitHub Actions CI の推奨定義を
-  `docs/ci-recommendation.md` に追加 (問289)
+  再計算)。この外部相互運用検証手順は `docs/SPEC.md` §10 に記載 (問289;
+  当初 `docs/ci-recommendation.md` を作ったが既存 `docs/ci.yml` と重複のため
+  問295 で削除・集約)
 - GLB 出力に **頂点法線 (NORMAL)** を追加: 面積重み付きの平滑法線を決定的に
   計算し `POSITION`/`NORMAL`/`indices` の 3 アクセサ構成で書き出す。従来は
   POSITION と索引のみで、ブラウザ・Windows 3D ビューア・Blender 等が
@@ -53,6 +58,13 @@
 
 ### 修正
 
+- 開発プロセスの規律違反2件を自己監査で発見し訂正 (問295): (1) 問289 で作った
+  `docs/ci-recommendation.md` が既存の `docs/ci.yml` (v102 から存在・multi-OS +
+  外部依存ゼロ検証を持つ上位互換) と重複していたため削除し、固有価値 (外部相互
+  運用検証手順) を `docs/SPEC.md` §10 へ集約。(2) `CONTRIBUTING.md` は「手整形の
+  ため fmt を強制しない」としていたが v151 で全ツリーが rustfmt 標準へ正規化
+  されていた実態に合わせ、fmt --check を品質ゲート化 (`docs/ci.yml`・CONTRIBUTING・
+  SPEC §10 を更新)
 - 面取りブーリアン `chamfer_*` (問285) が **JSON 形式では動くのにテキスト DSL
   では "unknown function" になっていた**のを修正。JSON 評価器と `ALL_DSL_OPS`
   には追加したが、テキスト DSL の関数ディスパッチ (`dsl.rs`) への追加を

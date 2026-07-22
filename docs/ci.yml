@@ -39,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -49,6 +49,11 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Format: v151 (問295) で全ツリーを rustfmt 標準へ正規化済み。以後は
+      # fmt --check をゲートとして強制する (CONTRIBUTING.md の同節も同時に改訂済み)。
+      - name: Format check
+        run: cargo fmt --all -- --check
 
       # Lint: clippy を警告ゼロで強制 (品質ゲート)。
       - name: Clippy (deny warnings)

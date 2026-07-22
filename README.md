@@ -144,13 +144,19 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ## 開発
 
 ```sh
-cargo test                              # 全テスト (288 ユニット + 6 統合)
+cargo test --all-targets                    # 全テスト (414 ユニット + 5 CLI + 8 統合)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
-cargo fmt                               # 整形
+cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```
 
-品質ゲート: 全テスト合格・clippy 警告ゼロ。設計判断は [`docs/adr/`](docs/adr/)、
-継続的なソクラテス問答による吟味議事録は [`docs/socratic-review.md`](docs/socratic-review.md) に記録。
+品質ゲート: 全テスト合格・clippy 警告ゼロ・fmt --check 一致・rustdoc 警告ゼロ
+（`docs/SPEC.md` §10）。設計判断は [`docs/adr/`](docs/adr/)、継続的なソクラテス問答は
+[`docs/socratic-review.md`](docs/socratic-review.md) に記録。
+
+**AI エージェント向け作業ガイド**: 共通ガードレールは [`CLAUDE.md`](CLAUDE.md)、
+タスク別の指示書は [`docs/agents/`](docs/agents/)（設計判断を伴う作業＝
+[opus](docs/agents/opus-instructions.md)、仕様が明確な作業＝
+[sonnet](docs/agents/sonnet-instructions.md)）。
 
 ## ライセンス
 

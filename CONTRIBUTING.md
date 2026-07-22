@@ -40,19 +40,22 @@ Kado は明示的な設計制約の上に成り立っています。以下は「
 PR を出す前に、ローカルで以下がすべて通ること:
 
 ```sh
-cargo test --all-targets                      # 全テスト合格
-cargo clippy --all-targets -- -D warnings     # 警告ゼロ
-cargo build --release                         # リリースビルド成功
+cargo test --all-targets                        # 全テスト合格
+cargo clippy --all-targets -- -D warnings       # 警告ゼロ
+cargo fmt --all -- --check                       # rustfmt 標準に一致
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps  # rustdoc 警告ゼロ
+cargo build --release                           # リリースビルド成功
 ```
 
 CI（[`docs/ci.yml`](docs/ci.yml)、要 `.github/workflows/` への配置）が
 ubuntu/macos/windows で同じゲートを実行します。
 
 ### `cargo fmt` について
-本コードベースは**意図的な手整形**を採用しています（テスト表の整列・DSL の JSON
-文字列の可読性優先）。`cargo fmt` のデフォルトとは約 30 ファイルで乖離するため、
-**`cargo fmt` を一括適用しないでください**。CI も `fmt --check` を強制しません。
-周囲のコードのスタイルに合わせることを優先してください。
+かつては意図的な手整形を採用し `cargo fmt` を強制していませんでしたが、
+**v151（問295）で全ツリーを rustfmt 標準へ正規化し、方針を転換しました**。
+現在ツリー全体が `cargo fmt --all -- --check` を差分ゼロで通ります。以後は
+これを品質ゲートの一部として維持してください（CI でも強制）。経緯と判断理由は
+[`docs/socratic-review.md`](docs/socratic-review.md) 問295 を参照。
 
 ## アーキテクチャと契約
 

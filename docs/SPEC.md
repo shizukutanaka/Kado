@@ -276,10 +276,30 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 391 テスト（380 ライブラリユニット + 5 CLI ユニット + 6 統合）合格。
-- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
+- `cargo test`: 427 テスト（414 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
-- ソクラテス問答（`docs/socratic-review.md`）: 問1–202 を継続的に吟味・固定。
+- `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
+- `cargo build --release`: リリースプロファイル（LTO・単一 codegen-unit・panic=abort）成功。
+- ソクラテス問答（`docs/socratic-review.md`）: 問1–295 を継続的に吟味・固定。
+
+CI 定義は `docs/ci.yml`（ubuntu/macos/windows マトリクス + `no-external-deps` 検証）。
+Claude Code の GitHub App は `workflows` 権限を持たないため、リポジトリ管理者が
+`git mv docs/ci.yml .github/workflows/ci.yml` で有効化する。
+
+### 出力フォーマットの外部相互運用性（リリース前手動検証・問289）
+
+内部テスト（`io/stl`・`io/zip`・`io/threemf`・`io/gltf`）に加え、書き出した
+STL/3MF/GLB が **Kado 以外の標準ツール** で開けることを確認する（`cargo test` の
+外側・Python 依存のため CI には含めない）:
+
+- **STL**: `struct` で `84 + n*50` レイアウトを復元・全レコードの属性=0・
+  ファイル長が三角形数と厳密一致。
+- **3MF**: `zipfile.testzip()` が全エントリの CRC-32 を独自実装で再計算して検証し、
+  `xml.etree` が `3D/3dmodel.model` を整形式 XML としてパース・`unit="millimeter"`
+  と頂点/三角形数を確認。
+- **GLB**: `glTF` マジック・version 2・総長一致・先頭 JSON チャンクのパース・
+  `asset.version == "2.0"`・`NORMAL` アクセサが単位長（問290）を確認。
 
 ---
 
