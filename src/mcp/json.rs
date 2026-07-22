@@ -514,6 +514,48 @@ mod tests {
     }
 
     #[test]
+    fn malformed_numbers_are_rejected_not_panicked() {
+        // 問297: parse_number は数値スパン (ASCII の -0-9.eE+ のみ) に対し
+        // `from_utf8(...).unwrap()` を使う。構造的に安全だが、不正な数値入力が
+        // パニックせず必ず Err を返すことを観測可能な不変条件として固定する
+        // (untrusted な MCP 入力経路のクラッシュ防御・SECURITY §4)。
+        for bad in [
+            "-",     // 単独マイナス
+            "-.",    // 数字のないマイナス小数点
+            ".",     // 単独ドット (数値開始でない)
+            "1e",    // 指数部が空
+            "1e+",   // 符号のみで指数桁なし
+            "1e-",   // 同上
+            "-e5",   // 仮数部が空
+            "1..2",  // ドット2つ (末尾 ".2" が余剰トークンになる)
+            "01e",   // 指数欠損
+            "1.2.3", // ドット過多
+        ] {
+            let r = parse(bad);
+            assert!(
+                r.is_err(),
+                "malformed number {bad:?} must be rejected (got {r:?}), never panic"
+            );
+        }
+        // 妥当な数値は通る (境界を狭めすぎていないことの確認)。
+        // 注: バッキングの Rust `f64::from_str` は "1." や "01" を許容する寛容性を持つ
+        // (厳密 JSON より緩い) が、パニックせず値を返す点では安全。ここでは明確に妥当な
+        // 数値のみを OK として固定する。
+        for ok in [
+            "0",
+            "-0",
+            "1.5",
+            "1e3",
+            "1E3",
+            "-2.5e-3",
+            "1.0e+2",
+            "123456789",
+        ] {
+            assert!(parse(ok).is_ok(), "valid number {ok:?} must parse");
+        }
+    }
+
+    #[test]
     fn malformed_literals_are_rejected() {
         // 問50: true/false/null は厳密照合。誤綴り・途中切れを無音受理しない。
         assert!(parse("nul").is_err(), "truncated null must be rejected");
