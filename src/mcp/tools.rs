@@ -784,6 +784,17 @@ flatten       {"op":"flatten","at":0,"shape":<sdf>}
  "a":{"op":"sphere","r":1.5},
  "b":{"op":"cylinder","r":0.4,"h":2.0}}
 
+## Example: chamfer (flat 45deg bevel) vs smooth (round fillet)
+
+Both blend a cylindrical boss onto a base plate. chamfer_* makes a FLAT bevel
+at the joint; smooth_* makes a ROUND fillet. Same k = blend width:
+
+  chamfer_union(cuboid(1.0, 1.0, 0.3), cylinder(0.4, 1.2), 0.2)   // 45deg bevel
+  smooth_union(cuboid(1.0, 1.0, 0.3), cylinder(0.4, 1.2), 0.2)    // rounded fillet
+
+Use chamfer_* for print-bed relief, deburred edges, and press-fit clearances;
+use smooth_* for organic/rounded transitions.
+
 ## Compact text DSL (alternative to JSON)
 
 run_script also accepts a concise function-call syntax (token-efficient). The same
@@ -1614,6 +1625,38 @@ mod tests {
                 "DSL op '{op}' must be documented in KADOSCENE_HELP (問271)"
             );
         }
+    }
+
+    #[test]
+    fn help_worked_examples_are_valid_scripts() {
+        // 問298: KADOSCENE_HELP の「動く例」は AI が最初に読み、模倣する。例が構文的に
+        // 壊れる (op 名変更・引数順変更で無効化する) と AI が誤った雛形を学ぶ。
+        // help に載せた実例が実際に eval できることを固定し、例の腐敗を防ぐ。
+        // JSON / テキスト DSL 両形式・chamfer/smooth を横断する代表例を検証する。
+        // 1行のテキスト DSL 例: help 本文に**逐語**で載っており、かつ eval できること。
+        let dsl_examples = [
+            "chamfer_union(cuboid(1.0, 1.0, 0.3), cylinder(0.4, 1.2), 0.2)",
+            "smooth_union(cuboid(1.0, 1.0, 0.3), cylinder(0.4, 1.2), 0.2)",
+            "difference(sphere(1.5), cylinder(0.4, 2.0))",
+        ];
+        for src in dsl_examples {
+            assert!(
+                eval_any(src).is_ok(),
+                "documented DSL example must eval cleanly: {src}"
+            );
+            assert!(
+                KADOSCENE_HELP.contains(src),
+                "DSL example must appear verbatim in KADOSCENE_HELP: {src}"
+            );
+        }
+        // 複数行 JSON 例 (sphere with a hole): eval できること (整形は help 側の体裁)。
+        assert!(
+            eval_any(
+                r#"{"op":"difference","a":{"op":"sphere","r":1.5},"b":{"op":"cylinder","r":0.4,"h":2.0}}"#
+            )
+            .is_ok(),
+            "documented JSON hole example must eval cleanly"
+        );
     }
 
     #[test]

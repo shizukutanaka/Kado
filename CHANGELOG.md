@@ -8,6 +8,10 @@
 
 ### 追加
 
+- MCP `help`（AI が読む唯一のリファレンス）に **chamfer の worked example** を追加
+  （平45°面取り vs 丸フィレットの対比・実用ケース）。あわせて help の実例が実際に
+  eval できることを固定するメタテストを新設し、例の腐敗（op 名/引数順変更での無効化）を
+  防ぐ (問298)
 - **STL インポート（検証専用）**: `validate-stl <file.stl>` CLI コマンドで外部
   binary STL を読み込み DFM 検証する（`io::stl::decode_binary`）。長く保留されていた
   唯一の backlog を、ADR-001「SDF が唯一の正本」を保存する保守的設計で実装——
