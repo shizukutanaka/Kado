@@ -3,7 +3,7 @@
 //! 各検査は [`KadoError`] のリストを返す。エラー ≒ 製造上の問題。
 //! `fix_hints` は AI エージェントが自己修正ループを回すためのヒント (Plan §3)。
 
-use crate::core::measure::{bisect_crossing, sphere_trace_step};
+use crate::core::measure::{bisect_crossing, ray_crossings, sphere_trace_step};
 use crate::core::{Sdf, Vec3};
 use crate::extract::Mesh;
 use crate::mcp::json::{self, Value};
@@ -586,12 +586,21 @@ pub fn validate_with_field(
                 if above_bed <= bed_eps {
                     continue;
                 }
-                // (b) 重心の真下・ベッド直上に形状材料があれば、ベッドから材料が立ち上がって
-                //     この面を支えている → オーバーハングでない (SDF 併用時のみ)。
+                // (b) 直下に材料が**接して**あるなら支持されている → オーバーハングでない
+                //     (SDF 併用時のみ)。平坦底面と壁の鋭い凸エッジ (flatten/cut の rim) の
+                //     遷移三角形を支持済みと正しく扱うための判定。
+                //
                 //     重心を min_proj+bed_eps の高さへ落とした点で判定する (固定ステップだと
                 //     低い面でベッド下へ突き抜けるため、ベッド直上の固定高さで標本化する)。
-                //     これにより平坦底面と壁の鋭い凸エッジ (flatten/cut の rim) の遷移三角形
-                //     (直下に底面材料あり) を支持済みと正しく扱う。物理的に正しい支持判定。
+                //
+                //     既知の偽陰性 (問302・SPEC §9 に記載): この単点標本は「ベッド高さに
+                //     材料がある」ことを支持の代理としているが、スライサ文献のオーバーハングの
+                //     定義は「**下方から支持されていない**部分」である。両者は空隙を挟んだ
+                //     天井で乖離し、例えば 16mm の空隙を持つスロット天井が見逃される。
+                //     真下への光線で「直下に接して材料があるか」を判定する修正を試みたが、
+                //     ベッドすれすれ (0.02mm) の dome rim——**材料ではなくベッドに**支持される
+                //     面——を誤検出する退行を生んだため採用しなかった。正しい判定には
+                //     「材料による支持」と「ベッドによる支持」を分けて扱う設計が要る。
                 if let Some(field) = sdf {
                     let sample = centroid - bd * (above_bed - bed_eps);
                     if field.eval(sample) < 0.0 {
@@ -616,13 +625,45 @@ pub fn validate_with_field(
                 } else {
                     0.0
                 };
+                // 問302: 「支持高さ」= 最悪オーバーハング点から真下の材料までの距離。
+                // スライサ文献の定義「オーバーハング = **下方から支持されていない**部分」に
+                // 従い、実際に何 mm 浮いているかを測る (角度・面積に続く3つ目の実測値)。
+                // 0.5mm 浮きと 80mm 浮きでは必要なサポートの規模もリスクも桁違いであり、
+                // 従来 AI はこれを知る手段がなかった。閾値ではなく**測定値**として報告する
+                // (問247 の measured_min_wall と同じ思想)。
+                let drop_note = sdf
+                    .and_then(|field| {
+                        // 最悪点から真下 (-build_dir) へ光線を撃ち、最初に材料へ入る距離を得る。
+                        let reach = (worst_centroid.dot(bd) - min_proj).max(bed_eps);
+                        ray_crossings(field, worst_centroid, bd * -1.0, reach)
+                            .ok()
+                            .map(|m| {
+                                let hit = m
+                                    .crossings
+                                    .iter()
+                                    .find(|c| c.entering && c.distance > bed_eps)
+                                    .map(|c| c.distance);
+                                match hit {
+                                    // 直下に材料がある = そこまで支えれば済む。
+                                    Some(d) => format!(
+                                        "; the worst point is {d:.2}mm above the material below it"
+                                    ),
+                                    // 何も無い = ベッドまで落ちる (最も高いサポートが要る)。
+                                    None => format!(
+                                        "; the worst point is {reach:.2}mm above the build plate \
+                                         with nothing beneath it"
+                                    ),
+                                }
+                            })
+                    })
+                    .unwrap_or_default();
                 issues.push(
                     KadoError::warn(
                         "OVERHANG",
                         format!(
                             "overhang angle {deg:.1}° from horizontal exceeds {max_overhang_deg:.1}° \
                              over {pct:.0}% of surface area \
-                             (build direction [{:.2},{:.2},{:.2}])",
+                             (build direction [{:.2},{:.2},{:.2}]){drop_note}",
                             bd.x, bd.y, bd.z
                         ),
                         &[
@@ -633,6 +674,10 @@ pub fn validate_with_field(
                             "A near-90° flat ceiling supported at both ends is a BRIDGE, not a \
                              cantilever — short bridges (a few mm) print without support; only long \
                              unsupported spans or one-sided overhangs need it",
+                            "Use the reported drop height to size the fix: a fraction of a mm above \
+                             material is nearly free to support, while tens of mm above the plate \
+                             needs a tall support tower (material, time, and failure risk) — \
+                             reorienting the part is usually cheaper than supporting that",
                         ],
                     )
                     .with_location(worst_centroid), // 問242: 最悪三角形の重心を位置ヒントとして付与。
@@ -1143,6 +1188,44 @@ mod tests {
         assert!(
             (t - 0.2).abs() < 0.06,
             "shell thickness probe should be ~0.2, got {t}"
+        );
+    }
+
+    #[test]
+    fn overhang_reports_measured_drop_height_to_support() {
+        // 問302: スライサ文献はオーバーハングを「下方から支持されていない部分」と定義し、
+        // サポート生成は必要なサポート量 (高さ・体積) の最小化を目標とする。つまり
+        // 「何 mm 浮いているか」は角度・面積に並ぶ実用上の一次情報だが、AI はこれを
+        // 知る手段がなかった。最悪点の落差を実測して cause に載せることを固定する。
+        //
+        // 細い支柱の上に広い天板 = 天板の裏面が 20mm 浮いた古典的オーバーハング。
+        let mast = Sdf::cylinder(0.6, 10.0);
+        let top = Sdf::cuboid(Vec3::new(8.0, 8.0, 0.5)).translate(Vec3::new(0.0, 0.0, 10.5));
+        let part = mast.union(top);
+        let (lo, hi) = part.sampling_box();
+        let mesh = polygonize(&part, lo, hi, 48);
+        let r = validate_with_field(&mesh, Some(&part), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        let ov = r
+            .issues
+            .iter()
+            .find(|e| e.code == "OVERHANG")
+            .expect("a wide top on a thin mast must be flagged as an overhang");
+        assert!(
+            ov.cause
+                .contains("above the build plate with nothing beneath it"),
+            "a floating overhang must report its drop to the plate, got: {}",
+            ov.cause
+        );
+        // 落差の数値そのものが入っていること (mm 表記)。
+        assert!(
+            ov.cause.contains("mm above"),
+            "the cause must carry the measured drop in mm, got: {}",
+            ov.cause
+        );
+        // サポート規模の判断材料になるヒントも添える。
+        assert!(
+            ov.fix_hints.iter().any(|h| h.contains("drop height")),
+            "hints must tell the AI how to use the drop height"
         );
     }
 
