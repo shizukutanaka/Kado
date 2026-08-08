@@ -590,19 +590,19 @@ pub fn validate_with_field(
                 //     (SDF 併用時のみ)。平坦底面と壁の鋭い凸エッジ (flatten/cut の rim) の
                 //     遷移三角形を支持済みと正しく扱うための判定。
                 //
-                //     重心を min_proj+bed_eps の高さへ落とした点で判定する (固定ステップだと
-                //     低い面でベッド下へ突き抜けるため、ベッド直上の固定高さで標本化する)。
+                //     問303: 標本点を「ベッド直上」から「**面のすぐ下**」へ移した。
+                //     スライサ文献のオーバーハングの定義は「**下方から支持されていない**
+                //     部分」であり、旧実装が見ていた「ベッド高さに材料があるか」はその
+                //     代理として不正確だった——空隙を挟んだ天井で乖離し、16mm の空隙を持つ
+                //     スロット天井が「ベッド高さには材料がある」だけの理由で見逃されていた
+                //     (問302 で実測確認した偽陰性)。直下 bed_eps の1点を見れば、
+                //     「接している材料」だけを支持とみなせる。標本数は1点のままなので
+                //     計算量は増えない。
                 //
-                //     既知の偽陰性 (問302・SPEC §9 に記載): この単点標本は「ベッド高さに
-                //     材料がある」ことを支持の代理としているが、スライサ文献のオーバーハングの
-                //     定義は「**下方から支持されていない**部分」である。両者は空隙を挟んだ
-                //     天井で乖離し、例えば 16mm の空隙を持つスロット天井が見逃される。
-                //     真下への光線で「直下に接して材料があるか」を判定する修正を試みたが、
-                //     ベッドすれすれ (0.02mm) の dome rim——**材料ではなくベッドに**支持される
-                //     面——を誤検出する退行を生んだため採用しなかった。正しい判定には
-                //     「材料による支持」と「ベッドによる支持」を分けて扱う設計が要る。
+                //     rim の遷移三角形 (flatten/cut の平坦底面と側面の境界) は、すぐ下が
+                //     底面材料なので従来どおり支持済みと判定される。
                 if let Some(field) = sdf {
-                    let sample = centroid - bd * (above_bed - bed_eps);
+                    let sample = centroid - bd * bed_eps;
                     if field.eval(sample) < 0.0 {
                         continue;
                     }
@@ -1188,6 +1188,34 @@ mod tests {
         assert!(
             (t - 0.2).abs() < 0.06,
             "shell thickness probe should be ~0.2, got {t}"
+        );
+    }
+
+    #[test]
+    fn overhang_detects_ceiling_over_a_void_even_with_material_at_bed_level() {
+        // 問303: 旧実装は支持判定を「重心の真下・**ベッド直上**に材料があるか」で行って
+        // いた。だがスライサ文献の定義は「**下方から支持されていない**部分」であり、
+        // 空隙を挟んだ天井で両者は乖離する。実際、ブロックを貫く 16mm のスロットの
+        // 天井が「ベッド高さには材料がある」という理由だけで**完全に見逃されていた**
+        // (問302 で実測確認)。標本点を「面のすぐ下」へ移して修正した。
+        //
+        // 20x20x20 ブロックに、y 方向へ貫通する幅 12・高さ 16mm のスロット。
+        // 天井 (z=+8) の下は 16mm の空隙で、その下に床 (z=-8) の材料がある。
+        let block = Sdf::cuboid(Vec3::splat(10.0));
+        let slot = Sdf::cuboid(Vec3::new(6.0, 11.0, 8.0));
+        let part = block.difference(slot);
+        let (lo, hi) = part.sampling_box();
+        let mesh = polygonize(&part, lo, hi, 48);
+        let r = validate_with_field(&mesh, Some(&part), 0.0, 45.0, Vec3::new(0.0, 0.0, 1.0));
+        let ov = r.issues.iter().find(|e| e.code == "OVERHANG").expect(
+            "a ceiling 16mm above a void must be flagged, even though the bed-level \
+                     sample directly below it hits the slot floor",
+        );
+        // 落差 (問302) が空隙の高さを報告し、AI が深刻度を判断できる。
+        assert!(
+            ov.cause.contains("above the material below it"),
+            "the drop must be measured to the material across the void, got: {}",
+            ov.cause
         );
     }
 
