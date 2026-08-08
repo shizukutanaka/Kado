@@ -724,15 +724,29 @@ pub fn validate_with_field(
                     }
                 }
                 if n_contact > 0 {
-                    let cl = lat(com);
                     // フットプリント対角の 2% を境界ジッタ許容とし、明確に外れた場合のみ警告。
                     let tol = ((hi - lo).length() * 0.02).max(1e-9);
-                    let outside = cl.x < lo.x - tol
-                        || cl.x > hi.x + tol
-                        || cl.y < lo.y - tol
-                        || cl.y > hi.y + tol
-                        || cl.z < lo.z - tol
-                        || cl.z > hi.z + tol;
+                    // 問304: 支持域を **接地点の凸包 (support polygon)** で判定する。
+                    // 静力学の標準的な安定条件は「重心の投影が接地点の凸包の内側にあること」
+                    // であり、旧実装が使っていた軸整列 bbox は凸包の**外接近似**——
+                    // 三脚・L 字ベースのように bbox の隅が凸包の外にある形状で、実際には
+                    // 転倒するのに警告されない偽陰性を生んでいた (旧コメントも「内側は
+                    // 安定を保証しない」と限界を明記していた)。
+                    // 凸包が退化 (2点以下 = 線/点接地) する場合は判定不能なので、
+                    // 従来の bbox 判定へフォールバックする (偽陽性を増やさない安全側)。
+                    let outside =
+                        match support_polygon_outside(mesh, bd, min_proj, bed_eps, com, tol) {
+                            Some(v) => v,
+                            None => {
+                                let cl = lat(com);
+                                cl.x < lo.x - tol
+                                    || cl.x > hi.x + tol
+                                    || cl.y < lo.y - tol
+                                    || cl.y > hi.y + tol
+                                    || cl.z < lo.z - tol
+                                    || cl.z > hi.z + tol
+                            }
+                        };
                     if outside {
                         issues.push(
                             KadoError::warn(
@@ -885,6 +899,107 @@ fn bed_contact_area(mesh: &Mesh, build_dir: Vec3) -> Option<f64> {
         }
     }
     Some(area)
+}
+
+/// 接地点の凸包 (support polygon) に対して重心が外側かを判定する (問304)。
+///
+/// 静力学における静的安定の標準条件は「重心の鉛直投影が**接地点の凸包**の内側にあること」
+/// (support polygon)。軸整列 bbox はこの凸包の外接近似に過ぎず、三脚・L 字ベースのように
+/// bbox の隅が凸包の外にある形状では、実際に転倒するのに検出できない (偽陰性)。
+///
+/// 戻り値: `Some(true)`=明確に外側 (転倒しうる) / `Some(false)`=内側 / `None`=判定不能
+/// (凸包が退化: 接地が点・線のみ)。`None` のとき呼び出し側は従来の bbox 判定へ戻す。
+///
+/// 決定性 (問5): 基底の作り方・整列 (`f64::total_cmp` による全順序) ・比較順序をすべて
+/// 固定する。`HashMap` を使わないため反復順にも依存しない。
+fn support_polygon_outside(
+    mesh: &Mesh,
+    bd: Vec3,
+    min_proj: f64,
+    bed_eps: f64,
+    com: Vec3,
+    tol: f64,
+) -> Option<bool> {
+    // bd に垂直な正規直交基底 (u, v) を決定的に作る。bd の成分が最小の軸を参照に選ぶと
+    // bd と平行にならず、外積が退化しない。
+    let a = bd.x.abs();
+    let b = bd.y.abs();
+    let c = bd.z.abs();
+    let reference = if a <= b && a <= c {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else if b <= c {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    };
+    let u = bd.cross(reference);
+    let ul = u.length();
+    if ul < 1e-12 {
+        return None;
+    }
+    let u = u * (1.0 / ul);
+    let v = bd.cross(u); // bd ⟂ u なので単位長。
+
+    // 接地層の頂点を (u, v) 平面へ射影する。
+    let mut pts: Vec<(f64, f64)> = mesh
+        .vertices
+        .iter()
+        .filter(|p| p.dot(bd) - min_proj <= bed_eps)
+        .map(|p| (p.dot(u), p.dot(v)))
+        .collect();
+    if pts.len() < 3 {
+        return None;
+    }
+    // 決定的な全順序で整列 (f64::total_cmp は NaN を含めた全順序を与える)。
+    pts.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.total_cmp(&q.1)));
+    pts.dedup();
+    if pts.len() < 3 {
+        return None;
+    }
+
+    // Andrew's monotone chain で凸包 (反時計回り) を作る。
+    let cross = |o: (f64, f64), p: (f64, f64), q: (f64, f64)| {
+        (p.0 - o.0) * (q.1 - o.1) - (p.1 - o.1) * (q.0 - o.0)
+    };
+    let mut hull: Vec<(f64, f64)> = Vec::with_capacity(pts.len() * 2);
+    for &p in &pts {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    let lower = hull.len() + 1;
+    for &p in pts.iter().rev() {
+        while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    hull.pop(); // 始点の重複を除く。
+    if hull.len() < 3 {
+        return None; // 全点が共線 = 線接地。判定不能。
+    }
+
+    // 重心の投影が凸包の外側か。反時計回りなので、内側なら全辺で cross >= 0。
+    // 各辺から tol だけ外側までは許容する (境界ジッタ吸収・旧実装と同じ考え方)。
+    let cp = (com.dot(u), com.dot(v));
+    for i in 0..hull.len() {
+        let s = hull[i];
+        let e = hull[(i + 1) % hull.len()];
+        let (ex, ey) = (e.0 - s.0, e.1 - s.1);
+        let edge_len = (ex * ex + ey * ey).sqrt();
+        if edge_len < 1e-12 {
+            continue;
+        }
+        // 辺から重心までの符号付き距離 (左手側が正 = 内側)。
+        let signed = ((cp.0 - s.0) * ey - (cp.1 - s.1) * ex) / edge_len;
+        // signed < 0 が内側 (時計回り扱い) にならないよう、cross の符号規約に合わせる。
+        let inside_dist = -signed;
+        if inside_dist < -tol {
+            return Some(true); // この辺の外側へ tol 超えて出ている = 転倒しうる。
+        }
+    }
+    Some(false)
 }
 
 /// 内向きレイ探針による**局所**肉厚の最小推定 (問58、問300 で sphere tracing 化)。
@@ -1188,6 +1303,43 @@ mod tests {
         assert!(
             (t - 0.2).abs() < 0.06,
             "shell thickness probe should be ~0.2, got {t}"
+        );
+    }
+
+    #[test]
+    fn unstable_uses_the_convex_hull_not_the_bounding_box_of_contacts() {
+        // 問304: 静的安定の標準条件は「重心の投影が**接地点の凸包 (support polygon)** の
+        // 内側にあること」。旧実装は軸整列 bbox で判定しており、bbox は凸包の外接近似
+        // なので「bbox の内側だが凸包の外側」の重心を安定と誤判定していた (偽陰性)。
+        //
+        // 3本脚: 正方形の3隅にだけ脚を置く。接地点の bbox はその正方形全体だが、
+        // 凸包は3隅を結ぶ**三角形**。欠けた隅の側へ質量を寄せると、重心は
+        // bbox の内側・三角形の外側に落ちる = 実際には転倒する。
+        let leg = |x: f64, y: f64| {
+            Sdf::cylinder(1.0, 5.0).translate(Vec3::new(x, y, 0.0)) // z: -5..5
+        };
+        // 脚は (-8,-8) (8,-8) (-8,8) の3隅。(8,8) は欠ける。
+        let legs = leg(-8.0, -8.0).union(leg(8.0, -8.0)).union(leg(-8.0, 8.0));
+        // 質量を欠けた隅 (8,8) の側へ寄せた重り (脚より十分大きい)。
+        let mass = Sdf::cuboid(Vec3::new(4.0, 4.0, 4.0)).translate(Vec3::new(7.0, 7.0, 8.0));
+        // 重りと脚をつなぐ梁 (単一ボディにする)。
+        let beam = Sdf::cuboid(Vec3::new(9.0, 9.0, 0.6)).translate(Vec3::new(0.0, 0.0, 5.0));
+        let part = legs.union(beam).union(mass);
+        let (lo, hi) = part.sampling_box();
+        let mesh = polygonize(&part, lo, hi, 64);
+        let r = validate_with_field(&mesh, Some(&part), 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let com = r.center_of_mass.expect("watertight part must have a COM");
+        // 前提: 重心は接地点の bbox の内側にある (だから旧実装は見逃した)。
+        assert!(
+            com.x.abs() <= 9.0 && com.y.abs() <= 9.0,
+            "test premise: the COM must lie inside the contact bounding box, got {com:?}"
+        );
+        // 凸包 (三角形) の外側なので UNSTABLE が出なければならない。
+        assert!(
+            r.issues.iter().any(|e| e.code == "UNSTABLE"),
+            "COM inside the contact bbox but outside the 3-leg convex hull must be flagged \
+             as UNSTABLE (com={com:?}); issues: {:?}",
+            r.issues.iter().map(|e| &e.code).collect::<Vec<_>>()
         );
     }
 
