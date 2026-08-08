@@ -167,7 +167,7 @@ JSON-RPC エラーではなく、`result.isError=true` を伴うツール結果�
 |--------|------|---------|
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 | `script` |
 | `eval` | 1 点の符号付き距離を返す | `x, y, z` |
-| `measure` | **光線に沿った表面交差**を返し、隣接交差間の距離（span）＝穴径・肉厚・面間距離を 1 呼出で与える（問299）。sphere tracing（Hart 1996）で薄い特徴も飛び越さない。SDF の**符号**のみに依拠するため距離は厳密（`eval` の大きさは合成形状で下界に過ぎない） | `from[3], dir[3], max_distance` |
+| `measure` | **光線に沿った表面交差**を返し、隣接交差間の距離（span）＝穴径・肉厚・面間距離を 1 呼出で与える（問299）。sphere tracing（Hart 1996）で薄い特徴も飛び越さない。SDF の**符号**のみに依拠するため距離は厳密（`eval` の大きさは合成形状で下界に過ぎない）。**`complete` を必ず返す**——上限で打ち切られた場合 `false` となり、結果が不完全であることを AI が判別できる（問301） | `from[3], dir[3], max_distance` |
 | `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, bed_contact_area, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248）。`bed_contact_area` は造形プレート接地面積（点接地は ~0・問252） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
 | `screenshot` | シーンを PNG レンダリング（base64）。`axes=true`（既定）のとき X=赤/Y=緑/Z=青のグノモンに **mm 目盛り**（1/10/100mm を軸長から決定的に選択・問288）を刻み、応答に目盛り間隔を記した text を添えて AI が画像から寸法を概算できるようにする | `view, width, height, samples, axes, projection` |
 | `export` | STL/GLB/3MF をプロジェクト直下へ書き出し | `path, resolution` |
@@ -279,10 +279,13 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 - **STL インポートの SDF 化**: `validate-stl`（CLI）は外部 binary STL を**検証専用**で
   読み込むが、mesh→SDF 再構成はしない。インポートしたメッシュは SDF シーン正本に
   ならない（ADR-001「SDF が唯一の正本」を保存・問296）。MCP には出さない。
-- **`measure` の完全性**: 反復上限（10,000 ステップ）に達した光線は以降の交差を返さない
-  （表面をかすめる grazing 光線で起こりうる）。交差数は 64 で打ち切る。薄い特徴の
-  見落としは sphere tracing により**構造的に起きない**（`|d|` は真の距離の下界なので
-  表面を跨がない・Hart 1996）が、上限打ち切りは起こりうる（問299）。
+- **`measure` の完全性**: 反復上限（10,000 ステップ）または交差数上限（64）に達した光線は
+  以降を走査しない。薄い特徴の見落としは sphere tracing により**構造的に起きない**
+  （`|d|` は真の距離の下界なので表面を跨がない・Hart 1996）が、上限打ち切りは起こりうる——
+  特に**面に沿って滑る光線**は `|d|=0` で歩幅が最小値に張り付き完走できない（この
+  収束の遅さは Keinert et al., *Enhanced Sphere Tracing*, 2014 が扱った既知の性質）。
+  ただし打ち切りは**サイレントではない**: 応答の `complete=false` と `warning` で明示され、
+  AI は「交差なし」と「未走査」を区別できる（問301）。
 - **無限反復**: `repeat` は count による有限反復のみ。
 - **面取り/平滑ブーリアンの内部厳密距離**: `chamfer_*`/`smooth_*` は**符号・表面（ゼロ等位面）は厳密**だが、内部の距離場は真のメトリックからずれる（面取り平面/ブレンド項が深部で min/max に勝ち続けるため）。抽出は符号のみ使用するため水密性に影響しない。`offset`/`shell` を面取り・平滑結果に適用する場合は近似（問285）。
 
@@ -290,7 +293,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 446 テスト（433 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
+- `cargo test`: 448 テスト（435 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。

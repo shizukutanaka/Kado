@@ -54,6 +54,26 @@ const MAX_STEPS: usize = 10_000;
 /// 1本の光線が返す交差点の最大数 (リソース上限)。
 pub const MAX_CROSSINGS: usize = 64;
 
+/// 光線1本の測定結果 (問301)。
+///
+/// `complete` を持つ理由: sphere tracing は表面をかすめる (grazing) 光線で収束が
+/// 著しく遅くなることが知られており (Keinert et al., *Enhanced Sphere Tracing*, 2014 —
+/// この問題への over-relaxation による対策を提案した論文)、`MAX_STEPS` に達して
+/// 打ち切られうる。極端な例として**面に沿って滑る光線**は `|d|=0` のため歩幅が
+/// `SURFACE_EPS` に張り付き、10,000 歩でも 0.01mm しか進まない。
+///
+/// 打ち切りを黙って隠すと、AI は「交差なし (=何も無い)」と「途中で諦めた
+/// (=まだ先にあるかもしれない)」を区別できず、**誤った寸法を確信して読む**。
+/// サイレント故障を作らない規律 (CONTRIBUTING §4) に従い、完走したか否かを明示する。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RayMeasurement {
+    /// 見つかった交差点 (始点に近い順)。
+    pub crossings: Vec<Crossing>,
+    /// `max_distance` まで走査しきったか。`false` なら反復上限または交差数上限で
+    /// 打ち切られており、**それ以降の交差は未検出**。測定は不完全とみなすこと。
+    pub complete: bool,
+}
+
 /// 光線と表面の交差点。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Crossing {
@@ -75,15 +95,16 @@ pub struct Crossing {
 /// 非有限な `from`/`dir`/`max_distance`、ゼロ長 `dir`、非正の `max_distance` を拒否する
 /// (幾何的に無効な入力は評価前に拒否する・CONTRIBUTING §4)。
 ///
-/// # 既知の限界 (誠実な表明)
-/// 反復上限 `MAX_STEPS` に達した場合、それ以降の交差は返らない (表面をかすめる
-/// 光線で起こりうる)。交差数は `MAX_CROSSINGS` で打ち切る。
+/// # 打ち切りの明示 (問301)
+/// 反復上限 `MAX_STEPS` / 交差数上限 `MAX_CROSSINGS` に達した場合、戻り値の
+/// [`RayMeasurement::complete`] が `false` になる。打ち切りを黙って隠さないため、
+/// 呼び出し側は「交差なし」と「未走査」を区別できる。
 pub fn ray_crossings(
     sdf: &Sdf,
     from: Vec3,
     dir: Vec3,
     max_distance: f64,
-) -> Result<Vec<Crossing>, String> {
+) -> Result<RayMeasurement, String> {
     if !from.x.is_finite() || !from.y.is_finite() || !from.z.is_finite() {
         return Err(format!("ray origin must be finite, got {from:?}"));
     }
@@ -105,14 +126,22 @@ pub fn ray_crossings(
     let mut t = 0.0_f64;
     // 始点の内外。以後この符号が変わる位置が交差点。
     let mut inside = sdf.eval(from) < 0.0;
+    // 光線を最後まで走査しきったか (問301)。上限で抜けたら false のまま。
+    let mut complete = false;
 
     for _ in 0..MAX_STEPS {
-        if t > max_distance || crossings.len() >= MAX_CROSSINGS {
+        if t > max_distance {
+            // 指定距離まで到達した = 完走。
+            complete = true;
+            break;
+        }
+        if crossings.len() >= MAX_CROSSINGS {
+            // 交差数上限で打ち切り。以降は未走査なので不完全。
             break;
         }
         let p = from + unit * t;
         let d = sdf.eval(p);
-        // 非有限は退化形状の兆候。無音で誤った測定を返さず打ち切る。
+        // 非有限は退化形状の兆候。無音で誤った測定を返さず打ち切る (complete=false)。
         if !d.is_finite() {
             break;
         }
@@ -132,7 +161,10 @@ pub fn ray_crossings(
         }
         t += sphere_trace_step(d);
     }
-    Ok(crossings)
+    Ok(RayMeasurement {
+        crossings,
+        complete,
+    })
 }
 
 /// 区間 `[lo, hi]` に符号変化が1つあるとして、二分探索で交差点の t を返す。
@@ -190,7 +222,8 @@ mod tests {
                 Vec3::new(1.0, 0.0, 0.0),
                 1000.0,
             )
-            .unwrap();
+            .unwrap()
+            .crossings;
             assert_eq!(
                 cs.len(),
                 2,
@@ -221,7 +254,8 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             200.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert_eq!(
             cs.len(),
             4,
@@ -249,7 +283,8 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             200.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert_eq!(cs.len(), 2);
         assert!((spans(&cs)[0] - 4.0).abs() < TOL, "plate must be 4mm thick");
     }
@@ -258,7 +293,9 @@ mod tests {
     fn ray_starting_inside_the_solid_reports_exit_first() {
         // 始点が内部なら最初の交差は「出る」交差。
         let s = Sdf::sphere(1.0);
-        let cs = ray_crossings(&s, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 10.0).unwrap();
+        let cs = ray_crossings(&s, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 10.0)
+            .unwrap()
+            .crossings;
         assert_eq!(cs.len(), 1, "from the centre outward there is one crossing");
         assert!(!cs[0].entering, "leaving the solid is an exit crossing");
         assert!((cs[0].distance - 1.0).abs() < TOL, "exit at r=1");
@@ -274,7 +311,8 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             1000.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert!(cs.is_empty(), "a ray that misses must report no crossings");
     }
 
@@ -288,7 +326,8 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             5.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert!(
             cs.is_empty(),
             "sphere at distance 9 must not be found within max_distance=5"
@@ -305,14 +344,16 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             100.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         let b = ray_crossings(
             &s,
             Vec3::new(-5.0, 0.0, 0.0),
             Vec3::new(7.3, 0.0, 0.0), // 同方向・長さ違い
             100.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
             assert!(
@@ -333,6 +374,57 @@ mod tests {
         assert!(ray_crossings(&s, Vec3::ZERO, ok_dir, 0.0).is_err());
         assert!(ray_crossings(&s, Vec3::ZERO, ok_dir, -1.0).is_err());
         assert!(ray_crossings(&s, Vec3::ZERO, ok_dir, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn completed_scan_reports_complete_true() {
+        // 通常の貫通測定は完走する。complete=true でなければ AI は結果を疑ってしまう。
+        let s = Sdf::sphere(1.0);
+        let m = ray_crossings(
+            &s,
+            Vec3::new(-5.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            20.0,
+        )
+        .unwrap();
+        assert!(m.complete, "a normal through-scan must report complete");
+        assert_eq!(m.crossings.len(), 2);
+        // 形状を外した場合も「最後まで走査した上で交差なし」なので完走扱い。
+        let miss = ray_crossings(
+            &s,
+            Vec3::new(-5.0, 50.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            20.0,
+        )
+        .unwrap();
+        assert!(
+            miss.complete && miss.crossings.is_empty(),
+            "a clean miss is a COMPLETE scan with zero crossings"
+        );
+    }
+
+    #[test]
+    fn grazing_ray_is_reported_as_incomplete_not_silently_empty() {
+        // 問301: 面に沿って滑る光線は |d|=0 のため歩幅が SURFACE_EPS に張り付き、
+        // MAX_STEPS では max_distance に到底届かない (10,000 × 1e-6 = 0.01mm)。
+        // 旧実装はこれを黙って「交差なし」として返しており、AI は「何も無い」と
+        // 誤読しえた。complete=false で打ち切りを明示しなければならない。
+        //
+        // 板の上面 (z = +2) をちょうど滑る光線。
+        let plate = Sdf::cuboid(Vec3::new(50.0, 50.0, 2.0));
+        let m = ray_crossings(
+            &plate,
+            Vec3::new(-20.0, 0.0, 2.0), // 上面と同じ高さ
+            Vec3::new(1.0, 0.0, 0.0),   // 面に沿って進む
+            40.0,
+        )
+        .unwrap();
+        assert!(
+            !m.complete,
+            "a ray grazing along a face must be reported INCOMPLETE (it cannot finish), \
+             got complete=true with {} crossings",
+            m.crossings.len()
+        );
     }
 
     #[test]
@@ -362,7 +454,8 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             100.0,
         )
-        .unwrap();
+        .unwrap()
+        .crossings;
         assert_eq!(cs.len(), 2, "a 0.05mm plate must still be detected");
         assert!(
             (spans(&cs)[0] - 0.05).abs() < TOL,

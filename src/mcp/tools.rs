@@ -136,7 +136,10 @@ pub fn tool_list() -> Value {
              clearance hole drilled along Z in a plate, cast a ray across it \
              (from=[-50,0,0], dir=[1,0,0]); crossings are solid→hole→solid and the middle \
              span is the hole diameter (expect 3.2). Uses sphere tracing (Hart 1996), so \
-             arbitrarily thin features are never stepped over.",
+             arbitrarily thin features are never stepped over. ALWAYS CHECK the returned \
+             \"complete\" flag: if it is false the ray was cut short (typically because it \
+             grazes along a face instead of crossing it) and the crossings/spans are \
+             INCOMPLETE — re-aim the ray rather than trusting the numbers.",
             &[
                 (
                     "from",
@@ -670,12 +673,13 @@ fn tool_measure(session: &Session, args: &Value) -> ToolResult {
         Some(v) => v,
         None => default_max,
     };
-    let crossings = match ray_crossings(&session.scene, from, dir, max_distance) {
+    let m = match ray_crossings(&session.scene, from, dir, max_distance) {
         Ok(c) => c,
         Err(e) => return ToolResult::error(e),
     };
-    let sp = spans(&crossings);
-    let items: Vec<Value> = crossings
+    let sp = spans(&m.crossings);
+    let items: Vec<Value> = m
+        .crossings
         .iter()
         .map(|c| {
             json::obj([
@@ -688,12 +692,28 @@ fn tool_measure(session: &Session, args: &Value) -> ToolResult {
             ])
         })
         .collect();
-    let report = json::obj([
+    let mut pairs = vec![
         ("crossings", Value::Array(items)),
         ("spans", json::arr(sp.iter().map(|v| json::n(*v)))),
-        ("count", json::n(crossings.len() as f64)),
-    ]);
-    ToolResult::text(report.to_string())
+        ("count", json::n(m.crossings.len() as f64)),
+        // 問301: 完走したかを必ず伝える。サイレントな打ち切りを作らない。
+        ("complete", json::b(m.complete)),
+    ];
+    if !m.complete {
+        // 不完全なときは理由と対処を添える (AI が誤った寸法を確信して読むのを防ぐ)。
+        pairs.push((
+            "warning",
+            json::s(
+                "ray was cut short before reaching max_distance — results are INCOMPLETE and \
+                 there may be further crossings. This usually means the ray grazes along a \
+                 surface (a ray sliding on a face advances only ~1e-6mm per step). Aim the ray \
+                 so it crosses surfaces transversely, or reduce max_distance.",
+            ),
+        ));
+    }
+    ToolResult::text(
+        Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()).to_string(),
+    )
 }
 
 fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
@@ -930,8 +950,14 @@ which is always exact).
 
   measure(from=[-50,0,0], dir=[1,0,0])
 
-returns {crossings:[{distance,point,entering}...], spans:[...], count}. Each span is
-the length between consecutive crossings, in mm.
+returns {crossings:[{distance,point,entering}...], spans:[...], count, complete}. Each
+span is the length between consecutive crossings, in mm.
+
+ALWAYS check "complete". If false, the ray stopped before max_distance and the result
+is INCOMPLETE (more crossings may exist) — a "warning" field explains why. The usual
+cause is a ray that grazes ALONG a surface instead of crossing it: with distance ~0 the
+tracer advances only ~1e-6mm per step and cannot finish. Re-aim so the ray hits
+surfaces transversely. complete=false with zero crossings does NOT mean "nothing there".
 
 Recipe — verify an M3 clearance hole (Ø3.2) drilled along Z through a plate:
 

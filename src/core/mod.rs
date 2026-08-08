@@ -14,5 +14,5 @@ pub mod measure;
 pub mod sdf;
 
 pub use math::Vec3;
-pub use measure::{ray_crossings, spans, Crossing};
+pub use measure::{ray_crossings, spans, Crossing, RayMeasurement};
 pub use sdf::Sdf;
