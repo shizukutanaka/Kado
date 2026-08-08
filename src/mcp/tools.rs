@@ -1,5 +1,6 @@
 //! MCP ツール定義 (Phase 0.5/2/3)。
 
+use crate::core::measure::{ray_crossings, spans};
 use crate::core::{Sdf, Vec3};
 use crate::extract::polygonize;
 use crate::io::ExportFormat;
@@ -124,6 +125,41 @@ pub fn tool_list() -> Value {
             ],
         ),
         tool_def(
+            "measure",
+            "Measure real dimensions by casting a ray through the scene. Returns every \
+             surface crossing along the ray plus the span between consecutive crossings — \
+             so a span IS the hole diameter / wall thickness / face-to-face distance in mm. \
+             USE THIS INSTEAD OF probing with many eval calls: one measure call replaces a \
+             hand-rolled bisection search, and unlike eval's magnitude (a conservative lower \
+             bound on composites) these distances are exact, because they are found by \
+             bisecting the SDF *sign*, which is always exact. Example: to check an M3 \
+             clearance hole drilled along Z in a plate, cast a ray across it \
+             (from=[-50,0,0], dir=[1,0,0]); crossings are solid→hole→solid and the middle \
+             span is the hole diameter (expect 3.2). Uses sphere tracing (Hart 1996), so \
+             arbitrarily thin features are never stepped over.",
+            &[
+                (
+                    "from",
+                    "array",
+                    "Ray origin [x,y,z] in mm (required)",
+                    true,
+                ),
+                (
+                    "dir",
+                    "array",
+                    "Ray direction [dx,dy,dz]; normalized internally, so returned distances \
+                     are true millimeters (required)",
+                    true,
+                ),
+                (
+                    "max_distance",
+                    "number",
+                    "How far along the ray to search, in mm (default: scene diagonal × 3)",
+                    false,
+                ),
+            ],
+        ),
+        tool_def(
             "run_script",
             "Evaluate a KadoScene script and set it as the active scene. Returns a summary. \
              Accepts either JSON (starts with '{') or the compact text DSL, e.g. \
@@ -150,9 +186,12 @@ pub fn tool_list() -> Value {
              surface_area, bbox:{min:[x,y,z],max:[x,y,z]}|null, dims_mm:[x,y,z], \
              center_of_mass:[x,y,z]|null, measured_min_wall:number|null, \
              body_count:int|null, cavity_count:int|null, bed_contact_area:number|null, \
-             digest, \
-             issues:[{severity:\"error\"|\"warning\", code, cause, hints:[], \
+             digest, resolution:int, \
+             issues:[{severity:\"error\"|\"warning\"|\"info\", code, cause, hints:[], \
              location:[x,y,z]|null}]}. \
+             Only \"error\" severity sets ok=false; \"warning\"/\"info\" are advisory \
+             (ENCLOSED_CAVITY is \"info\"). resolution echoes the effective (clamped) \
+             extraction resolution used for this report. \
              Units: 1 coordinate unit = 1 mm, so volume is mm³, surface_area mm², \
              bed_contact_area mm². Estimate material: mass_g = volume/1000 × density \
              (PLA~1.24, ABS~1.04, PETG~1.27, resin~1.1 g/cm³) — see help for cost/infill notes. \
@@ -260,6 +299,7 @@ fn tool_annotations(name: &str) -> Value {
     // (title, read_only, destructive, idempotent)
     let (title, read_only, destructive, idempotent) = match name {
         "eval" => ("Evaluate signed distance at a point", true, false, true),
+        "measure" => ("Measure dimensions along a ray", true, false, true),
         "validate" => ("Validate manufacturability (DFM)", true, false, true),
         "get_scene" => ("Get the current scene script", true, false, true),
         "help" => ("DSL and tool reference", true, false, true),
@@ -375,6 +415,7 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "screenshot" => tool_screenshot(session, args),
         "export" => tool_export(session, args),
         "eval" => tool_eval(session, args),
+        "measure" => tool_measure(session, args),
         "run_script" => tool_run_script(session, args),
         "validate" => tool_validate(session, args),
         "get_scene" => tool_get_scene(session),
@@ -588,6 +629,71 @@ fn tool_eval(session: &Session, args: &Value) -> ToolResult {
         }
         _ => ToolResult::error("x, y, z are required numeric fields"),
     }
+}
+
+/// `[x,y,z]` の数値3要素配列を取り出す (問299)。
+fn arg_vec3(args: &Value, key: &str) -> Result<Vec3, String> {
+    let a = args
+        .get(key)
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("\"{key}\" must be an array of 3 numbers [x,y,z]"))?;
+    if a.len() != 3 {
+        return Err(format!(
+            "\"{key}\" must have exactly 3 elements, got {}",
+            a.len()
+        ));
+    }
+    let mut c = [0.0f64; 3];
+    for (i, slot) in c.iter_mut().enumerate() {
+        *slot = a[i]
+            .as_f64()
+            .ok_or_else(|| format!("\"{key}\"[{i}] must be a number"))?;
+    }
+    Ok(Vec3::new(c[0], c[1], c[2]))
+}
+
+/// 光線に沿った表面交差を返す (問299)。第一原理: AI が寸法を1呼出で測れるようにし、
+/// KPI「平均ツール呼出 ≤15/タスク」(Plan.md §7) を守れるようにする。
+fn tool_measure(session: &Session, args: &Value) -> ToolResult {
+    let from = match arg_vec3(args, "from") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
+    let dir = match arg_vec3(args, "dir") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
+    // 既定の探索距離: シーン対角の3倍 (外から撃って通り抜けるのに十分)。
+    let (lo, hi) = session.scene.sampling_box();
+    let default_max = ((hi - lo).length() * 3.0).max(1.0);
+    let max_distance = match args.get("max_distance").and_then(|v| v.as_f64()) {
+        Some(v) => v,
+        None => default_max,
+    };
+    let crossings = match ray_crossings(&session.scene, from, dir, max_distance) {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(e),
+    };
+    let sp = spans(&crossings);
+    let items: Vec<Value> = crossings
+        .iter()
+        .map(|c| {
+            json::obj([
+                ("distance", json::n(c.distance)),
+                (
+                    "point",
+                    json::arr([json::n(c.point.x), json::n(c.point.y), json::n(c.point.z)]),
+                ),
+                ("entering", json::b(c.entering)),
+            ])
+        })
+        .collect();
+    let report = json::obj([
+        ("crossings", Value::Array(items)),
+        ("spans", json::arr(sp.iter().map(|v| json::n(*v)))),
+        ("count", json::n(crossings.len() as f64)),
+    ]);
+    ToolResult::text(report.to_string())
 }
 
 fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
@@ -813,11 +919,36 @@ DSL arg order mirrors the constructors:
   repeat(px,py,pz[,nx,ny,nz],shape)
   cut(nx,ny,nz,shape) or cut(nx,ny,nz,offset,shape) · flatten(shape) or flatten(at,shape)
 
+## Measuring real dimensions (measure tool)
+
+validate reports WHOLE-MODEL numbers (dims_mm, volume). To check a SPECIFIC feature
+— a hole diameter, a wall thickness, a face-to-face distance — cast a ray with
+measure and read the spans. Do NOT hand-roll a bisection search with many eval
+calls: one measure call replaces ~30 evals, and eval's magnitude is only a lower
+bound on composites while measure's distances are exact (it bisects the SDF sign,
+which is always exact).
+
+  measure(from=[-50,0,0], dir=[1,0,0])
+
+returns {crossings:[{distance,point,entering}...], spans:[...], count}. Each span is
+the length between consecutive crossings, in mm.
+
+Recipe — verify an M3 clearance hole (Ø3.2) drilled along Z through a plate:
+
+  run_script: difference(cuboid(20.0, 20.0, 2.0), cylinder(1.6, 10.0))
+  measure(from=[-50,0,0], dir=[1,0,0])
+  -> spans = [18.4, 3.2, 18.4]   solid, HOLE (=3.2 diameter), solid
+
+Recipe — wall thickness: aim the ray through the wall along its normal; the span
+between the two crossings is the thickness. Ray direction is normalized, so
+distances are true millimeters regardless of the vector's length.
+
 ## Workflow
 
 1. Call run_script with your KadoScene JSON or text DSL.
 2. Call screenshot to preview (valid views: front|back|right|left|top|bottom|iso).
-3. Call validate for DFM; export to save STL/GLB/3MF/HTML.
+3. Call measure to check specific dimensions (hole Ø, wall thickness) against intent.
+4. Call validate for DFM; export to save STL/GLB/3MF/HTML.
 4. Call get_scene to read back the current script if needed (also reports undo availability).
 5. If a run_script went wrong, call undo_script to restore the previous scene (single-level).
 
@@ -1030,7 +1161,7 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(names.len(), 8, "tool_list must declare 8 tools (SPEC §5)");
+        assert_eq!(names.len(), 9, "tool_list must declare 9 tools (SPEC §5)");
 
         for name in &names {
             // (2) 注釈の網羅: フォールバックは title=name を返すので、title != name なら
@@ -1577,6 +1708,35 @@ mod tests {
         assert!(
             text.contains("scene updated"),
             "session must still be marked as updated: {text}"
+        );
+    }
+
+    #[test]
+    fn validate_schema_documents_every_severity_the_validator_emits() {
+        // 問299: validate のスキーマ説明は AI が読む契約そのもの。実際に emit されうる
+        // severity 文字列が全て記載されていなければ、AI に嘘の列挙を渡すことになる。
+        // 実際 "info" (ENCLOSED_CAVITY が使う) が漏れていた。Severity enum の全変種が
+        // スキーマ説明に現れることを固定し、将来 severity を増やしたときの漏れを検知する。
+        let tools = tool_list();
+        let desc = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("validate"))
+            .and_then(|t| t.get("description"))
+            .and_then(|d| d.as_str())
+            .expect("validate tool must have a description");
+        // Severity enum の JSON 表現 (check.rs の to_json と同じ文字列) を網羅する。
+        for sev in ["error", "warning", "info"] {
+            assert!(
+                desc.contains(&format!("\"{sev}\"")),
+                "validate schema must document severity \"{sev}\" (問299)"
+            );
+        }
+        // 実行時に注入されるフィールドも文書化されていること。
+        assert!(
+            desc.contains("resolution"),
+            "validate schema must document the runtime-injected `resolution` field (問299)"
         );
     }
 

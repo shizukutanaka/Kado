@@ -359,10 +359,22 @@ pub fn validate_with_field(
 
     // 3. 空メッシュ
     if tri_count == 0 {
+        // 問299: 旧ヒントは「bounding box を広げよ」と促していたが、sampling box は
+        // SDF から自動導出され (Sdf::sampling_box) AI が操作できる入力ではない——
+        // 最頻の失敗モードで誤った方向へ誘導していた。実際に AI が直せる原因を挙げる。
         issues.push(KadoError::error(
             "EMPTY_MESH",
-            "mesh has no triangles — bounding box may not contain the shape",
-            &["Expand the bounding box or check primitive parameters"],
+            "mesh has no triangles — the script produced no solid geometry",
+            &[
+                "A negative offset may have eroded the shape away (offset(-t) shrinks by t; \
+                 check t is smaller than the part's half-thickness)",
+                "An intersection of non-overlapping shapes is empty — translate them so they \
+                 overlap, or use union",
+                "A difference may have removed everything (the subtracted shape fully \
+                 contains the base)",
+                "Primitive dimensions may be too small to survive extraction — check radii \
+                 and half-extents against the resolution",
+            ],
         ));
         return Report {
             volume,

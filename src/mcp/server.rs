@@ -432,16 +432,16 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_eight_tools() {
-        // 問67で undo_script ツールを追加した (screenshot, export, eval, run_script,
-        // validate, get_scene, undo_script, help)。
+    fn tools_list_has_nine_tools() {
+        // 問67で undo_script、問299で measure を追加 (screenshot, export, eval, measure,
+        // run_script, validate, get_scene, undo_script, help)。
         let mut s = tools::Session::new();
         let resp = handle(&mut s, &req("tools/list", 2, None)).unwrap();
         let tools = resp
             .get("result")
             .and_then(|r| r.get("tools"))
             .and_then(|v| v.as_array());
-        assert_eq!(tools.map(|a| a.len()), Some(8));
+        assert_eq!(tools.map(|a| a.len()), Some(9));
     }
 
     #[test]

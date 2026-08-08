@@ -32,7 +32,7 @@ JSON-RPC 2.0) 経由でこれを呼び出す。詳細仕様は `docs/SPEC.md`、
 
 | 面 | 個数 | 内訳 |
 |----|------|------|
-| MCPツール | 8 | `run_script` `eval` `validate` `screenshot` `export` `get_scene` `undo_script` `help` |
+| MCPツール | 9 | `run_script` `eval` `measure` `validate` `screenshot` `export` `get_scene` `undo_script` `help` |
 | DSLプリミティブ | 9 | `sphere` `cuboid` `cylinder` `prism` `torus` `cone` `capsule` `rounded_box` `ellipsoid` |
 | DSLブーリアン | 9 | `union` `intersection` `difference` `smooth_union` `smooth_intersection` `smooth_difference` `chamfer_union` `chamfer_intersection` `chamfer_difference` |
 | DSL変形・修飾 | 15 | `translate` `scale` `scale_xyz` `offset` `shell` `repeat` `mirror_x` `mirror_y` `mirror_z` `rotate_x` `rotate_y` `rotate_z` `rotate` `cut` `flatten` |
@@ -111,10 +111,10 @@ r·Δθ に対応するため、軸から離れるほど歪みが増大し、**L
 
 ## 7. 総括
 
-3巡のレビューを通じて「過剰」と判定して削除した機能は0件 (8ツール・
+3巡のレビューを通じて「過剰」と判定して削除した機能は0件 (9ツール・
 33演算子・11コードのすべてに独立した存在理由がある)。「不足」と判定して
-実装した機能は6件 (任意軸rotate・正射影・prism・scale_xyz・PNG実圧縮・
-面取りブーリアン chamfer_*)。
+実装した機能は8件 (任意軸rotate・正射影・prism・scale_xyz・PNG実圧縮・
+面取りブーリアン chamfer_*・STLインポート検証専用・measure 光線測定)。
 根拠付きで却下・見送りにした候補は6件。かつて唯一未解決だったメッシュ
 インポートは問296 で検証専用 (`validate-stl`・SDF 正本にしない) として実装し、
 現時点で未解決の候補はゼロ。
