@@ -3,6 +3,7 @@
 //! 各検査は [`KadoError`] のリストを返す。エラー ≒ 製造上の問題。
 //! `fix_hints` は AI エージェントが自己修正ループを回すためのヒント (Plan §3)。
 
+use crate::core::measure::{bisect_crossing, sphere_trace_step};
 use crate::core::{Sdf, Vec3};
 use crate::extract::Mesh;
 use crate::mcp::json::{self, Value};
@@ -841,14 +842,26 @@ fn bed_contact_area(mesh: &Mesh, build_dir: Vec3) -> Option<f64> {
     Some(area)
 }
 
-/// 内向きレイ探針による**局所**肉厚の最小推定 (問58)。
+/// 内向きレイ探針による**局所**肉厚の最小推定 (問58、問300 で sphere tracing 化)。
 ///
-/// 各表面頂点から内向き法線 (-∇SDF) 方向へ固定ステップで距離場を辿り、反対側の壁
-/// (SDF が負→非負へ戻る点) までの距離を肉厚とみなし、全探針の最小を返す。2V/SA 平均が
-/// 見落とす局所薄肉 (太い本体の細いリブ等) を捉える。探針数は上限で抑える。
+/// 各表面頂点から内向き法線 (-∇SDF) 方向へ距離場を辿り、反対側の壁 (SDF が負→非負へ
+/// 戻る点) までの距離を肉厚とみなし、全探針の最小を返す。2V/SA 平均が見落とす局所薄肉
+/// (太い本体の細いリブ等) を捉える。探針数は上限で抑える。
 ///
-/// 限界: ステップより薄い壁 (< diag/256) は跨いで見落としうる。よって検出は有効だが
-/// 非検出は薄肉皆無を保証しない (平均と同じく安全側の補助)。
+/// # 測定の定義 (ray 法)
+///
+/// 業界の肉厚解析には **ray 法** (法線方向に光線を飛ばし対面までの距離) と
+/// **rolling ball 法** (各点に内接する最大球の直径) の2系統がある。Kado は ray 法を
+/// 採る——3D プリントの壁厚として直感的で、`location` と合わせて AI が修正箇所を
+/// 特定しやすいため。鋭角コーナー付近では ray 法の値が不連続になりうる点は
+/// rolling ball 法との既知の差異である。
+///
+/// # 前進方法 (問300: 固定ステップ → sphere tracing)
+///
+/// 旧実装は固定ステップ `diag/256` で行進していたため、**それより薄い壁を跨いで
+/// 見落とす**既知の限界があった。現在は sphere tracing (Hart 1996) で `|d|` ずつ進む。
+/// `|d|` は真の距離の下界なので表面を跨がず、**どれほど薄い壁も飛び越さない**。
+/// 交差点は符号の二分探索で厳密化する (線形補間より正確)。
 /// 内向きレイ探針による最小肉厚の推定と、最小を検出した表面頂点の位置。
 /// 戻り値: `Some((thickness_mm, surface_vertex))` または `None`。
 /// surface_vertex は AI エージェントが「どこを修正するか」を特定するための空間ヒント (問242)。
@@ -858,8 +871,10 @@ pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Opti
     if diag <= 0.0 || v == 0 {
         return None;
     }
-    let step = diag / 256.0;
     let max_dist = diag * 1.2;
+    // sphere tracing の反復上限 (リソース上限)。歩幅は内部で倍々に伸びるため、
+    // 通常は数十回で対面へ到達する。grazing 等の病的経路のみ打ち切る。
+    let max_probe_steps = 4_000usize;
     // 過剰計算を避けるため探針数を上限で間引く。
     let cap = 30_000usize;
     let stride = v.div_ceil(cap);
@@ -878,14 +893,25 @@ pub(crate) fn min_wall_probe(sdf: &Sdf, mesh: &Mesh, lo: Vec3, hi: Vec3) -> Opti
         let inward = g * (-1.0 / gl);
         // 内側 (負) を確認してから最初の 0 跨ぎを探す。
         let mut t = 0.0;
+        // 各反復の冒頭で必ず代入してから使うため初期値は持たせない。
+        let mut prev_t;
         let mut prev_d = sdf.eval(p);
         let mut went_inside = prev_d < 0.0;
-        while t < max_dist {
-            t += step;
+        let mut steps = 0usize;
+        while t < max_dist && steps < max_probe_steps {
+            steps += 1;
+            prev_t = t;
+            // 問300: sphere tracing。|d| は真の距離の下界なので表面を跨がず、
+            // 固定ステップと違い薄い壁を飛び越さない (Hart 1996)。
+            t += sphere_trace_step(prev_d);
             let d = sdf.eval(p + inward * t);
+            if !d.is_finite() {
+                break;
+            }
             if went_inside && d >= 0.0 {
-                // prev_d (<0) と d (>=0) を線形補間して交点距離を求める。
-                let cross = (t - step) + (-prev_d) / (d - prev_d) * step;
+                // [prev_t, t] に対面の表面がある。符号の二分探索で厳密化する
+                // (旧実装の線形補間より正確・問300)。
+                let cross = bisect_crossing(sdf, p, inward, prev_t, t, true);
                 if cross > 0.0 && cross < min_t {
                     min_t = cross;
                     min_loc = p; // 最小を検出した表面頂点 (問242)。
@@ -1117,6 +1143,45 @@ mod tests {
         assert!(
             (t - 0.2).abs() < 0.06,
             "shell thickness probe should be ~0.2, got {t}"
+        );
+    }
+
+    #[test]
+    fn probe_detects_a_wall_thinner_than_the_old_fixed_step() {
+        // 問300: 旧実装は固定ステップ diag/256 で行進していたため、それより薄い壁を
+        // **跨いで見落とす**既知の限界があった。sphere tracing (Hart 1996) では |d| が
+        // 真の距離の下界なので表面を跨がず、どれほど薄くても検出できる。
+        //
+        // 100×100×0.3mm の大きな薄板: diag ≈ 141mm なので旧ステップは ≈0.55mm。
+        // 壁 0.3mm < 0.55mm のため旧実装は初手で板を飛び越し、went_inside が立たず
+        // 何も検出できなかった。新実装はこれを測れなければならない。
+        let thickness = 0.3;
+        let sdf = Sdf::cuboid(Vec3::new(50.0, 50.0, thickness * 0.5));
+        let (lo, hi) = sdf.sampling_box();
+        let diag = (hi - lo).length();
+        let old_step = diag / 256.0;
+        assert!(
+            thickness < old_step,
+            "test premise: the wall ({thickness}) must be thinner than the old step ({old_step})"
+        );
+        let mesh = polygonize(&sdf, lo, hi, 48);
+        let (t, _loc) =
+            min_wall_probe(&sdf, &mesh, lo, hi).expect("sphere tracing must find the thin wall");
+        // 検出できること (旧実装は何も返せなかった) と、薄肉として妥当な小さい値である
+        // ことを固定する。
+        //
+        // 精度の限界 (誠実な表明): この構図では壁が抽出セル (diag/resolution) より薄い——
+        // 「旧ステップ diag/256 より薄い」という前提が、そのまま「最細セルより薄い」を
+        // 含意するため、メッシュ頂点自体が真の表面を再現しきれない。よって値は公称厚に
+        // 数十%の誤差で近づく。重要なのは**見落とさない**ことであり、SDF 直接測定での
+        // 厳密性は `core::measure` 側のテストが担保する。
+        assert!(
+            t > 0.0 && t < old_step,
+            "a {thickness}mm wall must be reported as thin (< the old {old_step}mm step), got {t}"
+        );
+        assert!(
+            (t - thickness).abs() < thickness,
+            "the measured value must be the same order as the true {thickness}mm wall, got {t}"
         );
     }
 

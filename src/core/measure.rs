@@ -33,7 +33,19 @@ use super::sdf::Sdf;
 /// 表面交差の収束判定距離 (mm)。これ以下の |距離| を表面上とみなす。
 /// mm 単位系 (SPEC C5) で 1nm 相当——製造用途の測定精度として十分に細かく、
 /// f64 の桁落ちより十分粗い。
-const SURFACE_EPS: f64 = 1e-6;
+///
+/// `verify::check` の肉厚探針も同じ前進床を使う (問300) ため crate 内へ公開する。
+pub(crate) const SURFACE_EPS: f64 = 1e-6;
+
+/// sphere tracing の1ステップ幅 (問300 で `verify::check` と共有)。
+///
+/// `|d|` は真の距離の**下界**なのでこれだけ進んでも表面を跨がない (Hart 1996)。
+/// 表面近傍では `|d|→0` で停滞するため下限 `SURFACE_EPS` を課して必ず前進させる
+/// (無限ループ防止)。内部を深さ `t` で進むとき `|d| = t` となり歩幅が倍々に増えるため、
+/// 表面から出発しても対数回で任意距離に到達する。
+pub(crate) fn sphere_trace_step(d: f64) -> f64 {
+    d.abs().max(SURFACE_EPS)
+}
 
 /// sphere tracing の最大反復回数 (リソース上限・SECURITY §4)。
 /// 表面に沿ってかすめる光線 (grazing) では収束が遅くなるため上限で打ち切る。
@@ -118,16 +130,24 @@ pub fn ray_crossings(
             });
             inside = now_inside;
         }
-        // sphere tracing: |d| だけ進めば表面を跨がない (Hart 1996)。ただし表面近傍では
-        // |d|→0 で停滞するため、最低 SURFACE_EPS は進めて必ず前進させる (無限ループ防止)。
-        t += d.abs().max(SURFACE_EPS);
+        t += sphere_trace_step(d);
     }
     Ok(crossings)
 }
 
 /// 区間 `[lo, hi]` に符号変化が1つあるとして、二分探索で交差点の t を返す。
 /// 反復回数は固定 (決定性)。`inside_at_lo` は lo 側が立体内部かどうか。
-fn bisect_crossing(sdf: &Sdf, from: Vec3, unit: Vec3, lo: f64, hi: f64, inside_at_lo: bool) -> f64 {
+///
+/// 符号のみに依拠するため、合成形状で大きさが下界に過ぎない場合でも収束先は
+/// **真の表面**である (問299)。`verify::check` の肉厚探針も利用する (問300)。
+pub(crate) fn bisect_crossing(
+    sdf: &Sdf,
+    from: Vec3,
+    unit: Vec3,
+    lo: f64,
+    hi: f64,
+    inside_at_lo: bool,
+) -> f64 {
     let (mut a, mut b) = (lo, hi);
     // 60 回で区間幅は 2^-60 倍。f64 の相対精度に十分到達する。
     for _ in 0..60 {
