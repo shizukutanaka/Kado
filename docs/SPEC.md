@@ -168,7 +168,7 @@ JSON-RPC エラーではなく、`result.isError=true` を伴うツール結果�
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 | `script` |
 | `eval` | 1 点の符号付き距離を返す | `x, y, z` |
 | `measure` | **光線に沿った表面交差**を返し、隣接交差間の距離（span）＝穴径・肉厚・面間距離を 1 呼出で与える（問299）。sphere tracing（Hart 1996）で薄い特徴も飛び越さない。SDF の**符号**のみに依拠するため距離は厳密（`eval` の大きさは合成形状で下界に過ぎない）。**`complete` を必ず返す**——上限で打ち切られた場合 `false` となり、結果が不完全であることを AI が判別できる（問301） | `from[3], dir[3], max_distance` |
-| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, bed_contact_area, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248）。`bed_contact_area` は造形プレート接地面積（点接地は ~0・問252） | `resolution, min_wall_mm, max_overhang_deg, build_dir` |
+| `validate` | DFM 検証レポート（§5.2）。戻り値 JSON: `{ok, triangles, manifold, volume, volume_reliable, surface_area, bbox, dims_mm, center_of_mass, measured_min_wall, body_count, cavity_count, bed_contact_area, aspect_ratio, digest, issues:[{severity, code, cause, hints, location}]}`。`measured_min_wall` は閾値と独立に常に測定する実測最小肉厚（問247）。`body_count`/`cavity_count` は中実ボディ数/内部空洞数（非水密は null・問248）。`bed_contact_area` は造形プレート接地面積（点接地は ~0・問252）。`aspect_ratio` は実測の細長さ比で、閾値 `max_aspect_ratio`（既定 8・0 でスキップ）の発火と独立に常に公開（問305） | `resolution, min_wall_mm, max_overhang_deg, max_aspect_ratio, build_dir` |
 | `screenshot` | シーンを PNG レンダリング（base64）。`axes=true`（既定）のとき X=赤/Y=緑/Z=青のグノモンに **mm 目盛り**（1/10/100mm を軸長から決定的に選択・問288）を刻み、応答に目盛り間隔を記した text を添えて AI が画像から寸法を概算できるようにする | `view, width, height, samples, axes, projection` |
 | `export` | STL/GLB/3MF をプロジェクト直下へ書き出し | `path, resolution` |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す | — |
@@ -188,7 +188,7 @@ JSON-RPC エラーではなく、`result.isError=true` を伴うツール結果�
 | `OVERHANG` | warn | オーバーハング角 > 閾値（ベッド接地面・直下に材料がある面は支持済みとして除外）。最悪角度に加え総表面積に占めるオーバーハング**面積割合**を報告し、AI が比例的に対応できる（問249）。fix_hints に**ブリッジ vs カンチレバーの区別**を案内：両端支持の水平天井（ブリッジ）は数 mm の短スパンならサポート不要；一端支持（カンチレバー）や長スパンは要サポート（問254） |
 | `SUSPICIOUS_SCALE` | warn | 部品全体が `min_wall_mm` より小さい（単位/スケールの誤りが濃厚）。発火時は `THIN_WALL` を抑制する（問256） |
 | `UNSTABLE` | warn | 重心がベース接地面の足元から外れる（転倒する物理挙動）。`issue.location` = COM 座標 |
-| `HIGH_ASPECT_RATIO` | warn | ビルド高さ / 横方向最大寸法 > 8（FDM 印刷中の揺れリスク）。UNSTABLE と相補的な製造プロセス安定性軸 |
+| `HIGH_ASPECT_RATIO` | warn | ビルド高さ / 横方向最大寸法が `max_aspect_ratio`（既定 8）超（FDM 印刷中の揺れリスク）。UNSTABLE と相補的な製造プロセス安定性軸。**安全な比は絶対寸法・ノズル径・材料に依存する**ため閾値は調整可能（0 でスキップ）。実測比は閾値と独立に `aspect_ratio` として常に公開（問305） |
 | `ENCLOSED_CAVITY` | info | 外部に開口のない完全密閉の内部空洞（SLA で未硬化樹脂・FDM で除去不能サポートを閉じ込める）。中空シェルと密閉トラップはメッシュ上区別不能のため Info（`is_ok` を倒さない・問246） |
 
 ### 5.3 issue の `location` フィールド（問242/243）
@@ -298,7 +298,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 451 テスト（438 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
+- `cargo test`: 453 テスト（440 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。

@@ -131,6 +131,13 @@ pub struct Report {
     /// (問244/247 と同じ「計算済みデータの公開」)。build_dir が零・空メッシュは None。
     /// 球のように点接地する形状は ~0、平底は底面積に等しい。
     pub bed_contact_area: Option<f64>,
+    /// 実測アスペクト比 (問305)。ビルド方向の高さ / それに垂直な平面での最大横幅。
+    /// **閾値 (`max_aspect_ratio` 引数) と独立に常に測定値を公開する** — HIGH_ASPECT_RATIO
+    /// は閾値超過時しか出ないため、合格時の「あとどれだけ細長くできるか」(マージン) は
+    /// 従来取得できなかった (問247 の `measured_min_wall` と同じ「計算済みデータの公開」)。
+    /// 安全な比は絶対寸法・ノズル径・材料に依存するため、AI はこの実測値を見て
+    /// 自分で判断できる。build_dir が零・空メッシュ・退化寸法は None。
+    pub aspect_ratio: Option<f64>,
     /// DFM 問題リスト。
     pub issues: Vec<KadoError>,
 }
@@ -254,6 +261,7 @@ impl Report {
         let cavity_json = self.cavity_count.map_or(json::NULL, |n| json::n(n as f64));
         // ベッド接地面積: Some なら数値、None なら null (問252)。
         let bed_json = self.bed_contact_area.map_or(json::NULL, json::n);
+        let aspect_json = self.aspect_ratio.map_or(json::NULL, json::n);
         json::obj([
             ("ok", json::b(self.is_ok())),
             ("triangles", json::n(self.triangle_count as f64)),
@@ -268,6 +276,7 @@ impl Report {
             ("body_count", body_json),
             ("cavity_count", cavity_json),
             ("bed_contact_area", bed_json),
+            ("aspect_ratio", aspect_json),
             ("digest", json::s(format!("{:016x}", self.digest))),
             ("issues", Value::Array(issues)),
         ])
@@ -281,6 +290,22 @@ impl Report {
 /// `min_wall_mm` は最小肉厚チェックの閾値 (0以下でスキップ)。
 /// `max_overhang_deg` は最大オーバーハング角度 (度; 0以下でスキップ)。
 /// ビルド方向は +Z (= デフォルト: 重力と反対方向)。
+/// 高アスペクト比 (細長さ) 警告の既定閾値 (問241、問305 でパラメータ化)。
+///
+/// **この値の性格**: FDM の実務ガイドは「安全なアスペクト比は**絶対寸法・ノズル径・
+/// 材料に依存する**」としており、単一の普遍値は存在しない。実測ベースの目安では
+/// 0.3mm 幅のワイヤが約 7mm 高さ (比 ≈ 23)、1.5mm 幅なら約 30mm 高さ (比 ≈ 20) まで
+/// 波打ちなく印刷できるとされる。これらは**単純なワイヤ・調整済みプリンタという
+/// 理想条件での上限**であり、複雑形状ではより早く問題が出る。
+///
+/// よって既定は保守的に 8.0 を維持する (問241 からの挙動互換でもある)。
+/// **これは恣意的な固定閾値ではなく、`max_aspect_ratio` 引数で上書きできる既定値**
+/// である ([`validate_full`])。`min_wall_mm` / `max_overhang_deg` と同じ扱い——
+/// プリンタ・材料ごとに調整すべき値をユーザー (AI) が決められるようにする。
+/// 実測されたアスペクト比は閾値と独立に [`Report::aspect_ratio`] へ常に公開される
+/// (問247 の `measured_min_wall` と同じ思想)。
+pub const DEFAULT_MAX_ASPECT_RATIO: f64 = 8.0;
+
 pub fn validate(mesh: &Mesh, min_wall_mm: f64, max_overhang_deg: f64) -> Report {
     validate_with_field(
         mesh,
@@ -304,6 +329,33 @@ pub fn validate_with_field(
     min_wall_mm: f64,
     max_overhang_deg: f64,
     build_dir: Vec3,
+) -> Report {
+    validate_full(
+        mesh,
+        sdf,
+        min_wall_mm,
+        max_overhang_deg,
+        build_dir,
+        DEFAULT_MAX_ASPECT_RATIO,
+    )
+}
+
+/// 全パラメータを明示して検証する (問305)。
+///
+/// [`validate_with_field`] との違いは `max_aspect_ratio` を渡せることだけで、
+/// 既存呼び出しは `DEFAULT_MAX_ASPECT_RATIO` を使う薄いラッパとして無変更で動く。
+///
+/// `max_aspect_ratio`: 高アスペクト比 (細長さ) 警告の閾値 (高さ/横幅)。
+/// **0 以下で検査をスキップ** (`min_wall_mm`/`max_overhang_deg` と同じ規約)。
+/// 安全な値はプリンタ・材料・絶対寸法に依存するため、既定は保守的な
+/// [`DEFAULT_MAX_ASPECT_RATIO`] とし、呼び出し側が調整できるようにしている。
+pub fn validate_full(
+    mesh: &Mesh,
+    sdf: Option<&Sdf>,
+    min_wall_mm: f64,
+    max_overhang_deg: f64,
+    build_dir: Vec3,
+    max_aspect_ratio: f64,
 ) -> Report {
     let volume = mesh.signed_volume();
     let surface_area = mesh.surface_area();
@@ -389,6 +441,7 @@ pub fn validate_with_field(
             body_count: None,        // 空メッシュに位相なし。
             cavity_count: None,
             bed_contact_area: None, // 空メッシュに接地なし。
+            aspect_ratio: None,     // 空メッシュに寸法なし (問305)。
             issues,
         };
     }
@@ -772,9 +825,13 @@ pub fn validate_with_field(
     // 8. 高アスペクト比検査 (問241: 印刷プロセス中の揺れリスク)。
     //    UNSTABLE (印刷後の転倒: 物理挙動) と相補的な新視点 — 製造プロセスの安定性。
     //    FDM では高く細い形状がノズル通過時に振動し、層間剥離や転倒を引き起こす。
-    //    高さ / 横方向最大寸法 > 8 は業界ガイドラインの目安。
     //    bd に垂直な平面での頂点群バウンディングボックスを横方向尺度とする。
-    const HIGH_ASPECT_RATIO_THRESHOLD: f64 = 8.0;
+    //
+    //    問305: 閾値は `max_aspect_ratio` 引数 (既定 DEFAULT_MAX_ASPECT_RATIO) で
+    //    調整できる。安全な比は絶対寸法・ノズル径・材料に依存し普遍値が無いため、
+    //    ハードコードせずユーザー (AI) が決められるようにした。実測比は閾値と独立に
+    //    Report::aspect_ratio へ常に公開する (問247 と同じ思想)。
+    let mut aspect_ratio: Option<f64> = None;
     {
         let bd_len = build_dir.length();
         if bd_len > 1e-12 {
@@ -797,7 +854,11 @@ pub fn validate_with_field(
             let lateral_max = (lat_hi - lat_lo).max_component();
             if height > 0.0 && lateral_max > 0.0 {
                 let ratio = height / lateral_max;
-                if ratio > HIGH_ASPECT_RATIO_THRESHOLD {
+                // 問305: 閾値の発火有無と独立に測定値を公開する (問247 と同じ思想)。
+                // 合格時の「あとどれだけ細長くできるか」というマージンが読めるようになる。
+                aspect_ratio = Some(ratio);
+                // max_aspect_ratio <= 0 は検査スキップ (min_wall_mm 等と同じ規約)。
+                if max_aspect_ratio > 0.0 && ratio > max_aspect_ratio {
                     // 問255: location = ビルド方向最上位 10% の頂点重心 (揺れの起点)。
                     // AI が「どの部位を補強・方向変更すべきか」を空間的に参照できる。
                     let top_thresh = max_p - height * 0.1;
@@ -813,7 +874,7 @@ pub fn validate_with_field(
                         "HIGH_ASPECT_RATIO",
                         format!(
                             "build height {height:.1} mm / lateral size {lateral_max:.1} mm = \
-                             aspect ratio {ratio:.1} (threshold {HIGH_ASPECT_RATIO_THRESHOLD:.0}) \
+                             aspect ratio {ratio:.1} (threshold {max_aspect_ratio:.1}) \
                              — tall thin parts sway under the print nozzle and may delaminate \
                              (build direction [{:.2},{:.2},{:.2}])",
                             bd.x, bd.y, bd.z
@@ -822,6 +883,14 @@ pub fn validate_with_field(
                             "Reorient the part to print along the longest axis (rotate 90°)",
                             "Add a wider brim or raft for better bed adhesion",
                             "Reduce print speed for tall thin features",
+                            // 問305: 安全な比は絶対寸法に依存する。文献の実測目安を示し、
+                            // AI が自分の寸法に合わせて max_aspect_ratio を選べるようにする。
+                            "The safe ratio depends on ABSOLUTE size, not just the ratio: FDM \
+                             practice puts a 0.3mm-wide wire at ~7mm tall (ratio ~23) and a \
+                             1.5mm-wide one at ~30mm (ratio ~20) before waving appears. Those are \
+                             ideal-case limits for simple wires; complex parts fail sooner. If \
+                             your feature is thick enough, raise max_aspect_ratio (0 disables \
+                             this check)",
                         ],
                     );
                     if top_cnt > 0 {
@@ -845,6 +914,7 @@ pub fn validate_with_field(
         body_count,
         cavity_count,
         bed_contact_area: bed_contact,
+        aspect_ratio,
         issues,
     }
 }
@@ -2013,6 +2083,7 @@ mod tests {
             body_count: None,
             cavity_count: None,
             bed_contact_area: None,
+            aspect_ratio: None,
             issues: vec![],
         };
         // 正常系: 両条件 true → reliable。
@@ -2694,6 +2765,81 @@ mod tests {
             Value::Null,
             "zero build_dir bed_contact_area must be null in JSON"
         );
+    }
+
+    #[test]
+    fn aspect_ratio_threshold_is_a_parameter_and_the_measurement_is_always_published() {
+        // 問305: 旧実装は閾値 8.0 を関数内 const でハードコードし、実測比は警告文にしか
+        // 現れなかった。FDM の実務ガイドでは安全な比は**絶対寸法・ノズル径・材料に依存**し
+        // (0.3mm 幅→~7mm 高さ=比23、1.5mm 幅→~30mm=比20)、単一の普遍値は存在しない。
+        // よって `min_wall_mm`/`max_overhang_deg` と同じくパラメータ化し、実測値は
+        // 閾値と独立に公開する (問247 の measured_min_wall と同じ思想)。
+        //
+        // 半径 0.2 / 半高 2.5 → 高さ 5.0mm / 横幅 0.4mm = 比 12.5。
+        let sdf = Sdf::cylinder(0.2, 2.5);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let fired = |r: &Report| r.issues.iter().any(|e| e.code == "HIGH_ASPECT_RATIO");
+
+        // (1) 既定 (8.0) では従来どおり発火する — 挙動互換。
+        let base = validate_with_field(&mesh, None, 0.0, 0.0, up);
+        assert!(fired(&base), "default threshold must still flag ratio 12.5");
+
+        // (2) 実測比は閾値と独立に常に公開される。発火時。
+        let measured = base
+            .aspect_ratio
+            .expect("aspect_ratio must be published for a dimensioned mesh");
+        assert!(
+            (measured - 12.5).abs() < 1.0,
+            "measured aspect ratio should be ~12.5, got {measured}"
+        );
+
+        // (3) 閾値を実測値より上へ上げれば合格する (太い特徴で AI が調整する場合)。
+        let relaxed = validate_full(&mesh, None, 0.0, 0.0, up, 30.0);
+        assert!(!fired(&relaxed), "ratio 12.5 must pass a threshold of 30");
+        // それでも測定値は公開される — これが「マージンが読める」ということ。
+        assert_eq!(
+            relaxed.aspect_ratio.map(|v| (v * 100.0).round()),
+            base.aspect_ratio.map(|v| (v * 100.0).round()),
+            "the measurement must not depend on the threshold"
+        );
+
+        // (4) 0 以下で検査をスキップ (min_wall_mm 等と同じ規約)。
+        let skipped = validate_full(&mesh, None, 0.0, 0.0, up, 0.0);
+        assert!(!fired(&skipped), "max_aspect_ratio=0 must skip the check");
+        assert!(
+            skipped.aspect_ratio.is_some(),
+            "skipping the CHECK must not suppress the MEASUREMENT"
+        );
+
+        // (5) 閾値は警告文にも反映される (ハードコード値が残っていない)。
+        let strict = validate_full(&mesh, None, 0.0, 0.0, up, 3.0);
+        let cause = &strict
+            .issues
+            .iter()
+            .find(|e| e.code == "HIGH_ASPECT_RATIO")
+            .expect("ratio 12.5 must trip a threshold of 3")
+            .cause;
+        assert!(
+            cause.contains("threshold 3.0"),
+            "the message must report the ACTIVE threshold, got: {cause}"
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_is_exposed_in_report_json() {
+        // 問305: to_json にも載る (AI が構造化データとして読める)。
+        let sdf = Sdf::cylinder(0.2, 2.5);
+        let (lo, hi) = sdf.sampling_box();
+        let mesh = polygonize(&sdf, lo, hi, 32);
+        let r = validate_with_field(&mesh, None, 0.0, 0.0, Vec3::new(0.0, 0.0, 1.0));
+        let v = r.to_json();
+        let a = v
+            .get("aspect_ratio")
+            .and_then(|x| x.as_f64())
+            .expect("to_json must expose aspect_ratio");
+        assert!((a - 12.5).abs() < 1.0, "json aspect_ratio ~12.5, got {a}");
     }
 
     #[test]

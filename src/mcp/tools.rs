@@ -7,7 +7,7 @@ use crate::io::ExportFormat;
 use crate::mcp::json::{self, Value};
 use crate::render::{draw_axes, render, Camera};
 use crate::script::eval_any;
-use crate::verify::{validate, validate_with_field};
+use crate::verify::{validate, validate_full, DEFAULT_MAX_ASPECT_RATIO};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
 // polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
@@ -206,7 +206,8 @@ pub fn tool_list() -> Value {
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
              SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units), \
              UNSTABLE (center of mass falls outside the base footprint → tips over), \
-             HIGH_ASPECT_RATIO (build height / lateral size > 8 — sways during printing), \
+             HIGH_ASPECT_RATIO (build height / lateral size over max_aspect_ratio, \
+             default 8 — sways during printing; the measured value is always in aspect_ratio), \
              ENCLOSED_CAVITY (info: fully-sealed internal void traps resin/support — needs a drain hole). \
              Overhang is measured against build_dir (default +Z). \
              If your printer builds along a different axis, set build_dir to get correct results.",
@@ -229,6 +230,18 @@ pub fn tool_list() -> Value {
                     "max_overhang_deg",
                     "number",
                     "Maximum overhang angle in degrees from horizontal (0 to skip, default: 45)",
+                    false,
+                ),
+                (
+                    "max_aspect_ratio",
+                    "number",
+                    "Slenderness threshold: build height / lateral size (0 to skip, default: 8). \
+                     The safe value depends on ABSOLUTE size, nozzle and material, not the ratio \
+                     alone — FDM practice puts a 0.3mm-wide wire at ~7mm tall (ratio ~23) and a \
+                     1.5mm-wide one at ~30mm (ratio ~20) before waving. The default 8 is \
+                     deliberately conservative for complex parts; raise it when your features are \
+                     thick. The measured ratio is ALWAYS returned as `aspect_ratio`, whether or \
+                     not it trips this threshold",
                     false,
                 ),
                 (
@@ -1005,7 +1018,11 @@ Branch on issue.code to categorize results:
   OVERHANG          — surface > max_overhang_deg from horizontal; location = worst face centroid
   SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
   UNSTABLE          — center of mass outside the base footprint; location = COM coords
-  HIGH_ASPECT_RATIO — build height / lateral size > 8 (sways during printing, risk of delamination)
+  HIGH_ASPECT_RATIO — build height / lateral size exceeds max_aspect_ratio (default 8;
+                      sways during printing, risk of delamination). The safe ratio depends on
+                      ABSOLUTE size: a 0.3mm-wide wire tolerates ~7mm tall (ratio ~23), a 1.5mm
+                      one ~30mm (ratio ~20). Raise max_aspect_ratio for thick features, 0 skips.
+                      The measured ratio is ALWAYS returned as `aspect_ratio`.
   ENCLOSED_CAVITY   — info: fully-sealed internal void (traps resin/support; add a drain hole for SLA)
 
 ## printability rules of thumb (問250; FDM/resin community practice)
@@ -1119,6 +1136,11 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
         .get("max_overhang_deg")
         .and_then(|v| v.as_f64())
         .unwrap_or(45.0);
+    // 問305: 細長さ閾値。安全値はプリンタ・材料・絶対寸法に依存するため調整可能にする。
+    let max_aspect = args
+        .get("max_aspect_ratio")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(DEFAULT_MAX_ASPECT_RATIO);
     // 問68: ビルド方向を明示受け取り (デフォルト +Z)。
     let build_dir = arg_build_dir(args);
 
@@ -1126,7 +1148,14 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
     // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
-    let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang, build_dir);
+    let report = validate_full(
+        &mesh,
+        Some(scene),
+        min_wall,
+        max_overhang,
+        build_dir,
+        max_aspect,
+    );
     // 機械可読な構造化 JSON を返す (問63): AI が code で分岐し指標を直接読める。
     // 問90: digest の決定性契約 (問61) は「同一解像度」が前提だが、report 単体には
     // 解像度が含まれず digest が再現性検証に使えなかった。resolution を併記する。
