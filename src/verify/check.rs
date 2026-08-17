@@ -2520,6 +2520,77 @@ mod tests {
     }
 
     #[test]
+    fn reported_volume_and_area_stay_within_measured_accuracy_of_analytic_truth() {
+        // 問306: `help` は AI に「mass_g = volume/1000 × density」で材料費を見積もれと
+        // 指示し、`surface_area` も「FDM 造形時間・材料費の主要因」と説明している。
+        // しかしこれらは**抽出メッシュ由来の離散近似**であり、その精度はどこにも
+        // 文書化されておらず、テストでも固定されていなかった——正確だったのは
+        // 偶然であり、契約ではなかった。抽出器を変更すれば無音で劣化しうる。
+        //
+        // ここで解析解に対する実測精度を不変条件として固定する。閾値は実測値
+        // (下記) に十分な余裕を持たせた「劣化検知」の水準であり、精度そのものの
+        // 主張ではない。
+        //
+        // validate 既定解像度 48 での実測誤差:
+        //   sphere(1.0)        volume -0.119%   area -0.061%
+        //   cylinder(0.5,1.0)  volume -0.121%   area -0.831%
+        //   cuboid(1,1,1)      volume -0.051%   area -1.024%
+        // 体積は解像度 16→128 で -1.07%→-0.02% と素直に収束する。表面積は
+        // 収束が遅く、箱状形状では解像度 128 でも -0.44% 程度で頭打ちになる
+        // (内接多面体近似の系統的性質)。
+        let pi = std::f64::consts::PI;
+        let cases: [(&str, Sdf, f64, f64); 3] = [
+            ("sphere", Sdf::sphere(1.0), 4.0 / 3.0 * pi, 4.0 * pi),
+            (
+                "cylinder",
+                Sdf::cylinder(0.5, 1.0),
+                pi * 0.25 * 2.0,
+                2.0 * pi * 0.5 * 2.0 + 2.0 * pi * 0.25,
+            ),
+            ("cuboid", Sdf::cuboid(Vec3::splat(1.0)), 8.0, 24.0),
+        ];
+        for (name, sdf, true_vol, true_area) in &cases {
+            let (lo, hi) = sdf.sampling_box();
+            let mesh = polygonize(sdf, lo, hi, 48);
+            let v_err = (mesh.signed_volume() - true_vol) / true_vol;
+            let a_err = (mesh.surface_area() - true_area) / true_area;
+            // 体積は材料費見積もりの根拠なので厳しめに固定する (実測 <0.13%)。
+            assert!(
+                v_err.abs() < 0.005,
+                "{name}: volume error {:.4}% exceeds the 0.5% degradation guard",
+                v_err * 100.0
+            );
+            // 表面積は収束が遅い (実測 <1.1%)。より緩い guard で劣化のみ検知する。
+            assert!(
+                a_err.abs() < 0.025,
+                "{name}: area error {:.4}% exceeds the 2.5% degradation guard",
+                a_err * 100.0
+            );
+            // **系統的に過小評価**であること (内接多面体近似なので真値を超えない)。
+            // これは偶然ではなく性質であり、安全側 (材料を過大に見積もらない) である。
+            assert!(
+                v_err <= 0.0 && a_err <= 0.0,
+                "{name}: mesh-derived values must UNDER-estimate (inscribed approximation), \
+                 got volume {:+.4}% area {:+.4}%",
+                v_err * 100.0,
+                a_err * 100.0
+            );
+        }
+        // 体積は解像度を上げると単調に改善する (収束の観測可能な固定)。
+        let s = Sdf::sphere(1.0);
+        let (lo, hi) = s.sampling_box();
+        let err_at = |res: usize| {
+            let m = polygonize(&s, lo, hi, res);
+            ((m.signed_volume() - 4.0 / 3.0 * pi) / (4.0 / 3.0 * pi)).abs()
+        };
+        let (coarse, fine) = (err_at(16), err_at(64));
+        assert!(
+            fine < coarse,
+            "volume error must shrink with resolution: res16={coarse:.5} res64={fine:.5}"
+        );
+    }
+
+    #[test]
     fn report_exposes_surface_area_in_json_and_summary() {
         // 問244: validate は肉厚推定 (2V/SA) で表面積を計算しながら破棄していた。
         // 表面積は FDM 造形時間・材料費の主要因であり、体積と並ぶ基本幾何量。

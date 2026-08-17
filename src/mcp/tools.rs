@@ -196,7 +196,14 @@ pub fn tool_list() -> Value {
              (ENCLOSED_CAVITY is \"info\"). resolution echoes the effective (clamped) \
              extraction resolution used for this report. \
              Units: 1 coordinate unit = 1 mm, so volume is mm³, surface_area mm², \
-             bed_contact_area mm². Estimate material: mass_g = volume/1000 × density \
+             bed_contact_area mm². volume and surface_area are measured from the EXTRACTED \
+             MESH, so they carry resolution-dependent discretization error and always \
+             UNDER-estimate slightly (inscribed approximation). At the default resolution 48 \
+             volume is within ~0.15% of exact — fine for cost estimates — but surface_area \
+             converges more slowly (~1% low on box-like shapes, and it plateaus rather than \
+             vanishing), so prefer volume for material estimates and treat area as indicative. \
+             Raise `resolution` if you need tighter numbers. \
+             Estimate material: mass_g = volume/1000 × density \
              (PLA~1.24, ABS~1.04, PETG~1.27, resin~1.1 g/cm³) — see help for cost/infill notes. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
              thinnest wall vertex, or center of mass for UNSTABLE) so the AI can zoom in. \
@@ -1048,6 +1055,11 @@ Use these to set thresholds and interpret results (adjust per printer/material):
 
 Coordinates are millimeters (1 unit = 1 mm), so report.volume is in mm³ and
 report.surface_area in mm². To estimate filament/resin use from a validate report:
+  NOTE  volume/surface_area come from the extracted mesh: they are discretization
+        approximations and always slightly UNDER-estimate. At resolution 48 volume is
+        within ~0.15% (good enough for cost); surface_area can be ~1% low on box-like
+        shapes and converges slowly. Use volume for material math; raise resolution for
+        tighter figures.
   solid mass (g)    = volume / 1000 × density        (mm³→cm³ is /1000)
   density (g/cm³)   PLA ~1.24, ABS ~1.04, PETG ~1.27, Nylon ~1.14, resin ~1.10
   cost              ≈ mass_g × price_per_gram (e.g. ~2.4 yen/g for 2400 yen/kg PLA)
