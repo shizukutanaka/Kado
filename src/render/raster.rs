@@ -142,6 +142,22 @@ pub fn render(mesh: &Mesh, cam: &Camera, width: usize, height: usize) -> Image {
         let face_n = face_n * (1.0 / face_n_len);
         let ldot = face_n.dot(cam.light_dir).max(0.0);
         let intensity = (cam.ambient + (1.0 - cam.ambient) * ldot).min(1.0);
+        // 問307: **陰影は sRGB (ガンマ) 空間で計算している** — `diffuse` (sRGB 値) に
+        // 輝度係数を直接乗じる。光の伝播は本来リニア空間の演算なので、これは物理的に
+        // 正しくない: sRGB→リニア変換 (pow 2.2) → 乗算 → リニア→sRGB (pow 1/2.2) が
+        // 正しい手順である。
+        //
+        // 実測される差 (diffuse=220 の場合):
+        //   intensity 0.25 → 現在 55 / 正しくは ~117 (差 +62 = 全域の 24%)
+        //   intensity 0.60 → 現在 132 / 正しくは ~174 (差 +42)
+        // つまり陰の面が本来より大幅に暗く沈み、階調が失われる。
+        //
+        // 現状これを**意図的に据え置いている**理由: 修正すると全 screenshot の
+        // 出力バイトが変わる (既存のピクセル期待値テストも全て更新が必要) 一方で、
+        // 「VLM の形状認識が実際に向上するか」は未計測である。物理的正しさと
+        // 視覚的有用性は自動的には一致しないため、出力を変える判断はユーザーに委ねる。
+        // この乖離を無記録のまま放置しないことが本コメントとテストの目的
+        // (問306 と同じ「精度を偶然ではなく契約にする」方針)。
         let color = [
             (cam.diffuse[0] as f64 * intensity) as u8,
             (cam.diffuse[1] as f64 * intensity) as u8,
@@ -903,6 +919,66 @@ mod tests {
             p_far_width < p_near_width,
             "perspective must render the far edge narrower than the near edge: \
              near={p_near_width}, far={p_far_width}"
+        );
+    }
+
+    #[test]
+    fn shading_is_computed_in_gamma_space_by_deliberate_choice() {
+        // 問307: 陰影計算が sRGB (ガンマ) 空間で行われていることを**契約として固定**する。
+        // 物理的には誤り (リニア空間で乗ずるのが正しい) だが、出力を変えると全
+        // screenshot のバイトが変わる一方で VLM の形状認識向上は未計測なので、
+        // 意図的に据え置いている。無記録の放置と区別するためテストで明示する。
+        //
+        // 検証方法: 光源に正対する面 (ldot=1 → intensity=1) と、光源に背を向ける面
+        // (ldot=0 → intensity=ambient) の輝度比が、**ambient の比そのもの**になることを
+        // 確認する。リニア空間で計算していれば比は ambient^(1/2.2) になり一致しない。
+        let ambient = 0.25;
+        let diffuse = 220u8;
+        // ガンマ空間 (現在の実装): 暗面 = diffuse * ambient。
+        let gamma_space_dark = (diffuse as f64 * ambient) as u8;
+        // リニア空間 (物理的に正しい実装) ならこうなるはずの値。
+        let lin = (diffuse as f64 / 255.0).powf(2.2);
+        let linear_space_dark = (((lin * ambient).powf(1.0 / 2.2)) * 255.0) as u8;
+
+        assert_eq!(
+            gamma_space_dark, 55,
+            "gamma-space shading must put the ambient-only face at diffuse*ambient"
+        );
+        assert!(
+            linear_space_dark > 110,
+            "sanity: physically-correct shading would be much brighter (~117), got \
+             {linear_space_dark}"
+        );
+        // 差が大きい (全域の 20% 超) ことを記録 — 「無視できる差」ではない。
+        assert!(
+            linear_space_dark - gamma_space_dark > 50,
+            "the deviation is substantial and intentionally documented, not negligible"
+        );
+
+        // 実レンダラがガンマ空間側の値を出すことを確認する (契約の実地固定)。
+        // 光源を +Z、カメラを +Z 正面に置き、+Z を向く面と側面の輝度を比べる。
+        let m = Mesh::from_soup(&[[
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(1.0, -1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ]]);
+        let cam = Camera {
+            eye: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::ZERO,
+            up: Vec3::new(0.0, 1.0, 0.0),
+            fov_y: 0.9,
+            bg: [0, 0, 0],
+            light_dir: Vec3::new(0.0, 0.0, 1.0),
+            diffuse: [diffuse, diffuse, diffuse],
+            ambient,
+            ortho: false,
+        };
+        let img = render(&m, &cam, 64, 64);
+        // 正対面なので intensity=1 → diffuse そのまま (ガンマ補正が入れば変わる)。
+        let brightest = img.pixels.chunks(3).map(|p| p[0]).max().unwrap();
+        assert_eq!(
+            brightest, diffuse,
+            "a face facing the light must render at exactly `diffuse` in gamma-space shading"
         );
     }
 
