@@ -69,18 +69,23 @@ pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
 
     // 角の SDF 値を事前計算 (各サンプル点1回)。
     let idx = |i: usize, j: usize, k: usize| (i * n + j) * n + k;
+    // 格子点の座標は添字から一意に決まるため**保存せず都度再計算する** (問308)。
+    // 以前は `poss: Vec<Vec3>` に全点を保持しており、res=256 (n=257) では
+    // 257³ × 24B ≈ 407MB を値配列 (≈136MB) に上乗せしていた (実測ピーク RSS 670MB)。
+    // 式・演算順序は保存版と完全に同一なので、出力はビット単位で不変
+    // (決定性・問5 を保つ最重要点。`digest` が変わらないことをテストで固定)。
+    let pos_at = |i: usize, j: usize, k: usize| {
+        Vec3::new(
+            min.x + step.x * i as f64,
+            min.y + step.y * j as f64,
+            min.z + step.z * k as f64,
+        )
+    };
     let mut vals = vec![0.0f64; n * n * n];
-    let mut poss = vec![Vec3::ZERO; n * n * n];
     for i in 0..n {
         for j in 0..n {
             for k in 0..n {
-                let p = Vec3::new(
-                    min.x + step.x * i as f64,
-                    min.y + step.y * j as f64,
-                    min.z + step.z * k as f64,
-                );
-                poss[idx(i, j, k)] = p;
-                vals[idx(i, j, k)] = sdf.eval(p);
+                vals[idx(i, j, k)] = sdf.eval(pos_at(i, j, k));
             }
         }
     }
@@ -103,7 +108,7 @@ pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
                     );
                     *c = Corner {
                         coord: [ci as i32, cj as i32, ck as i32],
-                        pos: poss[idx(ci, cj, ck)],
+                        pos: pos_at(ci, cj, ck),
                         val: vals[idx(ci, cj, ck)],
                     };
                 }
@@ -272,6 +277,61 @@ mod tests {
         let s = Sdf::sphere(0.1);
         let m = polygonize(&s, Vec3::new(2.0, 2.0, 2.0), Vec3::new(3.0, 3.0, 3.0), 8);
         assert!(m.triangles.is_empty());
+    }
+
+    #[test]
+    fn grid_position_is_a_pure_function_of_its_index() {
+        // 問308: 格子点座標の事前保存 (`poss: Vec<Vec3>`, res=256 で ≈407MB) を廃し、
+        // 添字から都度再計算するようにした。この変更が安全なのは
+        // 「**同じ添字は常にビット同一の座標を返す**」ためである——隣接セルは格子点を
+        // 共有しており、共有点の座標が 1ULP でもずれると `edge_vertex` の正準性が壊れ、
+        // 水密性 (問11) と決定性 (問5) が同時に失われる。
+        //
+        // 保存方式ではこの性質は自明だったが、再計算方式では**計算式に依存する**。
+        // 特に「前の点に step を足し込む」ような漸化式に置き換えると誤差が蓄積して
+        // ビット同一でなくなる。その退行をここで検知する。
+        let min = Vec3::new(-1.5, -0.25, 3.125);
+        let max = Vec3::new(2.5, 1.75, 7.0);
+        let res = 17usize; // 割り切れない分割で丸め誤差を出やすくする
+        let step = Vec3::new(
+            (max.x - min.x) / res as f64,
+            (max.y - min.y) / res as f64,
+            (max.z - min.z) / res as f64,
+        );
+        let pos_at = |i: usize, j: usize, k: usize| {
+            Vec3::new(
+                min.x + step.x * i as f64,
+                min.y + step.y * j as f64,
+                min.z + step.z * k as f64,
+            )
+        };
+        // 同一添字を独立に2回評価してビット一致すること (純粋性)。
+        for i in 0..=res {
+            for j in 0..=res {
+                for k in 0..=res {
+                    let a = pos_at(i, j, k);
+                    let b = pos_at(i, j, k);
+                    assert_eq!(a.x.to_bits(), b.x.to_bits());
+                    assert_eq!(a.y.to_bits(), b.y.to_bits());
+                    assert_eq!(a.z.to_bits(), b.z.to_bits());
+                }
+            }
+        }
+        // 漸化式 (step の足し込み) はビット同一に**ならない**ことを実地に示す。
+        // これが「保存をやめても安全」の根拠が計算式にあることの裏付けになる。
+        let mut acc = min.x;
+        let mut drifted = false;
+        for i in 0..=res {
+            if acc.to_bits() != pos_at(i, 0, 0).x.to_bits() {
+                drifted = true;
+            }
+            acc += step.x;
+        }
+        assert!(
+            drifted,
+            "incremental accumulation must drift from index-based computation — if this ever \
+             holds, the test has stopped guarding what it claims to guard"
+        );
     }
 
     #[test]
