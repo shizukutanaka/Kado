@@ -315,12 +315,30 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 456 テスト（443 ライブラリユニット + 5 CLI ユニット + 8 統合）合格。
+- `cargo test`: 457 テスト（443 ライブラリユニット + 5 CLI ユニット + 9 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
 - `cargo build --release`: リリースプロファイル（LTO・単一 codegen-unit・panic=abort）成功。
 - ソクラテス問答（`docs/socratic-review.md`）: 問1–295 を継続的に吟味・固定。
+
+**KPI 実測値**（問309・Plan.md §7 と突き合わせ）:
+
+| KPI | 目標 | 実測 | |
+|---|---|---|---|
+| 単一バイナリ起動 | ≤100ms | **4ms** | ✅ |
+| screenshot | ≤2秒 | **84ms** | ✅ |
+| テスト数 | 300+ | **457** | ✅ |
+| 静的解析警告 | 0 | **0** | ✅ |
+| PII 収集 | ゼロ | ゼロ（ネットワーク I/O なし） | ✅ |
+| 平均ツール呼出/タスク | ≤15 | **4**（旗艦 DoD 実測・下記） | ✅ |
+| 無人完走率 | ≥80% | 旗艦 DoD は自動テストで完走を保証 | 部分 |
+
+旗艦 DoD「M3穴付きブラケットを自然言語→検証済み STL まで無人完走」は
+`tests/mcp_workflow.rs::flagship_dod_m3_bracket_completes_within_the_tool_call_budget`
+として**実行可能なテスト**になっている（run_script→measure→validate→export の
+4 呼出で完走し、穴径 Ø3.2 を実測確認、出力 STL を binary STL としてデコードして
+水密性まで検証する）。
 
 CI 定義は `docs/ci.yml`（ubuntu/macos/windows マトリクス + `no-external-deps` 検証）。
 Claude Code の GitHub App は `workflows` 権限を持たないため、リポジトリ管理者が
