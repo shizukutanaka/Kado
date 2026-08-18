@@ -48,6 +48,7 @@ echo '{"op":"sphere","r":1.0}' > scene.json
 | `screenshot [scene.json] <out.png> [view]` | PNG スクリーンショット |
 | `run <scene.json> [resolution]` | メッシュ統計表示 |
 | `check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]` | DFM 検証 |
+| `validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]` | 外部 binary STL を DFM 検証（**検証専用**・SDF 正本にはしない） |
 | `mcp` | MCP サーバ（stdio）起動 |
 | `help` / `--help` / `-h` | 使い方一覧を表示 |
 
@@ -65,7 +66,8 @@ Kado は MCP（Model Context Protocol, JSON-RPC 2.0）サーバとして AI に�
 |--------|------|
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 |
 | `eval` | 1 点の符号付き距離を返す |
-| `validate` | DFM 検証レポート（肉厚・オーバーハング・多様体・体積） |
+| `measure` | **光線に沿った表面交差**を返す。隣接交差間の距離がそのまま穴径・肉厚・面間距離になる（1 呼出で寸法確認） |
+| `validate` | DFM 検証レポート（肉厚・オーバーハング・多様体・体積・安定性・細長さ） |
 | `screenshot` | シーンを PNG レンダリング（base64・7 視点） |
 | `export` | STL/GLB/3MF/HTML をプロジェクト直下へ書き出し |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す |
@@ -144,7 +146,7 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ## 開発
 
 ```sh
-cargo test --all-targets                    # 全テスト (443 ユニット + 5 CLI + 9 統合)
+cargo test --all-targets                    # 全テスト (445 ユニット + 5 CLI + 9 統合)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
 cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```

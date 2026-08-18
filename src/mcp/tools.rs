@@ -1887,6 +1887,55 @@ mod tests {
     }
 
     #[test]
+    fn readme_lists_every_mcp_tool() {
+        // 問310: README の MCP ツール表が `measure` (問299 で追加) を落としており、
+        // 8 ツールしか載っていなかった。問278 は README の**演算子**一覧を守る
+        // メタテストを入れたが、**ツール表**と CLI コマンド表は無防備だった——
+        // 同じ「表面積の不整合」(問292/294) がドキュメントの表側で起きていた。
+        //
+        // `tool_list` を真実源に、README がすべてのツール名を載せることを固定する。
+        let readme = include_str!("../../README.md");
+        let tools = tool_list();
+        for t in tools.as_array().expect("tool_list is an array") {
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("each tool has a name");
+            assert!(
+                readme.contains(&format!("`{name}`")),
+                "README must list the MCP tool `{name}` (問310)"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_lists_every_cli_command() {
+        // 問310: README の CLI 表から `validate-stl` (問296 で追加) が漏れていた。
+        // CLI の真実源は cli/main.rs の usage_text だが、そこは別クレート
+        // (バイナリ) なのでここからは参照できない。よってコマンド名の一覧を
+        // このテスト内に明示し、README との一致を守る。コマンドを増やすときは
+        // usage_text・README・この配列の3点を揃えること
+        // (usage_text 側の網羅は cli の usage_text_lists_every_command が守る)。
+        let readme = include_str!("../../README.md");
+        for cmd in [
+            "version",
+            "selftest",
+            "export",
+            "screenshot",
+            "run",
+            "check",
+            "validate-stl",
+            "mcp",
+            "help",
+        ] {
+            assert!(
+                readme.contains(&format!("`{cmd}")),
+                "README must document the CLI command `{cmd}` (問310)"
+            );
+        }
+    }
+
+    #[test]
     fn readme_operator_list_is_fully_documented() {
         // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
         // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
