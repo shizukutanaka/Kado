@@ -1,6 +1,6 @@
 [package]
 name = "kado"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AI-First local geometry engine (SDF kernel). External-transmission-free, deterministic, single self-contained binary."
 license = "MIT"

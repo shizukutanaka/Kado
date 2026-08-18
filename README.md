@@ -144,7 +144,7 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ## 開発
 
 ```sh
-cargo test --all-targets                    # 全テスト (414 ユニット + 5 CLI + 8 統合)
+cargo test --all-targets                    # 全テスト (443 ユニット + 5 CLI + 9 統合)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
 cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```
