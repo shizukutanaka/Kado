@@ -7978,3 +7978,26 @@ CI は `-D warnings` なのでこれが無いとビルドが落ちる)。
 > 読んだつもりで読んでいなかった。**7つの KPI がこれで全て実測値を持つ**。
 >
 > テスト数: 460 (445 ライブラリユニット + 5 CLI ユニット + 10 統合)。
+
+## 問311 補記 — CI が「有効化すれば緑」であることを実地に確認した
+
+第5段階「自動化」は権限で阻まれる (問309 で 403 を確認) が、**所有者が有効化した
+ときに実際に通るのか**は誰も確かめていなかった。「置けば動くはず」は仮定である。
+
+`docs/ci.yml` の全ステップをローカルで逐一実行した:
+
+| ステップ | 結果 |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --all-targets -- -D warnings` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` | PASS |
+| `cargo test --all-targets` | PASS (460) |
+| `cargo build --release` | PASS |
+| `no-external-deps` (cargo tree) | PASS (std のみ) |
+
+有効化は `git mv docs/ci.yml .github/workflows/ci.yml` の一手で足り、**緑になることは
+確認済み**である。この事実を ci.yml の冒頭にも記した——所有者が「動くか分からない
+ものを有効化する」判断をせずに済むようにするため。
+
+> 私にできない作業でも、**相手が着手しやすい状態まで持っていく**ことはできる。
+> 権限の壁を報告して終わりにしないのが、ここでの「完成」の一部だと考えた。
