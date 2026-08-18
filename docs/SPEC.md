@@ -315,7 +315,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 459 テスト（445 ライブラリユニット + 5 CLI ユニット + 9 統合）合格。
+- `cargo test`: 460 テスト（445 ライブラリユニット + 5 CLI ユニット + 10 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
@@ -331,8 +331,8 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 | テスト数 | 300+ | **457** | ✅ |
 | 静的解析警告 | 0 | **0** | ✅ |
 | PII 収集 | ゼロ | ゼロ（ネットワーク I/O なし） | ✅ |
-| 平均ツール呼出/タスク | ≤15 | **4**（旗艦 DoD 実測・下記） | ✅ |
-| 無人完走率 | ≥80% | 旗艦 DoD は自動テストで完走を保証 | 部分 |
+| 平均ツール呼出/タスク | ≤15 | **3〜4**（評価セット3・旗艦 DoD 4） | ✅ |
+| 無人完走率 | ≥80% | **100%（17/17）** — 評価セット全課題を実 MCP バイナリで完走（問311） | ✅ |
 
 旗艦 DoD「M3穴付きブラケットを自然言語→検証済み STL まで無人完走」は
 `tests/mcp_workflow.rs::flagship_dod_m3_bracket_completes_within_the_tool_call_budget`

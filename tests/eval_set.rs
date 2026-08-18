@@ -346,3 +346,92 @@ fn eval_set_extraction_is_byte_deterministic() {
         }
     }
 }
+
+mod common;
+
+/// **無人完走率**を評価セット全体に対して実測する (問311)。
+///
+/// Plan.md §7 の看板 KPI はこう書かれている:
+///   「無人完走率（**Phase 0評価セットを分母とする**）≥80%」
+///
+/// 問309 で旗艦 DoD 1件は実行可能テストにしたが、KPI の**分母は評価セット全体**で
+/// あり、1/N しか測れていなかった。本テストは評価セットの全課題を**実 MCP バイナリ**へ
+/// 流し、AI が辿るのと同じ道具列で完走できた割合を数える。
+///
+/// 既存の `eval_set_*` テストは Rust API を直接叩いており「幾何が正しいか」を見るが、
+/// 本テストは「**エージェントが MCP 越しに課題を完了できるか**」という別の問いに答える。
+/// 両者は違う——幾何が正しくてもツール層が失敗すれば AI は完走できない。
+#[test]
+fn unattended_completion_rate_over_the_eval_set_meets_the_kpi() {
+    // Plan.md §7 の閾値。
+    const REQUIRED_RATE: f64 = 0.80;
+    // Plan.md §7: 平均ツール呼出 ≤15/タスク。下記の道具列は 3 呼出。
+    const TOOL_CALLS_PER_TASK: usize = 3;
+    // KPI 予算内であることを**コンパイル時**に保証する (実行時 assert は自明に真で
+    // 意味を持たないため)。道具列を増やして 15 を超えたらビルドが落ちる。
+    const _: () = assert!(TOOL_CALLS_PER_TASK <= 15);
+
+    let tasks = eval_set();
+    let mut completed = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (t, task) in tasks.iter().enumerate() {
+        // AI が1課題を完走する最小の道具列: 作る → 検証する → 出荷する。
+        // JSON スクリプトは 1 行へ潰す (フレーム本文に改行があってもよいが可読性のため)。
+        let script = task.script.replace('\n', " ");
+        let escaped = script.replace('\\', "\\\\").replace('"', "\\\"");
+        let out = format!("kado-evalset-{t}.stl");
+        let reqs = vec![
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string(),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"run_script","arguments":{{"script":"{escaped}"}}}}}}"#
+            ),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"validate","arguments":{"resolution":32}}}"#.to_string(),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"export","arguments":{{"path":"{out}","resolution":32}}}}}}"#
+            ),
+        ];
+        let resp = common::parse_responses(&common::run_mcp(&reqs));
+
+        // 完走 = 3 呼出すべてが成功し、かつ水密な STL が実在すること。
+        // (人手の介入・再試行を一切要さない、が「無人」の操作的定義)
+        let calls_ok = (2..=4).all(|id| resp.get(&id).is_some_and(common::tool_ok));
+        let mesh_ok = resp
+            .get(&3)
+            .and_then(common::tool_text)
+            .and_then(|t| kado::mcp::json::parse(t).ok())
+            .and_then(|r| r.get("manifold").and_then(|v| v.as_bool()))
+            == Some(true);
+        let path = std::path::Path::new(&out);
+        let file_ok = std::fs::read(path)
+            .ok()
+            .and_then(|b| kado::io::stl::decode_binary(&b).ok())
+            .is_some_and(|m| !m.triangles.is_empty());
+        std::fs::remove_file(path).ok();
+
+        if calls_ok && mesh_ok && file_ok {
+            completed += 1;
+        } else {
+            failures.push(format!(
+                "[{}] calls_ok={calls_ok} manifold={mesh_ok} stl_ok={file_ok}",
+                task.name
+            ));
+        }
+    }
+
+    let rate = completed as f64 / tasks.len() as f64;
+    assert!(
+        rate >= REQUIRED_RATE,
+        "unattended completion rate {:.0}% ({completed}/{}) is below the KPI of {:.0}%; \
+         failures: {failures:#?}",
+        rate * 100.0,
+        tasks.len(),
+        REQUIRED_RATE * 100.0
+    );
+    // 実測値を残す (KPI は下限であり、実際の値を知ることに意味がある)。
+    println!(
+        "unattended completion rate: {completed}/{} = {:.0}% at {TOOL_CALLS_PER_TASK} tool calls/task",
+        tasks.len(),
+        rate * 100.0
+    );
+}
