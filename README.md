@@ -146,7 +146,10 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ## 開発
 
 ```sh
-cargo test --all-targets                    # 全テスト (445 ユニット + 5 CLI + 9 統合)
+./scripts/check.sh                          # 全品質ゲートを1コマンドで (問314)
+git config core.hooksPath .githooks         # push 時に自動実行 (初回のみ)
+
+cargo test --all-targets                    # 全テスト (448 ユニット + 5 CLI + 10 統合)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
 cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```

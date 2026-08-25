@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# push 前に品質ゲートを自動実行する (問314)。
+#
+# 有効化 (クローン後に一度だけ):
+#   git config core.hooksPath .githooks
+#
+# `.git/hooks/` はコミットできないため共有できないが、`core.hooksPath` を
+# **コミット済みディレクトリ**へ向ければフックを配布できる。これにより
+# 「ゲートを走らせ忘れる」経路が構造的に塞がる。
+#
+# 緊急時の迂回: git push --no-verify (使ったことは PR に書くこと)
+set -euo pipefail
+printf '\033[1mpre-push: 品質ゲートを実行します (迂回は --no-verify)\033[0m\n'
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
