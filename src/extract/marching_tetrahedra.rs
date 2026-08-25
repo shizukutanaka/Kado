@@ -58,7 +58,58 @@ const TETS: [[usize; 4]; 6] = [
 /// SDF木を bounds `[min,max]^3` 上で各軸 `res` 分割して抽出する。
 ///
 /// `res` は1軸あたりのセル数。頂点サンプル数は `(res+1)^3`。
+///
+/// 問312: 内部は `polygonize_with_threads` (private) へ委譲し、`available_parallelism` で
+/// 並列化する。**出力はスレッド数と無関係にビット同一** (下記の設計コメント参照)。
 pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
+    let threads = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    polygonize_with_threads(sdf, min, max, res, threads)
+}
+
+/// `0..len` を最大 `parts` 個の連続レンジへ分割する (問312)。
+///
+/// 余りは先頭のレンジから 1 ずつ配る。分割は `len` と `parts` のみで決まる
+/// 決定的な純関数であり、スケジューリングに依存しない。空レンジは返さない。
+fn split_ranges(len: usize, parts: usize) -> Vec<std::ops::Range<usize>> {
+    let parts = parts.clamp(1, len.max(1));
+    let base = len / parts;
+    let extra = len % parts;
+    let mut ranges = Vec::with_capacity(parts);
+    let mut start = 0;
+    for t in 0..parts {
+        let count = base + usize::from(t < extra);
+        if count == 0 {
+            continue;
+        }
+        ranges.push(start..start + count);
+        start += count;
+    }
+    ranges
+}
+
+/// スレッド数を明示して抽出する (問312)。`polygonize` の実体。
+///
+/// # 決定性 (問5): 出力がスレッド数・実行順序から独立である構造
+///
+/// 並列化で決定性を壊さないために、**「実行をどう並べても結果が変わらない構造」を
+/// 先に作り、その上で並列化する**:
+///
+/// - **Phase A (格子値)**: 各格子点の値は `sdf.eval(pos_at(i,j,k))` の純関数で、
+///   書き込み先 `vals[idx]` は添字から一意に決まる互いに素なスロット。i-軸スラブ
+///   (`n*n` 要素の連続チャンク) を `split_at_mut` でワーカーへ配るため、どの順で
+///   実行されても各要素はビット同一 (`pos_at` の純粋性は
+///   `grid_position_is_a_pure_function_of_its_index` が固定済み — 問308 で
+///   入れたテストが、そのまま並列化の安全性の根拠になっている)。
+/// - **Phase B (セル emit)**: 外側ループ i を連続レンジへ分割し、各ワーカーは
+///   自分のレンジを逐次版と同じ走査順 (i→j→k) でローカル soup へ emit し、
+///   完了後に**レンジ昇順で連結**する。連結結果は逐次版の i-major 順と完全一致し、`Mesh::from_soup` の
+///   頂点統合・三角形順もビット同一になる。スレッド間の共有可変状態はゼロ。
+/// - スレッド数は分割数を変えるだけで、分割 (`split_ranges`) は決定的、連結順は
+///   レンジ番号で固定。よって**コア数の違う環境でも出力は同一** (テストで
+///   threads=1/2/4/7 のビット一致を固定)。
+fn polygonize_with_threads(sdf: &Sdf, min: Vec3, max: Vec3, res: usize, threads: usize) -> Mesh {
     assert!(res >= 1, "res must be >= 1");
     let n = res + 1;
     let step = Vec3::new(
@@ -81,42 +132,73 @@ pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
             min.z + step.z * k as f64,
         )
     };
-    let mut vals = vec![0.0f64; n * n * n];
-    for i in 0..n {
-        for j in 0..n {
-            for k in 0..n {
-                vals[idx(i, j, k)] = sdf.eval(pos_at(i, j, k));
-            }
-        }
-    }
+    let pos_at = &pos_at; // 各ワーカー閉包が参照コピーを move できるように。
 
-    let mut soup: Vec<[Vec3; 3]> = Vec::new();
-    for i in 0..res {
-        for j in 0..res {
-            for k in 0..res {
-                // この立方体セルの8角。
-                let mut corners = [Corner {
-                    coord: [0, 0, 0],
-                    pos: Vec3::ZERO,
-                    val: 0.0,
-                }; 8];
-                for (c, off) in corners.iter_mut().zip(CUBE.iter()) {
-                    let (ci, cj, ck) = (
-                        i + off[0] as usize,
-                        j + off[1] as usize,
-                        k + off[2] as usize,
-                    );
-                    *c = Corner {
-                        coord: [ci as i32, cj as i32, ck as i32],
-                        pos: pos_at(ci, cj, ck),
-                        val: vals[idx(ci, cj, ck)],
-                    };
+    // Phase A: i-軸スラブ (n*n 要素) 単位で並列にサンプリングする。
+    let mut vals = vec![0.0f64; n * n * n];
+    std::thread::scope(|s| {
+        let mut rest: &mut [f64] = &mut vals;
+        for range in split_ranges(n, threads) {
+            let (chunk, tail) = rest.split_at_mut(range.len() * n * n);
+            rest = tail;
+            s.spawn(move || {
+                for (di, slab) in chunk.chunks_mut(n * n).enumerate() {
+                    let i = range.start + di;
+                    for j in 0..n {
+                        for k in 0..n {
+                            slab[j * n + k] = sdf.eval(pos_at(i, j, k));
+                        }
+                    }
                 }
-                for tet in &TETS {
-                    emit_tet(sdf, &corners, *tet, &mut soup);
-                }
-            }
+            });
         }
+    });
+
+    // Phase B: セル走査を i の連続レンジで分割し、ローカル soup をレンジ昇順に連結する。
+    let vals = &vals;
+    let soups: Vec<Vec<[Vec3; 3]>> = std::thread::scope(|s| {
+        let handles: Vec<_> = split_ranges(res, threads)
+            .into_iter()
+            .map(|range| {
+                s.spawn(move || {
+                    let mut soup: Vec<[Vec3; 3]> = Vec::new();
+                    for i in range {
+                        for j in 0..res {
+                            for k in 0..res {
+                                // この立方体セルの8角。
+                                let mut corners = [Corner {
+                                    coord: [0, 0, 0],
+                                    pos: Vec3::ZERO,
+                                    val: 0.0,
+                                }; 8];
+                                for (c, off) in corners.iter_mut().zip(CUBE.iter()) {
+                                    let (ci, cj, ck) = (
+                                        i + off[0] as usize,
+                                        j + off[1] as usize,
+                                        k + off[2] as usize,
+                                    );
+                                    *c = Corner {
+                                        coord: [ci as i32, cj as i32, ck as i32],
+                                        pos: pos_at(ci, cj, ck),
+                                        val: vals[idx(ci, cj, ck)],
+                                    };
+                                }
+                                for tet in &TETS {
+                                    emit_tet(sdf, &corners, *tet, &mut soup);
+                                }
+                            }
+                        }
+                    }
+                    soup
+                })
+            })
+            .collect();
+        // spawn 順 = レンジ昇順に join し、逐次版と同一の大域順序を復元する。
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut soup: Vec<[Vec3; 3]> = Vec::with_capacity(soups.iter().map(Vec::len).sum());
+    for local in soups {
+        soup.extend(local);
     }
 
     Mesh::from_soup(&soup)
@@ -277,6 +359,74 @@ mod tests {
         let s = Sdf::sphere(0.1);
         let m = polygonize(&s, Vec3::new(2.0, 2.0, 2.0), Vec3::new(3.0, 3.0, 3.0), 8);
         assert!(m.triangles.is_empty());
+    }
+
+    #[test]
+    fn split_ranges_partitions_exactly_and_deterministically() {
+        // 問312: レンジ分割は「連続・重複なし・全域被覆・空なし」でなければ、
+        // 並列 emit の連結順が逐次版とずれて決定性が壊れる。境界を運動する:
+        // 割り切れる/割り切れない/parts>len/parts=0/len=0。
+        for (len, parts) in [
+            (10usize, 1usize),
+            (10, 2),
+            (10, 3),
+            (10, 7),
+            (10, 10),
+            (3, 8),
+            (1, 4),
+            (10, 0),
+            (0, 4),
+        ] {
+            let ranges = split_ranges(len, parts);
+            // 全域をちょうど1回ずつ、昇順で被覆する。
+            let mut expect = 0usize;
+            for r in &ranges {
+                assert_eq!(r.start, expect, "ranges must be contiguous ({len},{parts})");
+                assert!(!r.is_empty(), "no empty ranges ({len},{parts})");
+                expect = r.end;
+            }
+            assert_eq!(expect, len, "ranges must cover 0..{len} ({len},{parts})");
+            // 決定的 (同一入力 → 同一分割)。
+            assert_eq!(ranges, split_ranges(len, parts));
+        }
+    }
+
+    #[test]
+    fn parallel_extraction_is_bit_identical_regardless_of_thread_count() {
+        // 問312: 並列化の絶対条件は「出力がスレッド数と無関係」であること。
+        // 同一バイナリでもコア数の違う環境で digest が変われば、決定性契約 (問5) が
+        // 「同一マシン内のみ」へ縮んでしまう。threads=1 (逐次と等価) を基準に、
+        // 2/4/7 (res を割り切らない 7 で境界レンジを運動) がビット単位で一致することを
+        // 固定する。
+        let model = Sdf::sphere(1.0)
+            .union(Sdf::cuboid(Vec3::splat(0.8)))
+            .difference(Sdf::cylinder(0.3, 2.0));
+        let (lo, hi) = (Vec3::splat(-1.5), Vec3::splat(1.5));
+        let res = 26; // 2/4 で割り切れ、7 で割り切れない値。
+        let base = polygonize_with_threads(&model, lo, hi, res, 1);
+        assert!(!base.triangles.is_empty(), "test premise: non-empty mesh");
+        for threads in [2usize, 4, 7, 64] {
+            let m = polygonize_with_threads(&model, lo, hi, res, threads);
+            assert_eq!(
+                m.triangles, base.triangles,
+                "triangle lists must match at threads={threads}"
+            );
+            assert_eq!(
+                m.vertices.len(),
+                base.vertices.len(),
+                "vertex counts must match at threads={threads}"
+            );
+            for (a, b) in m.vertices.iter().zip(&base.vertices) {
+                assert_eq!(a.x.to_bits(), b.x.to_bits());
+                assert_eq!(a.y.to_bits(), b.y.to_bits());
+                assert_eq!(a.z.to_bits(), b.z.to_bits());
+            }
+            assert_eq!(
+                m.digest(),
+                base.digest(),
+                "digest must be thread-count independent at threads={threads}"
+            );
+        }
     }
 
     #[test]

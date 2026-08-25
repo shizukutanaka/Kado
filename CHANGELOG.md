@@ -6,7 +6,20 @@
 
 ## [Unreleased]
 
-（次回リリース分はここに追記する）
+### 変更
+
+- `polygonize` を **std のみで決定的に並列化**した (問312)。格子点評価は完全に独立な
+  純関数評価だが単一スレッドで逐次実行していた。`std::thread::scope` で
+  Phase A（格子値サンプリング）と Phase B（セル emit）を分割実行する
+  （外部 crate 不要・ADR-003 維持）。**実測 2.51倍**（4コア・res=160 で 0.50s→0.20s）。
+  `validate(res=256)` 全体では 3.0s→2.4s（1.25倍）にとどまる——DFM 検証側が逐次の
+  ままで、Amdahl の法則どおり並列化した部分しか速くならないため。ピーク RSS は
+  281→314MB（+33MB、ワーカーのローカル soup 分）。
+  **決定性（問5）は「スレッド数にも非依存」へ強化**: 出力はスレッド数に関わらず
+  ビット同一で、digest 3解像度が並列化前の基準値と完全一致することを実測確認。
+  テスト `parallel_extraction_is_bit_identical_regardless_of_thread_count`
+  （threads=1/2/4/7/64）と `split_ranges_partitions_exactly_and_deterministically` で固定
+
 
 ## [0.2.0] - 2026-08-18
 
