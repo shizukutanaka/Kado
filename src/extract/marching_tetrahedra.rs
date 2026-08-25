@@ -392,6 +392,55 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_tree_survives_extraction_on_worker_threads() {
+        // 問313: 問312 で `Sdf::eval` (再帰的にツリーを降る) の実行場所を
+        // **メインスレッドからワーカースレッドへ移した**。Linux の主スレッドは
+        // 8MB スタックだが Rust の spawn スレッド既定は 2MB であり、実行文脈が
+        // 変わった以上「深い木は安全」という保証は測り直す必要がある。
+        //
+        // SECURITY.md §4 は「シーン木の深さ 64」を DoS 境界として掲げ、
+        // `script::eval` の MAX_DEPTH がそれを強制している。ところが**深さ64 の木を
+        // 抽出まで通すテストはどこにも無かった** (stress_probe の最深ケースは
+        // union 5 段、script 側の深さテストはパーサ層の拒否を見ているだけ)。
+        // つまりこの保証は抽出経路で一度も確かめられていなかった (問306 と同型:
+        // 「正確だったのは偶然であり契約ではない」)。
+        //
+        // 上限そのものに加え、**上限の 4 倍 (256 段)** まで余裕があることも確認する。
+        // 余裕がどれだけあるかを可視化しておけば、将来 eval のフレームが太っても
+        // 「上限ぎりぎりで落ちる」前にこのテストが気づく。
+        let depths = [
+            crate::script::eval::DSL_MAX_DEPTH, // 64: SECURITY.md が掲げる上限
+            crate::script::eval::DSL_MAX_DEPTH * 4, // 256: 余裕の可視化
+        ];
+        for depth in depths {
+            // translate を depth 段ネストする。各段の移動量は小さく取り、
+            // 形状がサンプリング箱から出ないようにする。
+            let mut sdf = Sdf::sphere(1.0);
+            for _ in 0..depth {
+                sdf = sdf.translate(Vec3::new(1e-6, 0.0, 0.0));
+            }
+            let (lo, hi) = (Vec3::splat(-1.5), Vec3::splat(1.5));
+            // 1 スレッド (旧・メインスレッド相当) と 4 スレッド (ワーカー) の両方で
+            // 抽出でき、かつ出力がビット同一であること。
+            let seq = polygonize_with_threads(&sdf, lo, hi, 20, 1);
+            let par = polygonize_with_threads(&sdf, lo, hi, 20, 4);
+            assert!(
+                !par.triangles.is_empty(),
+                "depth={depth}: extraction on worker threads must produce geometry"
+            );
+            assert_eq!(
+                seq.triangles, par.triangles,
+                "depth={depth}: worker-thread extraction must match sequential"
+            );
+            assert_eq!(
+                seq.digest(),
+                par.digest(),
+                "depth={depth}: digest must be thread-count independent even for deep trees"
+            );
+        }
+    }
+
+    #[test]
     fn parallel_extraction_is_bit_identical_regardless_of_thread_count() {
         // 問312: 並列化の絶対条件は「出力がスレッド数と無関係」であること。
         // 同一バイナリでもコア数の違う環境で digest が変われば、決定性契約 (問5) が

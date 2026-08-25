@@ -315,7 +315,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 462 テスト（447 ライブラリユニット + 5 CLI ユニット + 10 統合）合格。
+- `cargo test`: 463 テスト（448 ライブラリユニット + 5 CLI ユニット + 10 統合）合格。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
