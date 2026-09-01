@@ -136,3 +136,37 @@ fn export_refuses_to_overwrite_the_scene_file() {
         "the scene file must survive the refused command"
     );
 }
+
+#[test]
+fn export_rejects_an_unknown_extension_instead_of_writing_a_mislabelled_file() {
+    // 問322: 以前は未知の拡張子を黙って STL にフォールバックしていたため、
+    // `export model.obj` は「中身は binary STL・名前は .obj」というファイルを
+    // 無言で作った。利用者は Kado が OBJ を書けたと信じ、別のツールで開けない
+    // 理由が分からない。実バイナリでも拒否されることを固定する。
+    let dir = workdir("badext");
+    std::fs::write(dir.join("scene.txt"), SCENE).unwrap();
+
+    let out = kado(&dir, &["export", "scene.txt", "model.obj"]);
+    assert!(
+        !out.status.success(),
+        "an unsupported output format must fail loudly"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(".obj") && err.contains(".stl") && err.contains(".glb"),
+        "the error must name the bad extension and list the supported ones: {err}"
+    );
+    assert!(
+        !dir.join("model.obj").exists(),
+        "nothing must be written when the format is rejected"
+    );
+
+    // 拡張子が無い場合は STL 既定のまま (拒否するのは入力が誤っている場合だけ)。
+    let ok = kado(&dir, &["export", "scene.txt", "noext"]);
+    assert!(
+        ok.status.success(),
+        "a path without an extension must still default to STL: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(dir.join("noext").exists());
+}

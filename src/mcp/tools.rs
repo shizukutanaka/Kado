@@ -595,6 +595,12 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return ToolResult::error(format!("rejected output path: {e}")),
     };
+    // 問322: 形式の判定は**メッシュを作る前**に行う。抽出は解像度次第で秒単位
+    // かかるので、拡張子が不正だと分かっているのに先に払う理由が無い。
+    let format = match ExportFormat::from_path(path) {
+        Ok(f) => f,
+        Err(e) => return ToolResult::error(e),
+    };
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
@@ -604,8 +610,7 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             "mesh is empty — scene may be outside the bounding box; nothing exported",
         );
     }
-    // 拡張子で形式を選択 (問124: CLI と共有する単一の真実源 io::ExportFormat)。
-    let format = ExportFormat::from_path(path);
+    // 形式は上で解決済み (問124: CLI と共有する単一の真実源 io::ExportFormat)。
     let fmt = format.label();
     let write_res = format.write(&mesh, &safe);
     match write_res {

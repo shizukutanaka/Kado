@@ -57,6 +57,16 @@ fn main() {
                 }
                 None => demo_model(),
             };
+            // 拡張子で形式を選択 (問124: MCP と共有する単一の真実源 io::ExportFormat)。
+            // 問322: 抽出の**前**に判定する。拡張子が不正だと分かっているのに
+            // 秒単位のポリゴン化を先に払う理由が無い。
+            let format = match ExportFormat::from_path(&out) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, 64);
             // 問48: screenshot と同様に空メッシュを検出して早期終了。
@@ -65,9 +75,7 @@ fn main() {
                 eprintln!("mesh is empty — bounding box may not contain the shape");
                 std::process::exit(1);
             }
-            // 拡張子で形式を選択 (問124: MCP と共有する単一の真実源 io::ExportFormat)。
             let path = std::path::Path::new(&out);
-            let format = ExportFormat::from_path(&out);
             let write_res = format.write(&mesh, path);
             match write_res {
                 Ok(()) => println!(
