@@ -30,7 +30,7 @@ cargo build --release
 # デモモデルを STL 出力
 ./target/release/kado export demo.stl
 
-# スクリプトからメッシュ統計を表示
+# スクリプトからメッシュ統計を表示 (拡張子は任意。JSON/テキスト DSL は内容で自動判別)
 echo '{"op":"sphere","r":1.0}' > scene.json
 ./target/release/kado run scene.json
 
@@ -189,7 +189,7 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ./scripts/check.sh                          # 全品質ゲートを1コマンドで (問314)
 git config core.hooksPath .githooks         # push 時に自動実行 (初回のみ)
 
-cargo test --all-targets                    # 全テスト (456 ユニット + 5 CLI + 14 統合)
+cargo test --all-targets                    # 全テスト (456 ユニット + 8 CLI + 18 統合)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
 cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```

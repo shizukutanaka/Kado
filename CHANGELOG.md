@@ -4,9 +4,31 @@
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に従う。
 
-## [Unreleased]
+### 修正
+
+- **`export` / `screenshot` がシーンファイルを破壊する欠陥を修正** (問321)。
+  `kado export scene.txt out.stl` は scene.txt を**出力パス**と解釈し、
+  デモモデルの STL を**利用者のシーンファイルへ上書き**したうえ、指定された
+  `out.stl` を黙って無視していた（原本は復元不能に失われ、書き出された中身も
+  利用者のシーンではなくデモモデルだった）。原因はシーンファイルの判定が
+  `ends_with(".json")` だったこと——Kado はテキスト DSL のシーンも受け付け (問59)、
+  `run`/`check` は拡張子を問わないため、この前提はそもそも成り立っていなかった。
+  `export` は末尾に省略可能な引数を持たないので拡張子の推測を**削除**し、引数の
+  個数だけで決めるようにした。`screenshot` は末尾に `view` があるため**出力側**の
+  `.png` で判定する（入力の形を推測するのではなく、仕様で決まっている出力の要件を
+  確かめる）。引数解決を `resolve_export_paths`/`resolve_screenshot_paths` として
+  `main()` から切り出し、テスト可能にした。あわせて出力先がシーンファイルと同一なら
+  中止する防御 (`refuse_to_clobber_scene`) を追加。**474 本のテストが1つも落ちなかった
+  のは、MCP 側にある実バイナリ E2E (`mcp_workflow.rs`) に対応するものが CLI 側に
+  無かったから**で、`docs/SPEC.md` §10 の「実経路での E2E」が片肺だった
 
 ### 追加
+
+- `tests/cli_workflow.rs` を新設 (問321)。MCP 側と対になる CLI の E2E として、
+  実バイナリを一時ディレクトリで走らせ、出力が指定名で作られること・シーンファイルが
+  一字一句そのままであること・シーン出力とデモ出力が実際に別物であること・同一パス
+  指定が声を上げて中止することを固定する。旧ロジックへ戻すと 4 本中 3 本が実際に
+  FAIL することを確認済み
 
 - **issue code の3点セットを双方向で機械強制**するようにした (問320)。`CLAUDE.md` §2 は
   DFM issue code の追加を「`ALL_ISSUE_CODES` + `KADOSCENE_HELP` + 発火させる回帰テスト」の
