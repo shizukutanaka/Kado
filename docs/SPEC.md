@@ -315,12 +315,14 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 
 ## 10. 品質ゲート
 
-- `cargo test`: 463 テスト（448 ライブラリユニット + 5 CLI ユニット + 10 統合）合格。
+- `cargo test --all-targets`: 全テスト合格（ライブラリユニット + CLI ユニット + CLI/MCP の実バイナリ E2E）。
+  本数は `cargo test` が常に表示するので、ここでは重複して持たない（問324: 本セッション中に
+  手で同期した数値が繰り返しずれた）。
 - `cargo clippy --all-targets -- -D warnings`: 警告ゼロ。
 - `cargo fmt --all -- --check`: rustfmt 標準に一致（v151/問295 で全ツリー正規化）。
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: rustdoc 警告ゼロ（問275）。
 - `cargo build --release`: リリースプロファイル（LTO・単一 codegen-unit・panic=abort）成功。
-- ソクラテス問答（`docs/socratic-review.md`）: 問1–295 を継続的に吟味・固定。
+- ソクラテス問答（`docs/socratic-review.md`）: 問1–324 を継続的に吟味・固定。
 
 **KPI 実測値**（問309・Plan.md §7 と突き合わせ）:
 
@@ -328,7 +330,7 @@ MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到
 |---|---|---|---|
 | 単一バイナリ起動 | ≤100ms | **4ms** | ✅ |
 | screenshot | ≤2秒 | **84ms** | ✅ |
-| テスト数 | 300+ | **457** | ✅ |
+| テスト数 | 300+ | **486** | ✅ |
 | 静的解析警告 | 0 | **0** | ✅ |
 | PII 収集 | ゼロ | ゼロ（ネットワーク I/O なし） | ✅ |
 | 平均ツール呼出/タスク | ≤15 | **3〜4**（評価セット3・旗艦 DoD 4） | ✅ |
@@ -344,19 +346,37 @@ CI 定義は `docs/ci.yml`（ubuntu/macos/windows マトリクス + `no-external
 Claude Code の GitHub App は `workflows` 権限を持たないため、リポジトリ管理者が
 `git mv docs/ci.yml .github/workflows/ci.yml` で有効化する。
 
-### 出力フォーマットの外部相互運用性（リリース前手動検証・問289）
+### 出力フォーマットの外部相互運用性（リリース前検証・問289/問324）
 
 内部テスト（`io/stl`・`io/zip`・`io/threemf`・`io/gltf`）に加え、書き出した
-STL/3MF/GLB が **Kado 以外の標準ツール** で開けることを確認する（`cargo test` の
-外側・Python 依存のため CI には含めない）:
+STL/3MF/GLB/HTML が **Kado 以外の標準ツール** で開けることを確認する。
+
+```sh
+python3 scripts/interop-check.py
+```
+
+問324 以前この節は**散文としてしか存在せず**、実行可能なものがリポジトリに無かった
+（`find . -name '*.py'` が 0 件）。手順が書いてあることと、それが実行されたことは別である。
+`scripts/check.sh` には組み込まない（Python 依存のため CI には含めない・従来の判断を維持）。
+
+要点は Kado の実装を**一切参照せず独立にデコードする**こと。Kado のバグを Kado の
+コードで見逃さないため、Python 標準ライブラリだけで復元する:
 
 - **STL**: `struct` で `84 + n*50` レイアウトを復元・全レコードの属性=0・
-  ファイル長が三角形数と厳密一致。
+  ファイル長が三角形数と厳密一致・全 float が有限。
 - **3MF**: `zipfile.testzip()` が全エントリの CRC-32 を独自実装で再計算して検証し、
-  `xml.etree` が `3D/3dmodel.model` を整形式 XML としてパース・`unit="millimeter"`
-  と頂点/三角形数を確認。
+  `xml.etree` が `3D/3dmodel.model` を整形式 XML としてパース・`unit="millimeter"`・
+  頂点/三角形数・三角形の頂点参照が範囲内であることを確認。
 - **GLB**: `glTF` マジック・version 2・総長一致・先頭 JSON チャンクのパース・
   `asset.version == "2.0"`・`NORMAL` アクセサが単位長（問290）を確認。
+- **HTML**: 外部リソース参照が無いこと。§10 は従来 HTML に触れていなかったが、
+  **C1「外部送信ゼロ」は出力側でも担保が要る**（問324）——書き出した HTML が
+  外部 URL を参照していれば、開いた時点でネットワークへ出る。ソースにソケットが
+  無いこと（問316）だけでは、生成物経由の流出を防げない。
+
+**実測（問324・v0.2.0）**: 4 形式すべて PASS。GLB 法線の単位長からの最大偏差は
+`4.50e-08`。各形式を1バイト改変すると対応する検査が実際に FAIL することも確認済み
+（通るだけの検査は、検査が機能している証拠にならない）。
 
 ---
 

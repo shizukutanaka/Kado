@@ -10,3 +10,7 @@ Cargo.lock
 kado-export.*
 kado-screenshot.*
 kado-demo.*
+
+# scripts/interop-check.py を import して使う場合の副産物 (問324)
+__pycache__/
+*.pyc
