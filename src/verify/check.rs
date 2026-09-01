@@ -1173,6 +1173,81 @@ mod tests {
     use crate::core::Sdf;
     use crate::extract::polygonize;
 
+    /// このファイルが実際に emit している issue code を、ソースから列挙する (問320)。
+    ///
+    /// `KadoError::error(` / `::warn(` / `::info(` の直後に来る文字列リテラルが
+    /// code である。全大文字リテラルを拾う雑な方法だと、将来無関係な定数
+    /// (`"STL"` など) を誤検出して落ちるノイズ源になるので、**呼び出し形を
+    /// たどって**正確に取る。
+    fn emitted_issue_codes() -> Vec<String> {
+        let src = include_str!("check.rs");
+        let mut codes = Vec::new();
+        // 検出語は**実行時の文字列連結**で組み立てる (問316 の教訓)。リテラルで
+        // 書くと、このテスト自身のソースが検出対象 (check.rs) に含まれるため、
+        // 自分の書いた配列に反応して常に落ちる。実際そうなって一度落とした。
+        let ctors: Vec<String> = ["error", "warn", "info"]
+            .iter()
+            .map(|m| ["KadoError", "::", m, "("].concat())
+            .collect();
+        for ctor in &ctors {
+            let ctor = ctor.as_str();
+            let mut from = 0;
+            while let Some(i) = src[from..].find(ctor) {
+                let after = from + i + ctor.len();
+                // 直後の空白・改行を飛ばして最初の文字列リテラルを読む。
+                let rest = src[after..].trim_start();
+                if let Some(body) = rest.strip_prefix('"') {
+                    if let Some(end) = body.find('"') {
+                        codes.push(body[..end].to_string());
+                    }
+                }
+                from = after;
+            }
+        }
+        codes.sort();
+        codes.dedup();
+        codes
+    }
+
+    /// 問320: `ALL_ISSUE_CODES` と**実際に emit されるコード**が一致すること。
+    ///
+    /// `CLAUDE.md` §2 は「issue code を追加するときは `ALL_ISSUE_CODES` +
+    /// `KADOSCENE_HELP` + 発火させる回帰テストの3点を揃えよ」と定めるが、
+    /// 既存のメタテスト (`issue_codes_are_fully_documented`) が守るのは
+    /// 「リストに載っているコードが文書に載っていること」だけだった。
+    /// **リストに載せ忘れたまま emit した場合**は、どのゲートも落ちない——
+    /// AI は help にもスキーマにも無いコードを受け取り、意味を調べる手段が無い。
+    ///
+    /// 逆向き (リストにあるが誰も emit しない) も検出する。死んだコードが
+    /// 文書に載り続けると、AI は起こりえない問題への対処を用意してしまう。
+    #[test]
+    fn every_emitted_issue_code_is_declared_and_vice_versa() {
+        let emitted = emitted_issue_codes();
+        assert!(
+            emitted.len() >= 5,
+            "emit 箇所の抽出が壊れている (見つかったのは {} 件)",
+            emitted.len()
+        );
+
+        let mut declared: Vec<String> = ALL_ISSUE_CODES.iter().map(|s| s.to_string()).collect();
+        declared.sort();
+
+        let undeclared: Vec<&String> = emitted.iter().filter(|c| !declared.contains(c)).collect();
+        assert!(
+            undeclared.is_empty(),
+            "emit されているのに ALL_ISSUE_CODES に無い issue code がある。\n\
+             AI は help/validate スキーマに載らないコードを受け取り、意味を調べられない。\n\
+             {undeclared:?}"
+        );
+
+        let unemitted: Vec<&String> = declared.iter().filter(|c| !emitted.contains(c)).collect();
+        assert!(
+            unemitted.is_empty(),
+            "ALL_ISSUE_CODES にあるが emit 箇所が無い issue code がある。\n\
+             起こりえない問題を文書に載せ続けることになる。\n{unemitted:?}"
+        );
+    }
+
     #[test]
     fn volume_is_marked_unreliable_for_open_mesh() {
         // 問65: 閉じたメッシュは体積信頼可、クリップで開いたメッシュは不可。
