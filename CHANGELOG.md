@@ -8,6 +8,31 @@
 
 ### 追加
 
+- **Windows での起動時 panic を修正**し、改行コードをリポジトリ全体で固定した (問317)。
+  `docs/ci.yml` は ubuntu/macos/windows の 3 OS を宣言していたが、CI は権限上一度も
+  有効化されておらず **Linux 以外は未検証**だった。CRLF 変換を手元で再現したところ、
+  README の演算子節を空行 (`"\n\n"`) で切り出すメタテストが、Windows 既定の
+  `core.autocrlf=true` によるチェックアウトで `\r\n\r\n` を空行と認識できず
+  **`.expect` で panic**することが判明（CI を有効化した瞬間に落ちる）。
+  リポジトリに `.gitattributes` が無く、変換を止めるものが何も無かった。
+  CRLF は `scripts/check.sh` と `.githooks/pre-push` の shebang も壊す。
+  根治として `.gitattributes` に `* text=auto eol=lf` を追加し
+  (`gitattributes_pins_line_endings_to_lf` が消失を検知)、二重の防御として解析側も
+  `readme_operator_section()` に切り出して改行を正規化した（zip ダウンロードや既存の
+  CRLF 作業ツリーは `.gitattributes` を経由しないため片方では塞げない）。
+  正規化を外すと実際に panic すること、`.gitattributes` を消した場合と `eol=lf` を
+  外した場合の両方で FAIL することを実地確認済み
+
+- **Windows 側のサンドボックス被覆ゼロ**を解消した (問317)。バックスラッシュの
+  パス解釈テストは本体がまるごと `#[cfg(unix)]` で囲まれており、Windows では中身が
+  消えて**何も検査していなかった**（cfg 自体は正しいが、「テストがある」ことと
+  「その OS で検査されている」ことは別）。`#[cfg(windows)]` 側を追加し、同じ文字列が
+  ParentDir として拒否されること、ドライブ相対パス (`C:foo.stl`) が `Prefix` 拒否で
+  捕まることを固定。さらに cfg に依存しない共通アサートを置き、将来どちらの cfg も
+  外れたときに無検査へ退行しないようにした。テスト名は実態に合わせて
+  `sandbox_never_escapes_whatever_the_separator_semantics` へ改名。Windows 専用
+  ブロックは cfg を一時的に `all()` へ差し替えて**コンパイルが通ることを確認**済み
+
 - **「外部送信ゼロ」を契約化**した (問316)。`SECURITY.md` §1 の最重要主張
   「ネットワークソケットを一切開かない」だけ**強制手段が無かった**。`no-external-deps`
   ジョブ（`cargo tree`）が守るのは「外部 crate ゼロ」であり、ネットワーク型は

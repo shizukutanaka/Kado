@@ -1561,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_backslash_path_is_literal_filename_on_unix_not_traversal() {
+    fn sandbox_never_escapes_whatever_the_separator_semantics() {
         // 問189: Unix では '\\' はパス区切りではなくファイル名の一文字。
         // "a\\..\\escape.stl" は単一の Normal コンポーネントになり、ParentDir として
         // 解釈されないため脱出しない (プロジェクト直下に変な名前のファイルができるだけ)。
@@ -1577,6 +1577,31 @@ mod tests {
             // 正規のスラッシュ traversal は引き続き拒否される (回帰防止)。
             assert!(sandbox_write_path("a/../escape.stl").is_err());
         }
+        // 問317: 上のブロックは Windows では**丸ごと消える**ため、これまで
+        // Windows 側のサンドボックス被覆は完全にゼロだった (CI が一度も走って
+        // いないので誰も気づけない)。契約は片側だけでは成立しないので、
+        // 反対側も明示する: Windows では '\\' は正規の区切りであり、
+        // 同じ文字列は ParentDir として解釈されて**拒否される**。
+        // どちらの OS でも「プロジェクト直下から脱出できない」点は共通で、
+        // 変わるのは拒否の仕方 (エラー / 奇妙だが安全なファイル名) だけである。
+        #[cfg(windows)]
+        {
+            assert!(
+                sandbox_write_path("a\\..\\escape.stl").is_err(),
+                "on Windows backslash is a real separator, so this is traversal"
+            );
+            assert!(sandbox_write_path("a/../escape.stl").is_err());
+            // ドライブ相対パス ("C:foo") は絶対パスではないが Prefix を持つ。
+            // Prefix 拒否がこれを捕まえることを固定する。
+            assert!(
+                sandbox_write_path("C:foo.stl").is_err(),
+                "drive-relative paths must be rejected via the Prefix arm"
+            );
+        }
+        // OS を問わず成立する部分 (どちらの cfg も外れた場合に無検査にならないよう)。
+        assert!(sandbox_write_path("a/../escape.stl").is_err());
+        assert!(sandbox_write_path("/etc/passwd").is_err());
+        assert!(sandbox_write_path("out.stl").is_ok());
     }
 
     #[test]
@@ -1935,15 +1960,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn readme_operator_list_is_fully_documented() {
-        // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
-        // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
-        // rotate 任意軸 (問266)・scale_xyz (問276) が複数ラウンド分このリストから
-        // 漏れていた退行 (問278) を検知する。include_str! でリポジトリルートの
-        // README.md をコンパイル時に読み込む (問271 の自己参照パターンと同型、
-        // 対象がクレート外のファイルである点のみ異なる)。
-        let readme = include_str!("../../README.md");
+    /// README の「利用可能な演算子」節を切り出す (問278 / 問317)。
+    ///
+    /// 段落境界を空行で探すため、**改行コードに依存する**。Windows の既定
+    /// `core.autocrlf=true` でチェックアウトすると空行は `\r\n\r\n` になり、
+    /// `"\n\n"` は部分文字列として現れない——正規化しないと `expect` が panic する。
+    /// リポジトリ側は `.gitattributes` の `eol=lf` で根治しているが、zip ダウンロードや
+    /// 既存の CRLF ワークツリーはそれを経由しないため、解析側でも正規化する
+    /// (二重の防御。どちらか一方では塞ぎ切れない)。
+    fn readme_operator_section(readme: &str) -> String {
+        let readme = readme.replace("\r\n", "\n");
         let heading = "利用可能な演算子";
         let heading_pos = readme
             .find(heading)
@@ -1958,7 +1984,65 @@ mod tests {
             .find("\n\n")
             .map(|i| list_start + i)
             .unwrap_or(readme.len());
-        let section = &readme[list_start..list_end];
+        readme[list_start..list_end].to_string()
+    }
+
+    #[test]
+    fn readme_parsing_survives_a_crlf_checkout() {
+        // 問317: CI は ubuntu/macos/windows で走る想定 (docs/ci.yml) だが、
+        // 一度も有効化されていないため Linux 以外は未検証だった。Windows ランナーは
+        // `core.autocrlf=true` が既定で、チェックアウト時に LF → CRLF へ変換する。
+        // 変換後の README では空行が `\r\n\r\n` になり `"\n\n"` に一致しないため、
+        // 従来の実装は **起動と同時に panic** した (所有者が CI を有効化した瞬間に
+        // 顕在化する種類の欠陥)。改行コードを変えても同じ節が得られることを固定する。
+        let lf = include_str!("../../README.md").replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+
+        let from_lf = readme_operator_section(&lf);
+        let from_crlf = readme_operator_section(&crlf);
+
+        assert!(!from_lf.is_empty(), "operator section must not be empty");
+        assert_eq!(
+            from_lf,
+            from_crlf.replace("\r\n", "\n"),
+            "README の演算子節は改行コードに依存してはならない (問317)"
+        );
+    }
+
+    #[test]
+    fn gitattributes_pins_line_endings_to_lf() {
+        // 問317: 上の readme_parsing_survives_a_crlf_checkout は解析側の防御だが、
+        // 根治は「そもそも CRLF でチェックアウトさせない」ことである。
+        // `.gitattributes` が無いと Windows の既定 core.autocrlf=true が働き、
+        // README のメタテストだけでなく scripts/check.sh と .githooks/pre-push も
+        // shebang ごと壊れる。設定ファイルは消えても誰も気づかないので固定する。
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitattributes");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{} が読めない: {e}。Windows の core.autocrlf=true から\n\
+                 作業ツリーを守るために必須 (問317)",
+                path.display()
+            )
+        });
+        assert!(
+            text.lines().any(|l| {
+                let l = l.trim();
+                !l.starts_with('#') && l.contains("text=auto") && l.contains("eol=lf")
+            }),
+            ".gitattributes は作業ツリーの改行を LF に固定しなければならない (問317)"
+        );
+    }
+
+    #[test]
+    fn readme_operator_list_is_fully_documented() {
+        // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
+        // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
+        // rotate 任意軸 (問266)・scale_xyz (問276) が複数ラウンド分このリストから
+        // 漏れていた退行 (問278) を検知する。include_str! でリポジトリルートの
+        // README.md をコンパイル時に読み込む (問271 の自己参照パターンと同型、
+        // 対象がクレート外のファイルである点のみ異なる)。
+        let section = readme_operator_section(include_str!("../../README.md"));
+        let section = section.as_str();
         // README は mirror_x/y/z・rotate_x/y/z のような同系列 op を "op_x/y/z" と
         // 圧縮表記する (ドリフトではなく正当な慣例)。個別名か圧縮形のどちらかが
         // あれば「記載済み」とみなす。
