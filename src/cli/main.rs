@@ -41,17 +41,31 @@ fn main() {
             println!("selftest ok: f(origin) = {d}");
         }
         "export" => {
-            // export [scene.json] <out.stl>
-            // arg2 が .json で終わる → scene file; arg3 が出力パス。
-            // arg2 がなければデモモデルを kado-demo.stl に出力。
-            let (sdf, out) = if args.get(2).map(|s| s.ends_with(".json")).unwrap_or(false) {
-                let src = load_scene_file(args.get(2).unwrap());
-                let sdf = parse_scene(&src);
-                let out = args.get(3).map(String::as_str).unwrap_or("kado-export.stl");
-                (sdf, out.to_string())
-            } else {
-                let out = args.get(2).map(String::as_str).unwrap_or("kado-demo.stl");
-                (demo_model(), out.to_string())
+            // export [scene] <out.stl|.glb|.3mf|.html>
+            //
+            // 問321: 以前は「arg2 が .json で終われば scene file」と**入力の拡張子で
+            // 推測**していた。しかし Kado はテキスト DSL のシーンファイルも受け付け
+            // (問59)、`run`/`check` は拡張子を問わない。そのため
+            // `kado export scene.txt out.stl` は scene.txt を**出力パス**と解釈し、
+            // デモモデルの STL を**利用者のシーンファイルに上書き**したうえ、
+            // out.stl を黙って無視していた。推測をやめ、引数の**個数**で決める。
+            let (scene, out) = resolve_export_paths(&args);
+            let sdf = match scene {
+                Some(scene) => {
+                    refuse_to_clobber_scene(scene, &out);
+                    parse_scene(&load_scene_file(scene))
+                }
+                None => demo_model(),
+            };
+            // 拡張子で形式を選択 (問124: MCP と共有する単一の真実源 io::ExportFormat)。
+            // 問322: 抽出の**前**に判定する。拡張子が不正だと分かっているのに
+            // 秒単位のポリゴン化を先に払う理由が無い。
+            let format = match ExportFormat::from_path(&out) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             };
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, 64);
@@ -61,9 +75,7 @@ fn main() {
                 eprintln!("mesh is empty — bounding box may not contain the shape");
                 std::process::exit(1);
             }
-            // 拡張子で形式を選択 (問124: MCP と共有する単一の真実源 io::ExportFormat)。
             let path = std::path::Path::new(&out);
-            let format = ExportFormat::from_path(&out);
             let write_res = format.write(&mesh, path);
             match write_res {
                 Ok(()) => println!(
@@ -79,24 +91,21 @@ fn main() {
             }
         }
         "screenshot" => {
-            // screenshot [scene.json] <out.png> [view]
-            // arg2 が .json で終わる → scene file; arg3 が出力パス; arg4 がビュー。
-            let (sdf, out, view) = if args.get(2).map(|s| s.ends_with(".json")).unwrap_or(false) {
-                let src = load_scene_file(args.get(2).unwrap());
-                let sdf = parse_scene(&src);
-                let out = args
-                    .get(3)
-                    .map(String::as_str)
-                    .unwrap_or("kado-screenshot.png");
-                let view = args.get(4).map(String::as_str).unwrap_or("iso");
-                (sdf, out.to_string(), view.to_string())
-            } else {
-                let out = args
-                    .get(2)
-                    .map(String::as_str)
-                    .unwrap_or("kado-screenshot.png");
-                let view = args.get(3).map(String::as_str).unwrap_or("iso");
-                (demo_model(), out.to_string(), view.to_string())
+            // screenshot [scene] <out.png> [view]
+            //
+            // 問321: export と同じ「入力の拡張子で推測する」欠陥があった。ただし
+            // screenshot は末尾に省略可能な `view` を持つため、個数だけでは
+            // `screenshot a.png top` と `screenshot scene.txt out.png` を区別できない。
+            // そこで**出力側**の拡張子で判定する: 出力は必ず PNG であり、
+            // シーンファイルが `.png` で終わることはない。入力の形を推測するのではなく、
+            // 出力の要件を確かめる——後者は仕様で決まっており推測ではない。
+            let (scene, out, view) = resolve_screenshot_paths(&args);
+            let sdf = match scene {
+                Some(scene) => {
+                    refuse_to_clobber_scene(scene, &out);
+                    parse_scene(&load_scene_file(scene))
+                }
+                None => demo_model(),
             };
             let (lo_b, hi_b) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo_b, hi_b, 48);
@@ -268,6 +277,63 @@ commands:
 running with no command prints the version."
 }
 
+/// `export [scene] <out>` の引数を解決する (問321)。
+///
+/// 以前は「arg2 が `.json` で終われば scene file」と**入力の拡張子で推測**していた。
+/// しかし Kado はテキスト DSL のシーンファイルも受け付け (問59)、`run`/`check` は
+/// 拡張子を問わない。そのため `kado export scene.txt out.stl` は scene.txt を
+/// **出力パス**と解釈し、デモモデルの STL を利用者のシーンファイルへ上書きしたうえ、
+/// out.stl を黙って無視していた。`export` は末尾に省略可能な引数を持たないので、
+/// 推測は不要——**個数**だけで一意に決まる。
+fn resolve_export_paths(args: &[String]) -> (Option<&str>, String) {
+    match (args.get(2), args.get(3)) {
+        (Some(scene), Some(out)) => (Some(scene.as_str()), out.clone()),
+        // 1つならデモモデルの出力先 (README の `kado export demo.stl`)。
+        (Some(out), None) => (None, out.clone()),
+        _ => (None, "kado-demo.stl".to_string()),
+    }
+}
+
+/// `screenshot [scene] <out.png> [view]` の引数を解決する (問321)。
+///
+/// `screenshot` は末尾に省略可能な `view` を持つため、個数だけでは
+/// `screenshot a.png top` と `screenshot scene.txt out.png` を区別できない。
+/// そこで**出力側**の拡張子で判定する: 出力は必ず PNG であり、シーンファイルが
+/// `.png` で終わることはない。入力の形を推測するのではなく、出力の要件を
+/// 確かめている——後者は仕様で決まっており推測ではない。
+fn resolve_screenshot_paths(args: &[String]) -> (Option<&str>, String, String) {
+    let out_is_third = args
+        .get(3)
+        .map(|a| a.to_lowercase().ends_with(".png"))
+        .unwrap_or(false);
+    if out_is_third {
+        let view = args.get(4).map(String::as_str).unwrap_or("iso");
+        (Some(args[2].as_str()), args[3].clone(), view.to_string())
+    } else {
+        let out = args
+            .get(2)
+            .map(String::as_str)
+            .unwrap_or("kado-screenshot.png");
+        let view = args.get(3).map(String::as_str).unwrap_or("iso");
+        (None, out.to_string(), view.to_string())
+    }
+}
+
+/// 出力がシーンファイルを踏み潰そうとしていたら止める (問321)。
+///
+/// 引数の取り違えは**復元不能な破壊**になりうる。問321 で実際に
+/// `kado export scene.txt out.stl` が scene.txt へ STL を上書きした。
+/// 解析側は直したが、上書きは取り返しがつかないので防御を一枚残す。
+fn refuse_to_clobber_scene(scene: &str, out: &str) {
+    if scene == out {
+        eprintln!(
+            "refusing to overwrite the scene file with the output: {scene}\n\
+             usage: kado <command> [scene] <output>"
+        );
+        std::process::exit(1);
+    }
+}
+
 fn load_scene_file(path: &str) -> String {
     match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -377,6 +443,83 @@ mod tests {
         let s = "abc".to_string();
         let r = parse_finite_arg(Some(&s), "min_wall_mm", 0.5);
         assert!(r.is_err(), "non-numeric string must be rejected, got {r:?}");
+    }
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        let mut v = vec!["kado".to_string(), "export".to_string()];
+        v.extend(rest.iter().map(|s| s.to_string()));
+        v
+    }
+
+    /// 問321 の回帰: `export scene.txt out.stl` がシーンファイルを出力先と
+    /// 取り違え、**利用者のシーンファイルへ STL を上書きしていた**。
+    ///
+    /// 原因は「入力の拡張子が `.json` なら scene file」という推測。Kado は
+    /// テキスト DSL のシーンも受け付け (問59)、`run`/`check` は拡張子を問わないので、
+    /// `.json` 前提はそもそも成り立っていなかった。
+    #[test]
+    fn export_treats_the_first_of_two_paths_as_the_scene_whatever_its_extension() {
+        for scene in ["scene.json", "scene.txt", "scene", "s.kado", "MODEL.JSON"] {
+            let a = argv(&[scene, "out.stl"]);
+            let (got_scene, out) = resolve_export_paths(&a);
+            assert_eq!(
+                got_scene,
+                Some(scene),
+                "the first of two paths must be the scene, not the output"
+            );
+            assert_eq!(
+                out, "out.stl",
+                "the second path must be the output — ignoring it silently \
+                 overwrote the scene file (問321)"
+            );
+        }
+    }
+
+    #[test]
+    fn export_with_one_path_writes_the_demo_model_there() {
+        // README の `kado export demo.stl` (シーン省略時はデモモデル)。
+        let a = argv(&["demo.stl"]);
+        assert_eq!(resolve_export_paths(&a), (None, "demo.stl".to_string()));
+        // 引数なしは既定の出力名。
+        let a0 = argv(&[]);
+        assert_eq!(
+            resolve_export_paths(&a0),
+            (None, "kado-demo.stl".to_string())
+        );
+    }
+
+    #[test]
+    fn screenshot_resolves_paths_by_the_output_extension_not_the_input() {
+        let sc = |rest: &[&str]| {
+            let mut v = vec!["kado".to_string(), "screenshot".to_string()];
+            v.extend(rest.iter().map(|s| s.to_string()));
+            v
+        };
+        // scene + out + view
+        assert_eq!(
+            resolve_screenshot_paths(&sc(&["scene.txt", "shot.png", "top"])),
+            (Some("scene.txt"), "shot.png".to_string(), "top".to_string())
+        );
+        // scene + out (view 既定)
+        assert_eq!(
+            resolve_screenshot_paths(&sc(&["scene.txt", "shot.png"])),
+            (Some("scene.txt"), "shot.png".to_string(), "iso".to_string())
+        );
+        // out + view (デモモデル) — ここが個数だけでは曖昧になる形。
+        assert_eq!(
+            resolve_screenshot_paths(&sc(&["shot.png", "top"])),
+            (None, "shot.png".to_string(), "top".to_string())
+        );
+        // out のみ
+        assert_eq!(
+            resolve_screenshot_paths(&sc(&["shot.png"])),
+            (None, "shot.png".to_string(), "iso".to_string())
+        );
+        // 大文字拡張子でも出力として認識する (問124 の case-insensitive と揃える)。
+        assert_eq!(
+            resolve_screenshot_paths(&sc(&["scene.txt", "SHOT.PNG"])),
+            (Some("scene.txt"), "SHOT.PNG".to_string(), "iso".to_string())
+        );
     }
 
     #[test]

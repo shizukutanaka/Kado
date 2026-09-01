@@ -58,7 +58,58 @@ const TETS: [[usize; 4]; 6] = [
 /// SDF木を bounds `[min,max]^3` 上で各軸 `res` 分割して抽出する。
 ///
 /// `res` は1軸あたりのセル数。頂点サンプル数は `(res+1)^3`。
+///
+/// 問312: 内部は `polygonize_with_threads` (private) へ委譲し、`available_parallelism` で
+/// 並列化する。**出力はスレッド数と無関係にビット同一** (下記の設計コメント参照)。
 pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
+    let threads = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    polygonize_with_threads(sdf, min, max, res, threads)
+}
+
+/// `0..len` を最大 `parts` 個の連続レンジへ分割する (問312)。
+///
+/// 余りは先頭のレンジから 1 ずつ配る。分割は `len` と `parts` のみで決まる
+/// 決定的な純関数であり、スケジューリングに依存しない。空レンジは返さない。
+fn split_ranges(len: usize, parts: usize) -> Vec<std::ops::Range<usize>> {
+    let parts = parts.clamp(1, len.max(1));
+    let base = len / parts;
+    let extra = len % parts;
+    let mut ranges = Vec::with_capacity(parts);
+    let mut start = 0;
+    for t in 0..parts {
+        let count = base + usize::from(t < extra);
+        if count == 0 {
+            continue;
+        }
+        ranges.push(start..start + count);
+        start += count;
+    }
+    ranges
+}
+
+/// スレッド数を明示して抽出する (問312)。`polygonize` の実体。
+///
+/// # 決定性 (問5): 出力がスレッド数・実行順序から独立である構造
+///
+/// 並列化で決定性を壊さないために、**「実行をどう並べても結果が変わらない構造」を
+/// 先に作り、その上で並列化する**:
+///
+/// - **Phase A (格子値)**: 各格子点の値は `sdf.eval(pos_at(i,j,k))` の純関数で、
+///   書き込み先 `vals[idx]` は添字から一意に決まる互いに素なスロット。i-軸スラブ
+///   (`n*n` 要素の連続チャンク) を `split_at_mut` でワーカーへ配るため、どの順で
+///   実行されても各要素はビット同一 (`pos_at` の純粋性は
+///   `grid_position_is_a_pure_function_of_its_index` が固定済み — 問308 で
+///   入れたテストが、そのまま並列化の安全性の根拠になっている)。
+/// - **Phase B (セル emit)**: 外側ループ i を連続レンジへ分割し、各ワーカーは
+///   自分のレンジを逐次版と同じ走査順 (i→j→k) でローカル soup へ emit し、
+///   完了後に**レンジ昇順で連結**する。連結結果は逐次版の i-major 順と完全一致し、`Mesh::from_soup` の
+///   頂点統合・三角形順もビット同一になる。スレッド間の共有可変状態はゼロ。
+/// - スレッド数は分割数を変えるだけで、分割 (`split_ranges`) は決定的、連結順は
+///   レンジ番号で固定。よって**コア数の違う環境でも出力は同一** (テストで
+///   threads=1/2/4/7 のビット一致を固定)。
+fn polygonize_with_threads(sdf: &Sdf, min: Vec3, max: Vec3, res: usize, threads: usize) -> Mesh {
     assert!(res >= 1, "res must be >= 1");
     let n = res + 1;
     let step = Vec3::new(
@@ -69,49 +120,85 @@ pub fn polygonize(sdf: &Sdf, min: Vec3, max: Vec3, res: usize) -> Mesh {
 
     // 角の SDF 値を事前計算 (各サンプル点1回)。
     let idx = |i: usize, j: usize, k: usize| (i * n + j) * n + k;
-    let mut vals = vec![0.0f64; n * n * n];
-    let mut poss = vec![Vec3::ZERO; n * n * n];
-    for i in 0..n {
-        for j in 0..n {
-            for k in 0..n {
-                let p = Vec3::new(
-                    min.x + step.x * i as f64,
-                    min.y + step.y * j as f64,
-                    min.z + step.z * k as f64,
-                );
-                poss[idx(i, j, k)] = p;
-                vals[idx(i, j, k)] = sdf.eval(p);
-            }
-        }
-    }
+    // 格子点の座標は添字から一意に決まるため**保存せず都度再計算する** (問308)。
+    // 以前は `poss: Vec<Vec3>` に全点を保持しており、res=256 (n=257) では
+    // 257³ × 24B ≈ 407MB を値配列 (≈136MB) に上乗せしていた (実測ピーク RSS 670MB)。
+    // 式・演算順序は保存版と完全に同一なので、出力はビット単位で不変
+    // (決定性・問5 を保つ最重要点。`digest` が変わらないことをテストで固定)。
+    let pos_at = |i: usize, j: usize, k: usize| {
+        Vec3::new(
+            min.x + step.x * i as f64,
+            min.y + step.y * j as f64,
+            min.z + step.z * k as f64,
+        )
+    };
+    let pos_at = &pos_at; // 各ワーカー閉包が参照コピーを move できるように。
 
-    let mut soup: Vec<[Vec3; 3]> = Vec::new();
-    for i in 0..res {
-        for j in 0..res {
-            for k in 0..res {
-                // この立方体セルの8角。
-                let mut corners = [Corner {
-                    coord: [0, 0, 0],
-                    pos: Vec3::ZERO,
-                    val: 0.0,
-                }; 8];
-                for (c, off) in corners.iter_mut().zip(CUBE.iter()) {
-                    let (ci, cj, ck) = (
-                        i + off[0] as usize,
-                        j + off[1] as usize,
-                        k + off[2] as usize,
-                    );
-                    *c = Corner {
-                        coord: [ci as i32, cj as i32, ck as i32],
-                        pos: poss[idx(ci, cj, ck)],
-                        val: vals[idx(ci, cj, ck)],
-                    };
+    // Phase A: i-軸スラブ (n*n 要素) 単位で並列にサンプリングする。
+    let mut vals = vec![0.0f64; n * n * n];
+    std::thread::scope(|s| {
+        let mut rest: &mut [f64] = &mut vals;
+        for range in split_ranges(n, threads) {
+            let (chunk, tail) = rest.split_at_mut(range.len() * n * n);
+            rest = tail;
+            s.spawn(move || {
+                for (di, slab) in chunk.chunks_mut(n * n).enumerate() {
+                    let i = range.start + di;
+                    for j in 0..n {
+                        for k in 0..n {
+                            slab[j * n + k] = sdf.eval(pos_at(i, j, k));
+                        }
+                    }
                 }
-                for tet in &TETS {
-                    emit_tet(sdf, &corners, *tet, &mut soup);
-                }
-            }
+            });
         }
+    });
+
+    // Phase B: セル走査を i の連続レンジで分割し、ローカル soup をレンジ昇順に連結する。
+    let vals = &vals;
+    let soups: Vec<Vec<[Vec3; 3]>> = std::thread::scope(|s| {
+        let handles: Vec<_> = split_ranges(res, threads)
+            .into_iter()
+            .map(|range| {
+                s.spawn(move || {
+                    let mut soup: Vec<[Vec3; 3]> = Vec::new();
+                    for i in range {
+                        for j in 0..res {
+                            for k in 0..res {
+                                // この立方体セルの8角。
+                                let mut corners = [Corner {
+                                    coord: [0, 0, 0],
+                                    pos: Vec3::ZERO,
+                                    val: 0.0,
+                                }; 8];
+                                for (c, off) in corners.iter_mut().zip(CUBE.iter()) {
+                                    let (ci, cj, ck) = (
+                                        i + off[0] as usize,
+                                        j + off[1] as usize,
+                                        k + off[2] as usize,
+                                    );
+                                    *c = Corner {
+                                        coord: [ci as i32, cj as i32, ck as i32],
+                                        pos: pos_at(ci, cj, ck),
+                                        val: vals[idx(ci, cj, ck)],
+                                    };
+                                }
+                                for tet in &TETS {
+                                    emit_tet(sdf, &corners, *tet, &mut soup);
+                                }
+                            }
+                        }
+                    }
+                    soup
+                })
+            })
+            .collect();
+        // spawn 順 = レンジ昇順に join し、逐次版と同一の大域順序を復元する。
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut soup: Vec<[Vec3; 3]> = Vec::with_capacity(soups.iter().map(Vec::len).sum());
+    for local in soups {
+        soup.extend(local);
     }
 
     Mesh::from_soup(&soup)
@@ -272,6 +359,178 @@ mod tests {
         let s = Sdf::sphere(0.1);
         let m = polygonize(&s, Vec3::new(2.0, 2.0, 2.0), Vec3::new(3.0, 3.0, 3.0), 8);
         assert!(m.triangles.is_empty());
+    }
+
+    #[test]
+    fn split_ranges_partitions_exactly_and_deterministically() {
+        // 問312: レンジ分割は「連続・重複なし・全域被覆・空なし」でなければ、
+        // 並列 emit の連結順が逐次版とずれて決定性が壊れる。境界を運動する:
+        // 割り切れる/割り切れない/parts>len/parts=0/len=0。
+        for (len, parts) in [
+            (10usize, 1usize),
+            (10, 2),
+            (10, 3),
+            (10, 7),
+            (10, 10),
+            (3, 8),
+            (1, 4),
+            (10, 0),
+            (0, 4),
+        ] {
+            let ranges = split_ranges(len, parts);
+            // 全域をちょうど1回ずつ、昇順で被覆する。
+            let mut expect = 0usize;
+            for r in &ranges {
+                assert_eq!(r.start, expect, "ranges must be contiguous ({len},{parts})");
+                assert!(!r.is_empty(), "no empty ranges ({len},{parts})");
+                expect = r.end;
+            }
+            assert_eq!(expect, len, "ranges must cover 0..{len} ({len},{parts})");
+            // 決定的 (同一入力 → 同一分割)。
+            assert_eq!(ranges, split_ranges(len, parts));
+        }
+    }
+
+    #[test]
+    fn deeply_nested_tree_survives_extraction_on_worker_threads() {
+        // 問313: 問312 で `Sdf::eval` (再帰的にツリーを降る) の実行場所を
+        // **メインスレッドからワーカースレッドへ移した**。Linux の主スレッドは
+        // 8MB スタックだが Rust の spawn スレッド既定は 2MB であり、実行文脈が
+        // 変わった以上「深い木は安全」という保証は測り直す必要がある。
+        //
+        // SECURITY.md §4 は「シーン木の深さ 64」を DoS 境界として掲げ、
+        // `script::eval` の MAX_DEPTH がそれを強制している。ところが**深さ64 の木を
+        // 抽出まで通すテストはどこにも無かった** (stress_probe の最深ケースは
+        // union 5 段、script 側の深さテストはパーサ層の拒否を見ているだけ)。
+        // つまりこの保証は抽出経路で一度も確かめられていなかった (問306 と同型:
+        // 「正確だったのは偶然であり契約ではない」)。
+        //
+        // 上限そのものに加え、**上限の 4 倍 (256 段)** まで余裕があることも確認する。
+        // 余裕がどれだけあるかを可視化しておけば、将来 eval のフレームが太っても
+        // 「上限ぎりぎりで落ちる」前にこのテストが気づく。
+        let depths = [
+            crate::script::eval::DSL_MAX_DEPTH, // 64: SECURITY.md が掲げる上限
+            crate::script::eval::DSL_MAX_DEPTH * 4, // 256: 余裕の可視化
+        ];
+        for depth in depths {
+            // translate を depth 段ネストする。各段の移動量は小さく取り、
+            // 形状がサンプリング箱から出ないようにする。
+            let mut sdf = Sdf::sphere(1.0);
+            for _ in 0..depth {
+                sdf = sdf.translate(Vec3::new(1e-6, 0.0, 0.0));
+            }
+            let (lo, hi) = (Vec3::splat(-1.5), Vec3::splat(1.5));
+            // 1 スレッド (旧・メインスレッド相当) と 4 スレッド (ワーカー) の両方で
+            // 抽出でき、かつ出力がビット同一であること。
+            let seq = polygonize_with_threads(&sdf, lo, hi, 20, 1);
+            let par = polygonize_with_threads(&sdf, lo, hi, 20, 4);
+            assert!(
+                !par.triangles.is_empty(),
+                "depth={depth}: extraction on worker threads must produce geometry"
+            );
+            assert_eq!(
+                seq.triangles, par.triangles,
+                "depth={depth}: worker-thread extraction must match sequential"
+            );
+            assert_eq!(
+                seq.digest(),
+                par.digest(),
+                "depth={depth}: digest must be thread-count independent even for deep trees"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_extraction_is_bit_identical_regardless_of_thread_count() {
+        // 問312: 並列化の絶対条件は「出力がスレッド数と無関係」であること。
+        // 同一バイナリでもコア数の違う環境で digest が変われば、決定性契約 (問5) が
+        // 「同一マシン内のみ」へ縮んでしまう。threads=1 (逐次と等価) を基準に、
+        // 2/4/7 (res を割り切らない 7 で境界レンジを運動) がビット単位で一致することを
+        // 固定する。
+        let model = Sdf::sphere(1.0)
+            .union(Sdf::cuboid(Vec3::splat(0.8)))
+            .difference(Sdf::cylinder(0.3, 2.0));
+        let (lo, hi) = (Vec3::splat(-1.5), Vec3::splat(1.5));
+        let res = 26; // 2/4 で割り切れ、7 で割り切れない値。
+        let base = polygonize_with_threads(&model, lo, hi, res, 1);
+        assert!(!base.triangles.is_empty(), "test premise: non-empty mesh");
+        for threads in [2usize, 4, 7, 64] {
+            let m = polygonize_with_threads(&model, lo, hi, res, threads);
+            assert_eq!(
+                m.triangles, base.triangles,
+                "triangle lists must match at threads={threads}"
+            );
+            assert_eq!(
+                m.vertices.len(),
+                base.vertices.len(),
+                "vertex counts must match at threads={threads}"
+            );
+            for (a, b) in m.vertices.iter().zip(&base.vertices) {
+                assert_eq!(a.x.to_bits(), b.x.to_bits());
+                assert_eq!(a.y.to_bits(), b.y.to_bits());
+                assert_eq!(a.z.to_bits(), b.z.to_bits());
+            }
+            assert_eq!(
+                m.digest(),
+                base.digest(),
+                "digest must be thread-count independent at threads={threads}"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_position_is_a_pure_function_of_its_index() {
+        // 問308: 格子点座標の事前保存 (`poss: Vec<Vec3>`, res=256 で ≈407MB) を廃し、
+        // 添字から都度再計算するようにした。この変更が安全なのは
+        // 「**同じ添字は常にビット同一の座標を返す**」ためである——隣接セルは格子点を
+        // 共有しており、共有点の座標が 1ULP でもずれると `edge_vertex` の正準性が壊れ、
+        // 水密性 (問11) と決定性 (問5) が同時に失われる。
+        //
+        // 保存方式ではこの性質は自明だったが、再計算方式では**計算式に依存する**。
+        // 特に「前の点に step を足し込む」ような漸化式に置き換えると誤差が蓄積して
+        // ビット同一でなくなる。その退行をここで検知する。
+        let min = Vec3::new(-1.5, -0.25, 3.125);
+        let max = Vec3::new(2.5, 1.75, 7.0);
+        let res = 17usize; // 割り切れない分割で丸め誤差を出やすくする
+        let step = Vec3::new(
+            (max.x - min.x) / res as f64,
+            (max.y - min.y) / res as f64,
+            (max.z - min.z) / res as f64,
+        );
+        let pos_at = |i: usize, j: usize, k: usize| {
+            Vec3::new(
+                min.x + step.x * i as f64,
+                min.y + step.y * j as f64,
+                min.z + step.z * k as f64,
+            )
+        };
+        // 同一添字を独立に2回評価してビット一致すること (純粋性)。
+        for i in 0..=res {
+            for j in 0..=res {
+                for k in 0..=res {
+                    let a = pos_at(i, j, k);
+                    let b = pos_at(i, j, k);
+                    assert_eq!(a.x.to_bits(), b.x.to_bits());
+                    assert_eq!(a.y.to_bits(), b.y.to_bits());
+                    assert_eq!(a.z.to_bits(), b.z.to_bits());
+                }
+            }
+        }
+        // 漸化式 (step の足し込み) はビット同一に**ならない**ことを実地に示す。
+        // これが「保存をやめても安全」の根拠が計算式にあることの裏付けになる。
+        let mut acc = min.x;
+        let mut drifted = false;
+        for i in 0..=res {
+            if acc.to_bits() != pos_at(i, 0, 0).x.to_bits() {
+                drifted = true;
+            }
+            acc += step.x;
+        }
+        assert!(
+            drifted,
+            "incremental accumulation must drift from index-based computation — if this ever \
+             holds, the test has stopped guarding what it claims to guard"
+        );
     }
 
     #[test]

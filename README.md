@@ -30,7 +30,7 @@ cargo build --release
 # デモモデルを STL 出力
 ./target/release/kado export demo.stl
 
-# スクリプトからメッシュ統計を表示
+# スクリプトからメッシュ統計を表示 (拡張子は任意。JSON/テキスト DSL は内容で自動判別)
 echo '{"op":"sphere","r":1.0}' > scene.json
 ./target/release/kado run scene.json
 
@@ -48,6 +48,7 @@ echo '{"op":"sphere","r":1.0}' > scene.json
 | `screenshot [scene.json] <out.png> [view]` | PNG スクリーンショット |
 | `run <scene.json> [resolution]` | メッシュ統計表示 |
 | `check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]` | DFM 検証 |
+| `validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]` | 外部 binary STL を DFM 検証（**検証専用**・SDF 正本にはしない） |
 | `mcp` | MCP サーバ（stdio）起動 |
 | `help` / `--help` / `-h` | 使い方一覧を表示 |
 
@@ -61,11 +62,52 @@ Kado は MCP（Model Context Protocol, JSON-RPC 2.0）サーバとして AI に�
 ./target/release/kado mcp   # stdin/stdout で JSON-RPC を待ち受け
 ```
 
+### MCP クライアントへ接続する
+
+`kado mcp` は **stdio トランスポート**のサーバです。クライアントがプロセスを起動し、
+標準入出力で JSON-RPC をやり取りします（ネットワークは一切使いません）。
+
+**Claude Code:**
+
+```sh
+claude mcp add kado -- /absolute/path/to/kado mcp
+```
+
+**設定ファイル方式のクライアント**（Claude Desktop など）:
+
+```json
+{
+  "mcpServers": {
+    "kado": {
+      "command": "/absolute/path/to/kado",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+- **パスは絶対パスにしてください。** クライアントは任意の作業ディレクトリから
+  プロセスを起動するため、相対パスでは見つかりません。
+- 設定ファイルの場所はクライアントごとに異なります。各クライアントのドキュメントを
+  参照してください。
+
+**接続できたかの確認:** クライアントから `help` ツールを呼ぶと DSL とツールの
+リファレンスが返ります。最小の往復は `run_script` → `screenshot` です。
+繋がらない場合はまず素で `./target/release/kado mcp` を起動してみてください。
+入力を待ち受け、EOF（Ctrl-D）で正常終了すればサーバ側は健全で、切り分けが
+クライアント設定側に絞れます。
+
+**出力先について:** `export` の書き込みは**プロジェクト直下のみ**に制限されており
+（絶対パス・`..` は拒否）、相対パスは**クライアントがサーバを起動した作業
+ディレクトリ**を基準に解決されます。書き出したファイルが見当たらないときは、
+まずその作業ディレクトリを確認してください。
+
 | ツール | 機能 |
 |--------|------|
 | `run_script` | DSL/JSON スクリプトを評価しシーン正本を更新 |
 | `eval` | 1 点の符号付き距離を返す |
-| `validate` | DFM 検証レポート（肉厚・オーバーハング・多様体・体積） |
+| `measure` | **光線に沿った表面交差**を返す。隣接交差間の距離がそのまま穴径・肉厚・面間距離になる（1 呼出で寸法確認） |
+| `validate` | DFM 検証レポート（肉厚・オーバーハング・多様体・体積・安定性・細長さ） |
 | `screenshot` | シーンを PNG レンダリング（base64・7 視点） |
 | `export` | STL/GLB/3MF/HTML をプロジェクト直下へ書き出し |
 | `get_scene` | 現在のシーン正本（スクリプト）を返す |
@@ -144,7 +186,10 @@ difference(smooth_union(sphere(1.0), cuboid(0.8, 0.8, 0.8), 0.2), cylinder(0.3, 
 ## 開発
 
 ```sh
-cargo test --all-targets                    # 全テスト (414 ユニット + 5 CLI + 8 統合)
+./scripts/check.sh                          # 全品質ゲートを1コマンドで (問314)
+git config core.hooksPath .githooks         # push 時に自動実行 (初回のみ)
+
+cargo test --all-targets                    # 全テスト (ユニット + CLI/MCP の実バイナリ E2E)
 cargo clippy --all-targets -- -D warnings   # Lint (警告ゼロ)
 cargo fmt --all -- --check                  # rustfmt 標準に一致
 ```

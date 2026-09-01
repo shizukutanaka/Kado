@@ -40,6 +40,24 @@ Kado は明示的な設計制約の上に成り立っています。以下は「
 PR を出す前に、ローカルで以下がすべて通ること:
 
 ```sh
+./scripts/check.sh          # 全ゲートを1コマンドで (問314)
+./scripts/check.sh --fast   # release ビルドを省略 (日常の反復用)
+```
+
+**push 前の自動実行を有効にする（クローン後に一度だけ）:**
+
+```sh
+git config core.hooksPath .githooks
+```
+
+これで `git push` のたびに全ゲートが自動実行され、失敗すれば push が止まります。
+`.git/hooks/` はコミットできず共有できないため、**コミット済みの `.githooks/`** を
+`core.hooksPath` で指す方式にしています。緊急時は `git push --no-verify` で迂回
+できますが、迂回したことは PR に書いてください。
+
+個別に走らせる場合（`scripts/check.sh` の中身と同じ）:
+
+```sh
 cargo test --all-targets                        # 全テスト合格
 cargo clippy --all-targets -- -D warnings       # 警告ゼロ
 cargo fmt --all -- --check                       # rustfmt 標準に一致

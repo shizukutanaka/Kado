@@ -7,28 +7,63 @@ use crate::io::ExportFormat;
 use crate::mcp::json::{self, Value};
 use crate::render::{draw_axes, render, Camera};
 use crate::script::eval_any;
-use crate::verify::{validate, validate_with_field};
+use crate::verify::{validate, validate_full, DEFAULT_MAX_ASPECT_RATIO};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
 // polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
 const MAX_RESOLUTION: usize = 256; // 257^3 f64 ≈ 136 MiB ×2バッファ
 const MAX_IMAGE_DIM: usize = 4096; // 4096^2 px ×3byte ≈ 48 MiB
 
-/// `resolution` 引数を安全な範囲 `[1, MAX_RESOLUTION]` に収める。
-/// 非有限・負・0・過大値はすべて安全側へ丸め、`polygonize` の panic/OOM を防ぐ (問18)。
-fn arg_resolution(args: &Value, default: usize) -> usize {
-    match args.get("resolution").and_then(|v| v.as_f64()) {
-        Some(f) if f.is_finite() => (f as usize).clamp(1, MAX_RESOLUTION),
-        _ => default,
+/// 省略された引数か否かを判定する (問318)。
+///
+/// JSON の `null` は「値を渡さなかった」の慣用表現なので、キー欠落と同じく
+/// **省略**として扱う。それ以外の値が入っていれば「指定された」であり、
+/// 解釈できなければ既定値へ倒さずエラーにする。
+fn arg_absent(args: &Value, key: &str) -> bool {
+    match args.get(key) {
+        None => true,
+        Some(v) => v.is_null(),
     }
 }
 
-/// 画像寸法引数を安全な範囲 `[1, MAX_IMAGE_DIM]` に収める (問18)。
-fn arg_dim(args: &Value, key: &str, default: usize) -> usize {
-    match args.get(key).and_then(|v| v.as_f64()) {
-        Some(f) if f.is_finite() => (f as usize).clamp(1, MAX_IMAGE_DIM),
-        _ => default,
+/// 整数引数を `[1, max]` の範囲で解釈する (問18 / 問318)。
+///
+/// 省略時は `default`。**指定された場合は黙って丸めない**——数値でない・非有限・
+/// 範囲外はすべて明示エラーにする。問71 は `view` について「未知の値をサイレントに
+/// フォールバックせず、有効値を挙げてエラーにする」と決めており、本関数は同じ規律を
+/// 数値引数へ広げたものである (`CONTRIBUTING.md` §4「サイレント故障を作らない」)。
+fn arg_bounded_usize(args: &Value, key: &str, default: usize, max: usize) -> Result<usize, String> {
+    if arg_absent(args, key) {
+        return Ok(default);
     }
+    let Some(f) = args.get(key).and_then(|v| v.as_f64()) else {
+        return Err(format!(
+            "'{key}' must be a number between 1 and {max} (default {default})"
+        ));
+    };
+    if !f.is_finite() {
+        return Err(format!(
+            "'{key}' must be finite; got {f}. Valid range: 1..={max}"
+        ));
+    }
+    // f64 → usize の `as` は負値を 0 へ飽和させるため、比較は f64 のまま行う
+    // (丸めた後で判定すると -5 が 0 になり「範囲外」の理由を見失う)。
+    if f < 1.0 || f > max as f64 {
+        return Err(format!(
+            "'{key}' is out of range: got {f}, valid range is 1..={max}"
+        ));
+    }
+    Ok(f as usize)
+}
+
+/// `resolution` 引数 (問18 / 問318)。範囲外・非数値は明示エラー。
+fn arg_resolution(args: &Value, default: usize) -> Result<usize, String> {
+    arg_bounded_usize(args, "resolution", default, MAX_RESOLUTION)
+}
+
+/// 画像寸法引数 (問18 / 問318)。範囲外・非数値は明示エラー。
+fn arg_dim(args: &Value, key: &str, default: usize) -> Result<usize, String> {
+    arg_bounded_usize(args, key, default, MAX_IMAGE_DIM)
 }
 
 // ── ツールスキーマ ────────────────────────────────────────────────────────────
@@ -196,7 +231,14 @@ pub fn tool_list() -> Value {
              (ENCLOSED_CAVITY is \"info\"). resolution echoes the effective (clamped) \
              extraction resolution used for this report. \
              Units: 1 coordinate unit = 1 mm, so volume is mm³, surface_area mm², \
-             bed_contact_area mm². Estimate material: mass_g = volume/1000 × density \
+             bed_contact_area mm². volume and surface_area are measured from the EXTRACTED \
+             MESH, so they carry resolution-dependent discretization error and always \
+             UNDER-estimate slightly (inscribed approximation). At the default resolution 48 \
+             volume is within ~0.15% of exact — fine for cost estimates — but surface_area \
+             converges more slowly (~1% low on box-like shapes, and it plateaus rather than \
+             vanishing), so prefer volume for material estimates and treat area as indicative. \
+             Raise `resolution` if you need tighter numbers. \
+             Estimate material: mass_g = volume/1000 × density \
              (PLA~1.24, ABS~1.04, PETG~1.27, resin~1.1 g/cm³) — see help for cost/infill notes. \
              location gives the 3-D coordinates of the problem (e.g. worst overhang centroid, \
              thinnest wall vertex, or center of mass for UNSTABLE) so the AI can zoom in. \
@@ -206,7 +248,8 @@ pub fn tool_list() -> Value {
              THIN_WALL (local section < min_wall_mm), OVERHANG (angle > max_overhang_deg), \
              SUSPICIOUS_SCALE (overall size < min_wall, likely wrong units), \
              UNSTABLE (center of mass falls outside the base footprint → tips over), \
-             HIGH_ASPECT_RATIO (build height / lateral size > 8 — sways during printing), \
+             HIGH_ASPECT_RATIO (build height / lateral size over max_aspect_ratio, \
+             default 8 — sways during printing; the measured value is always in aspect_ratio), \
              ENCLOSED_CAVITY (info: fully-sealed internal void traps resin/support — needs a drain hole). \
              Overhang is measured against build_dir (default +Z). \
              If your printer builds along a different axis, set build_dir to get correct results.",
@@ -232,11 +275,26 @@ pub fn tool_list() -> Value {
                     false,
                 ),
                 (
+                    "max_aspect_ratio",
+                    "number",
+                    "Slenderness threshold: build height / lateral size (0 to skip, default: 8). \
+                     The safe value depends on ABSOLUTE size, nozzle and material, not the ratio \
+                     alone — FDM practice puts a 0.3mm-wide wire at ~7mm tall (ratio ~23) and a \
+                     1.5mm-wide one at ~30mm (ratio ~20) before waving. The default 8 is \
+                     deliberately conservative for complex parts; raise it when your features are \
+                     thick. The measured ratio is ALWAYS returned as `aspect_ratio`, whether or \
+                     not it trips this threshold",
+                    false,
+                ),
+                (
                     "build_dir",
                     "string",
                     "FDM build direction for overhang check: \"z\" (default +Z up), \"-z\", \
                      \"x\", \"-x\", \"y\", \"-y\", or a JSON array [dx,dy,dz]. \
-                     Governs which faces are considered overhanging (問68).",
+                     Governs which faces are considered overhanging (問68). \
+                     Unrecognized names, malformed arrays and the zero vector are \
+                     rejected with an explicit error rather than defaulting to +Z, \
+                     so a typo cannot silently analyze the wrong axis (問318).",
                     false,
                 ),
             ],
@@ -424,18 +482,46 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "get_scene" => tool_get_scene(session),
         "undo_script" => tool_undo_script(session),
         "help" => tool_help(),
-        other => ToolResult::error(format!("unknown tool: {other}")),
+        // 問323: 名前を返すだけでは AI は次の一手を決められない。問319 で DSL の
+        // 未知 op に有効名一覧と `help` 誘導を足したが、**ツール名は同じ形なのに
+        // 直っていなかった**——同じ規律が片方にだけ適用された、いつもの
+        // 「表面積の不整合」(CLAUDE.md §2)。有効名は `tool_list()` から生成するので、
+        // ツールを足せば自動で載る (一覧を二重に持たない)。
+        other => {
+            let tools = tool_list();
+            let valid: Vec<&str> = tools
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ToolResult::error(format!(
+                "unknown tool: {other}; available tools: {}. \
+                 Call the `help` tool for the DSL and tool reference.",
+                valid.join(", ")
+            ))
+        }
     }
 }
 
 fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("iso");
-    let width = arg_dim(args, "width", 512);
-    let height = arg_dim(args, "height", 512);
-    let res = arg_resolution(args, 48);
+    let (width, height, res) = match (
+        arg_dim(args, "width", 512),
+        arg_dim(args, "height", 512),
+        arg_resolution(args, 48),
+    ) {
+        (Ok(w), Ok(h), Ok(r)) => (w, h, r),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return ToolResult::error(e),
+    };
     // SSAA 係数 (問56)。スーパーサンプルバッファが MAX_IMAGE_DIM を超えないよう
     // クランプし OOM ガード (問18) を維持する。
-    let samples = arg_samples(args, width, height);
+    let samples = match arg_samples(args, width, height) {
+        Ok(s) => s,
+        Err(e) => return ToolResult::error(e),
+    };
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
@@ -503,14 +589,15 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
 }
 
 /// SSAA 係数を `[1, 4]` に収め、かつ `dim * samples <= MAX_IMAGE_DIM` を保証する (問56/問18)。
-fn arg_samples(args: &Value, width: usize, height: usize) -> usize {
-    let requested = match args.get("samples").and_then(|v| v.as_f64()) {
-        Some(f) if f.is_finite() => (f as usize).clamp(1, 4),
-        _ => 2,
-    };
+fn arg_samples(args: &Value, width: usize, height: usize) -> Result<usize, String> {
+    // 問318: 指定された値が不正なら黙って既定へ倒さずエラーにする。
+    let requested = arg_bounded_usize(args, "samples", 2, 4)?;
+    // ここから先の縮小は**利用者の入力ミスではない**。samples も寸法もそれぞれ
+    // 有効で、積が MAX_IMAGE_DIM を超えるという物理的制約 (問56/問18) にすぎないので、
+    // エラーではなく縮小で応じる。入力を拒否するのは入力が間違っている場合だけ。
     let cap_w = (MAX_IMAGE_DIM / width.max(1)).max(1);
     let cap_h = (MAX_IMAGE_DIM / height.max(1)).max(1);
-    requested.min(cap_w).min(cap_h)
+    Ok(requested.min(cap_w).min(cap_h))
 }
 
 fn tool_export(session: &Session, args: &Value) -> ToolResult {
@@ -518,12 +605,21 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
         .get("path")
         .and_then(|v| v.as_str())
         .unwrap_or("kado-export.stl");
-    let res = arg_resolution(args, 64);
+    let res = match arg_resolution(args, 64) {
+        Ok(r) => r,
+        Err(e) => return ToolResult::error(e),
+    };
 
     // MCP 書き込みポリシー (Plan リスク T / C9): プロジェクトdir限定・パストラバーサル拒否。
     let safe = match sandbox_write_path(path) {
         Ok(p) => p,
         Err(e) => return ToolResult::error(format!("rejected output path: {e}")),
+    };
+    // 問322: 形式の判定は**メッシュを作る前**に行う。抽出は解像度次第で秒単位
+    // かかるので、拡張子が不正だと分かっているのに先に払う理由が無い。
+    let format = match ExportFormat::from_path(path) {
+        Ok(f) => f,
+        Err(e) => return ToolResult::error(e),
     };
 
     let scene = &session.scene;
@@ -534,8 +630,7 @@ fn tool_export(session: &Session, args: &Value) -> ToolResult {
             "mesh is empty — scene may be outside the bounding box; nothing exported",
         );
     }
-    // 拡張子で形式を選択 (問124: CLI と共有する単一の真実源 io::ExportFormat)。
-    let format = ExportFormat::from_path(path);
+    // 形式は上で解決済み (問124: CLI と共有する単一の真実源 io::ExportFormat)。
     let fmt = format.label();
     let write_res = format.write(&mesh, &safe);
     match write_res {
@@ -721,7 +816,10 @@ fn tool_run_script(session: &mut Session, args: &Value) -> ToolResult {
         Some(s) => s.to_string(),
         None => return ToolResult::error("\"script\" field is required"),
     };
-    let res = arg_resolution(args, 32);
+    let res = match arg_resolution(args, 32) {
+        Ok(r) => r,
+        Err(e) => return ToolResult::error(e),
+    };
 
     // JSON ({...}) とテキスト DSL を自動判別 (問59)。
     let sdf = match eval_any(&src) {
@@ -1005,7 +1103,11 @@ Branch on issue.code to categorize results:
   OVERHANG          — surface > max_overhang_deg from horizontal; location = worst face centroid
   SUSPICIOUS_SCALE  — max dimension < min_wall_mm (likely authored in wrong units)
   UNSTABLE          — center of mass outside the base footprint; location = COM coords
-  HIGH_ASPECT_RATIO — build height / lateral size > 8 (sways during printing, risk of delamination)
+  HIGH_ASPECT_RATIO — build height / lateral size exceeds max_aspect_ratio (default 8;
+                      sways during printing, risk of delamination). The safe ratio depends on
+                      ABSOLUTE size: a 0.3mm-wide wire tolerates ~7mm tall (ratio ~23), a 1.5mm
+                      one ~30mm (ratio ~20). Raise max_aspect_ratio for thick features, 0 skips.
+                      The measured ratio is ALWAYS returned as `aspect_ratio`.
   ENCLOSED_CAVITY   — info: fully-sealed internal void (traps resin/support; add a drain hole for SLA)
 
 ## printability rules of thumb (問250; FDM/resin community practice)
@@ -1031,6 +1133,11 @@ Use these to set thresholds and interpret results (adjust per printer/material):
 
 Coordinates are millimeters (1 unit = 1 mm), so report.volume is in mm³ and
 report.surface_area in mm². To estimate filament/resin use from a validate report:
+  NOTE  volume/surface_area come from the extracted mesh: they are discretization
+        approximations and always slightly UNDER-estimate. At resolution 48 volume is
+        within ~0.15% (good enough for cost); surface_area can be ~1% low on box-like
+        shapes and converges slowly. Use volume for material math; raise resolution for
+        tighter figures.
   solid mass (g)    = volume / 1000 × density        (mm³→cm³ is /1000)
   density (g/cm³)   PLA ~1.24, ABS ~1.04, PETG ~1.27, Nylon ~1.14, resin ~1.10
   cost              ≈ mass_g × price_per_gram (e.g. ~2.4 yen/g for 2400 yen/kg PLA)
@@ -1077,40 +1184,70 @@ fn tool_get_scene(session: &Session) -> ToolResult {
 /// ビルド方向を args から解釈する (問68)。
 /// 文字列: "x"/"+x"/"-x"/"y"/"+y"/"-y"/"z"/"+z"/"-z"。
 /// 数値配列: [dx, dy, dz]。省略時: +Z (FDM 標準)。
-fn arg_build_dir(args: &Value) -> Vec3 {
-    if let Some(s) = args.get("build_dir").and_then(|v| v.as_str()) {
-        match s.trim() {
-            "x" | "+x" => Vec3::new(1.0, 0.0, 0.0),
-            "-x" => Vec3::new(-1.0, 0.0, 0.0),
-            "y" | "+y" => Vec3::new(0.0, 1.0, 0.0),
-            "-y" => Vec3::new(0.0, -1.0, 0.0),
-            "-z" => Vec3::new(0.0, 0.0, -1.0),
-            _ => Vec3::new(0.0, 0.0, 1.0), // "z" / "+z" / 未知
-        }
-    } else if let Some(arr) = args.get("build_dir").and_then(|v| v.as_array()) {
-        // 問85: 要素数が 3 未満なら z=1.0 のサイレント補完をせずに +Z デフォルトへ
-        // フォールバックする。[1,0] を渡して x-build を意図したAIが対角 [1,0,1] で
-        // オーバーハング解析される誤りを防ぐ。
-        // 問263: 要素数が3以上でも、非数値要素 (文字列・真偽値・null 等) を
-        // `unwrap_or(0.0)` で0扱いにすると [1,0,"up"] が静かに [1,0,0] という
-        // 別のビルド方向になり、AI の意図しない軸でオーバーハング解析されてしまう
-        // (問85 と同じ「部分的な誤り訂正」の危険)。全要素が数値のときのみ採用し、
-        // 1つでも数値でなければ配列全体が短すぎる場合と同じ +Z デフォルトへ倒す。
-        if arr.len() >= 3 {
-            match (arr[0].as_f64(), arr[1].as_f64(), arr[2].as_f64()) {
-                (Some(x), Some(y), Some(z)) => Vec3::new(x, y, z),
-                _ => Vec3::new(0.0, 0.0, 1.0),
-            }
-        } else {
-            Vec3::new(0.0, 0.0, 1.0)
-        }
-    } else {
-        Vec3::new(0.0, 0.0, 1.0)
+fn arg_build_dir(args: &Value) -> Result<Vec3, String> {
+    const VALID: &str =
+        "one of \"x\", \"+x\", \"-x\", \"y\", \"+y\", \"-y\", \"z\", \"+z\", \"-z\", \
+                         or a 3-element numeric array like [0, 0, 1]";
+    if arg_absent(args, "build_dir") {
+        return Ok(Vec3::new(0.0, 0.0, 1.0)); // 既定 +Z (FDM 標準)
     }
+    if let Some(s) = args.get("build_dir").and_then(|v| v.as_str()) {
+        // 問318: 未知の文字列を +Z へサイレントに倒さない。問71 が `view` について
+        // 決めた規律 (未知値は有効値を挙げて明示エラー) と同じ形の引数なのに、
+        // build_dir だけ反対の挙動だった。しかも影響は view より重い——DFM の
+        // オーバーハング解析が**別の軸**で行われ、AI は誤った合否を受け取る。
+        return match s.trim() {
+            "x" | "+x" => Ok(Vec3::new(1.0, 0.0, 0.0)),
+            "-x" => Ok(Vec3::new(-1.0, 0.0, 0.0)),
+            "y" | "+y" => Ok(Vec3::new(0.0, 1.0, 0.0)),
+            "-y" => Ok(Vec3::new(0.0, -1.0, 0.0)),
+            "z" | "+z" => Ok(Vec3::new(0.0, 0.0, 1.0)),
+            "-z" => Ok(Vec3::new(0.0, 0.0, -1.0)),
+            other => Err(format!("unknown build_dir '{other}'; valid: {VALID}")),
+        };
+    }
+    if let Some(arr) = args.get("build_dir").and_then(|v| v.as_array()) {
+        // 問85/263 は「部分的な誤り訂正をしない」ことを決めた: [1,0] を z=1.0 で
+        // 補完して対角 [1,0,1] にしたり、[1,0,"up"] の非数値要素を 0 扱いにして
+        // 別方向を作ったりしない。その判断は正しかったが、代わりに +Z へ倒しており
+        // **倒した事実が AI に届かなかった**。問318 でフォールバックを拒否に改める:
+        // 誤りを別の誤りへ置き換えるのではなく、誤りだと伝える。
+        if arr.len() < 3 {
+            return Err(format!(
+                "build_dir array must have 3 numeric elements [dx, dy, dz]; got {}",
+                arr.len()
+            ));
+        }
+        let (Some(x), Some(y), Some(z)) = (arr[0].as_f64(), arr[1].as_f64(), arr[2].as_f64())
+        else {
+            return Err(format!(
+                "build_dir array elements must all be numbers; valid: {VALID}"
+            ));
+        };
+        if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+            return Err("build_dir components must be finite".into());
+        }
+        // 問318: 零ベクトルは方向として無意味であり、`validate` はこれを受け取ると
+        // **オーバーハング検査ごとスキップ**する (verify/check.rs)。黙って通すと
+        // AI は「オーバーハングの指摘なし」を合格と読む——最も危険な種類の
+        // サイレント故障 (誤った合格) なので、入口で拒否する。
+        if x == 0.0 && y == 0.0 && z == 0.0 {
+            return Err(
+                "build_dir must not be the zero vector (it has no direction, and overhang \
+                 analysis would be silently skipped)"
+                    .into(),
+            );
+        }
+        return Ok(Vec3::new(x, y, z));
+    }
+    Err(format!("build_dir has an unsupported type; valid: {VALID}"))
 }
 
 fn tool_validate(session: &Session, args: &Value) -> ToolResult {
-    let res = arg_resolution(args, 48);
+    let res = match arg_resolution(args, 48) {
+        Ok(r) => r,
+        Err(e) => return ToolResult::error(e),
+    };
     let min_wall = args
         .get("min_wall_mm")
         .and_then(|v| v.as_f64())
@@ -1119,14 +1256,29 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
         .get("max_overhang_deg")
         .and_then(|v| v.as_f64())
         .unwrap_or(45.0);
+    // 問305: 細長さ閾値。安全値はプリンタ・材料・絶対寸法に依存するため調整可能にする。
+    let max_aspect = args
+        .get("max_aspect_ratio")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(DEFAULT_MAX_ASPECT_RATIO);
     // 問68: ビルド方向を明示受け取り (デフォルト +Z)。
-    let build_dir = arg_build_dir(args);
+    let build_dir = match arg_build_dir(args) {
+        Ok(d) => d,
+        Err(e) => return ToolResult::error(e),
+    };
 
     let scene = &session.scene;
     let (lo_b, hi_b) = scene.sampling_box();
     let mesh = polygonize(scene, lo_b, hi_b, res);
     // SDF を渡し、局所薄肉の内向きレイ探針を有効化する (問58)。
-    let report = validate_with_field(&mesh, Some(scene), min_wall, max_overhang, build_dir);
+    let report = validate_full(
+        &mesh,
+        Some(scene),
+        min_wall,
+        max_overhang,
+        build_dir,
+        max_aspect,
+    );
     // 機械可読な構造化 JSON を返す (問63): AI が code で分岐し指標を直接読める。
     // 問90: digest の決定性契約 (問61) は「同一解像度」が前提だが、report 単体には
     // 解像度が含まれず digest が再現性検証に使えなかった。resolution を併記する。
@@ -1520,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_backslash_path_is_literal_filename_on_unix_not_traversal() {
+    fn sandbox_never_escapes_whatever_the_separator_semantics() {
         // 問189: Unix では '\\' はパス区切りではなくファイル名の一文字。
         // "a\\..\\escape.stl" は単一の Normal コンポーネントになり、ParentDir として
         // 解釈されないため脱出しない (プロジェクト直下に変な名前のファイルができるだけ)。
@@ -1536,27 +1688,53 @@ mod tests {
             // 正規のスラッシュ traversal は引き続き拒否される (回帰防止)。
             assert!(sandbox_write_path("a/../escape.stl").is_err());
         }
+        // 問317: 上のブロックは Windows では**丸ごと消える**ため、これまで
+        // Windows 側のサンドボックス被覆は完全にゼロだった (CI が一度も走って
+        // いないので誰も気づけない)。契約は片側だけでは成立しないので、
+        // 反対側も明示する: Windows では '\\' は正規の区切りであり、
+        // 同じ文字列は ParentDir として解釈されて**拒否される**。
+        // どちらの OS でも「プロジェクト直下から脱出できない」点は共通で、
+        // 変わるのは拒否の仕方 (エラー / 奇妙だが安全なファイル名) だけである。
+        #[cfg(windows)]
+        {
+            assert!(
+                sandbox_write_path("a\\..\\escape.stl").is_err(),
+                "on Windows backslash is a real separator, so this is traversal"
+            );
+            assert!(sandbox_write_path("a/../escape.stl").is_err());
+            // ドライブ相対パス ("C:foo") は絶対パスではないが Prefix を持つ。
+            // Prefix 拒否がこれを捕まえることを固定する。
+            assert!(
+                sandbox_write_path("C:foo.stl").is_err(),
+                "drive-relative paths must be rejected via the Prefix arm"
+            );
+        }
+        // OS を問わず成立する部分 (どちらの cfg も外れた場合に無検査にならないよう)。
+        assert!(sandbox_write_path("a/../escape.stl").is_err());
+        assert!(sandbox_write_path("/etc/passwd").is_err());
+        assert!(sandbox_write_path("out.stl").is_ok());
     }
 
     #[test]
-    fn arg_build_dir_short_array_falls_back_to_plus_z_not_partial_fill() {
-        // 問183: build_dir が 3 要素未満の配列のとき、欠けた成分を 0 補完して
-        // [1,0] → [1,0,1] のような対角ビルドにせず、+Z デフォルトへフォールバックする。
-        // (問85 の契約をテストで固定。AI が x-build を意図した [1,0] が
-        //  誤って斜めビルド方向で解析される事故を防ぐ)
-        let two = json::obj([("build_dir", json::arr([json::n(1.0), json::n(0.0)]))]);
-        assert_eq!(
-            arg_build_dir(&two),
-            Vec3::new(0.0, 0.0, 1.0),
-            "2-element build_dir must fall back to +Z (not partial-filled to [1,0,1])"
-        );
-        // 1 要素も同様。
-        let one = json::obj([("build_dir", json::arr([json::n(1.0)]))]);
-        assert_eq!(
-            arg_build_dir(&one),
-            Vec3::new(0.0, 0.0, 1.0),
-            "1-element must fall back to +Z"
-        );
+    fn arg_build_dir_rejects_a_malformed_array_instead_of_guessing() {
+        // 問85/183 は「欠けた成分を 0 補完して [1,0] → [1,0,1] のような対角ビルドに
+        // しない」ことを決め、+Z デフォルトへ倒していた。部分的な誤り訂正を避ける
+        // 判断は正しかったが、**倒した事実を AI に伝えていなかった**。
+        // 問318: x-build を意図して [1,0] を渡した AI は、+Z 前提のオーバーハング
+        // 解析結果を「自分が頼んだ x-build の結果」として読む。フォールバックは
+        // 誤りを別の誤りへ置き換えるだけなので、拒否に改めた。
+        for (label, arr) in [
+            ("2-element", json::arr([json::n(1.0), json::n(0.0)])),
+            ("1-element", json::arr([json::n(1.0)])),
+            ("empty", json::arr([])),
+        ] {
+            let err = arg_build_dir(&json::obj([("build_dir", arr)]))
+                .expect_err("a short build_dir array must be rejected, not defaulted");
+            assert!(
+                err.contains("3"),
+                "{label}: error must state the required element count: {err}"
+            );
+        }
         // 完全な 3 要素はそのまま使われる (回帰: 正常経路を壊さない)。
         let three = json::obj([(
             "build_dir",
@@ -1564,34 +1742,90 @@ mod tests {
         )]);
         assert_eq!(
             arg_build_dir(&three),
-            Vec3::new(1.0, 0.0, 0.0),
+            Ok(Vec3::new(1.0, 0.0, 0.0)),
             "valid 3-element build_dir must be used verbatim"
         );
     }
 
     #[test]
-    fn arg_build_dir_array_with_non_numeric_element_falls_back_to_plus_z() {
-        // 問263: 3要素あっても1つが非数値 (文字列) なら、unwrap_or(0.0) で
-        // その要素だけ0扱いにして [1,0,"up"] → [1,0,0] のような別方向を静かに
-        // 作らず、問85/183 と同じ +Z デフォルトへ倒す。
-        let mixed = json::obj([(
-            "build_dir",
-            json::arr([json::n(1.0), json::n(0.0), json::s("up")]),
-        )]);
-        assert_eq!(
-            arg_build_dir(&mixed),
-            Vec3::new(0.0, 0.0, 1.0),
-            "build_dir with a non-numeric element must fall back to +Z, not zero-fill it"
+    fn arg_build_dir_rejects_a_non_numeric_element_instead_of_guessing() {
+        // 問263: 3要素あっても1つが非数値なら、その要素だけ 0 扱いにして
+        // [1,0,"up"] → [1,0,0] という別方向を静かに作らない。
+        // 問318: その「静かに」も潰し、明示エラーにする。
+        for (label, arr) in [
+            (
+                "string element",
+                json::arr([json::n(1.0), json::n(0.0), json::s("up")]),
+            ),
+            (
+                "null element",
+                json::arr([json::n(1.0), json::NULL, json::n(0.0)]),
+            ),
+        ] {
+            let err = arg_build_dir(&json::obj([("build_dir", arr)]))
+                .expect_err("a non-numeric build_dir element must be rejected");
+            assert!(
+                err.contains("number"),
+                "{label}: error must say the elements have to be numbers: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn arg_build_dir_rejects_an_unknown_axis_name_like_view_does() {
+        // 問71 は `view` について「未知の値をサイレントにフォールバックせず、
+        // 有効値を挙げて明示エラーにする」と決めていた。build_dir はまったく同じ形の
+        // 文字列引数なのに、問318 まで反対の挙動 (未知なら黙って +Z) だった——
+        // 同じ概念が複数箇所に並び片方だけ直っていた「表面積の不整合」(問292/294)。
+        // 影響は view より重い: DFM のオーバーハング解析が別の軸で走り、
+        // AI は**誤った合否**を受け取る。
+        let err = arg_build_dir(&json::obj([("build_dir", json::s("up"))]))
+            .expect_err("unknown build_dir name must be an explicit error");
+        assert!(
+            err.contains("up") && err.contains("valid"),
+            "error must name the bad value and list valid ones: {err}"
         );
-        // null/bool 要素も同様。
-        let with_null = json::obj([(
-            "build_dir",
-            json::arr([json::n(1.0), json::NULL, json::n(0.0)]),
-        )]);
+        // 有効な軸名は全て通る (回帰)。
+        for (name, expected) in [
+            ("x", Vec3::new(1.0, 0.0, 0.0)),
+            ("+x", Vec3::new(1.0, 0.0, 0.0)),
+            ("-x", Vec3::new(-1.0, 0.0, 0.0)),
+            ("y", Vec3::new(0.0, 1.0, 0.0)),
+            ("+y", Vec3::new(0.0, 1.0, 0.0)),
+            ("-y", Vec3::new(0.0, -1.0, 0.0)),
+            ("z", Vec3::new(0.0, 0.0, 1.0)),
+            ("+z", Vec3::new(0.0, 0.0, 1.0)),
+            ("-z", Vec3::new(0.0, 0.0, -1.0)),
+        ] {
+            assert_eq!(
+                arg_build_dir(&json::obj([("build_dir", json::s(name))])),
+                Ok(expected),
+                "build_dir '{name}' must map to {expected:?}"
+            );
+        }
+        // 省略時のみ既定 +Z (契約通りなので無音でよい)。
+        assert_eq!(arg_build_dir(&json::obj([])), Ok(Vec3::new(0.0, 0.0, 1.0)));
+        // JSON null は「渡さなかった」の慣用表現なので省略と同じ扱い。
         assert_eq!(
-            arg_build_dir(&with_null),
-            Vec3::new(0.0, 0.0, 1.0),
-            "build_dir with a null element must fall back to +Z"
+            arg_build_dir(&json::obj([("build_dir", json::NULL)])),
+            Ok(Vec3::new(0.0, 0.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn arg_build_dir_rejects_the_zero_vector_which_would_skip_overhang_analysis() {
+        // 問318: verify/check.rs は零ベクトルを受け取るとオーバーハング検査を
+        // まるごとスキップする (方向が定義できないため妥当な防御)。だが MCP から
+        // [0,0,0] を黙って通すと、AI は「オーバーハングの指摘なし」を**合格**と読む。
+        // 誤った合格は最も危険なサイレント故障なので、入口で拒否する。
+        let zero = json::obj([(
+            "build_dir",
+            json::arr([json::n(0.0), json::n(0.0), json::n(0.0)]),
+        )]);
+        let err = arg_build_dir(&zero).expect_err("zero build_dir must be rejected");
+        assert!(
+            err.contains("zero") && err.contains("overhang"),
+            "error must explain that overhang analysis would be skipped: {err}"
         );
     }
 
@@ -1672,42 +1906,92 @@ mod tests {
     }
 
     #[test]
-    fn resolution_is_clamped_to_safe_range() {
-        // 問18: 過大・0・負・非有限の resolution を安全側へ丸め OOM/panic を防ぐ。
+    fn out_of_range_numeric_args_are_rejected_not_silently_clamped() {
+        // 問18 は過大・0・負・非有限の resolution を安全側へ丸めて OOM/panic を
+        // 防いだ。安全性の目的は達成されたが、**丸めた事実を AI に伝えていなかった**。
+        // 問318: resolution=1000 を頼んだ AI は 256 で抽出された結果を 1000 の結果と
+        // 誤解し、digest の再現性 (問61/問90) も噛み合わなくなる。安全なのは
+        // 「拒否」も同じであり、そちらは誤解を生まない。
+        for (label, v) in [
+            ("too large", json::n(1e9)),
+            ("zero", json::n(0.0)),
+            ("negative", json::n(-5.0)),
+            ("just over the max", json::n((MAX_RESOLUTION + 1) as f64)),
+            ("not a number", json::s("high")),
+            ("boolean", json::b(true)),
+        ] {
+            let r = arg_resolution(&json::obj([("resolution", v)]), 48);
+            assert!(
+                r.is_err(),
+                "{label}: resolution must be rejected, not silently clamped; got {r:?}"
+            );
+            let e = r.unwrap_err();
+            assert!(
+                e.contains("resolution"),
+                "{label}: error must name the offending parameter: {e}"
+            );
+            assert!(
+                e.contains(&MAX_RESOLUTION.to_string()),
+                "{label}: error must state the accepted upper bound so the AI can retry: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolution_accepts_the_documented_range_and_defaults_when_omitted() {
         assert_eq!(
-            arg_resolution(&json::obj([("resolution", json::n(1e9))]), 48),
-            MAX_RESOLUTION
+            arg_resolution(&json::obj([]), 48),
+            Ok(48),
+            "omitted → default"
         );
         assert_eq!(
-            arg_resolution(&json::obj([("resolution", json::n(0.0))]), 48),
-            1
+            arg_resolution(&json::obj([("resolution", json::NULL)]), 48),
+            Ok(48),
+            "JSON null means 'not provided'"
         );
-        assert_eq!(
-            arg_resolution(&json::obj([("resolution", json::n(-5.0))]), 48),
-            1
-        );
-        assert_eq!(arg_resolution(&json::obj([]), 48), 48);
         assert_eq!(
             arg_resolution(&json::obj([("resolution", json::n(64.0))]), 48),
-            64
+            Ok(64)
+        );
+        assert_eq!(
+            arg_resolution(&json::obj([("resolution", json::n(1.0))]), 48),
+            Ok(1),
+            "lower bound is inclusive"
+        );
+        assert_eq!(
+            arg_resolution(
+                &json::obj([("resolution", json::n(MAX_RESOLUTION as f64))]),
+                48
+            ),
+            Ok(MAX_RESOLUTION),
+            "upper bound is inclusive"
         );
     }
 
     #[test]
-    fn image_dims_are_clamped() {
+    fn image_dims_are_rejected_when_out_of_range() {
+        for (label, v) in [
+            ("too large", json::n(1e9)),
+            ("zero", json::n(0.0)),
+            ("negative", json::n(-10.0)),
+            ("not a number", json::s("wide")),
+        ] {
+            let r = arg_dim(&json::obj([("width", v)]), "width", 512);
+            assert!(r.is_err(), "{label}: width must be rejected, got {r:?}");
+            let e = r.unwrap_err();
+            assert!(
+                e.contains("width"),
+                "{label}: error must name the offending parameter: {e}"
+            );
+        }
+        assert_eq!(arg_dim(&json::obj([]), "width", 512), Ok(512));
         assert_eq!(
-            arg_dim(&json::obj([("width", json::n(1e9))]), "width", 512),
-            MAX_IMAGE_DIM
-        );
-        assert_eq!(
-            arg_dim(&json::obj([("width", json::n(0.0))]), "width", 512),
-            1
-        );
-        assert_eq!(arg_dim(&json::obj([]), "width", 512), 512);
-        // 負の値も安全に下限 1 へ丸められること。
-        assert_eq!(
-            arg_dim(&json::obj([("width", json::n(-10.0))]), "width", 512),
-            1
+            arg_dim(
+                &json::obj([("width", json::n(MAX_IMAGE_DIM as f64))]),
+                "width",
+                512
+            ),
+            Ok(MAX_IMAGE_DIM)
         );
     }
 
@@ -1846,14 +2130,64 @@ mod tests {
     }
 
     #[test]
-    fn readme_operator_list_is_fully_documented() {
-        // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
-        // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
-        // rotate 任意軸 (問266)・scale_xyz (問276) が複数ラウンド分このリストから
-        // 漏れていた退行 (問278) を検知する。include_str! でリポジトリルートの
-        // README.md をコンパイル時に読み込む (問271 の自己参照パターンと同型、
-        // 対象がクレート外のファイルである点のみ異なる)。
+    fn readme_lists_every_mcp_tool() {
+        // 問310: README の MCP ツール表が `measure` (問299 で追加) を落としており、
+        // 8 ツールしか載っていなかった。問278 は README の**演算子**一覧を守る
+        // メタテストを入れたが、**ツール表**と CLI コマンド表は無防備だった——
+        // 同じ「表面積の不整合」(問292/294) がドキュメントの表側で起きていた。
+        //
+        // `tool_list` を真実源に、README がすべてのツール名を載せることを固定する。
         let readme = include_str!("../../README.md");
+        let tools = tool_list();
+        for t in tools.as_array().expect("tool_list is an array") {
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("each tool has a name");
+            assert!(
+                readme.contains(&format!("`{name}`")),
+                "README must list the MCP tool `{name}` (問310)"
+            );
+        }
+    }
+
+    #[test]
+    fn readme_lists_every_cli_command() {
+        // 問310: README の CLI 表から `validate-stl` (問296 で追加) が漏れていた。
+        // CLI の真実源は cli/main.rs の usage_text だが、そこは別クレート
+        // (バイナリ) なのでここからは参照できない。よってコマンド名の一覧を
+        // このテスト内に明示し、README との一致を守る。コマンドを増やすときは
+        // usage_text・README・この配列の3点を揃えること
+        // (usage_text 側の網羅は cli の usage_text_lists_every_command が守る)。
+        let readme = include_str!("../../README.md");
+        for cmd in [
+            "version",
+            "selftest",
+            "export",
+            "screenshot",
+            "run",
+            "check",
+            "validate-stl",
+            "mcp",
+            "help",
+        ] {
+            assert!(
+                readme.contains(&format!("`{cmd}")),
+                "README must document the CLI command `{cmd}` (問310)"
+            );
+        }
+    }
+
+    /// README の「利用可能な演算子」節を切り出す (問278 / 問317)。
+    ///
+    /// 段落境界を空行で探すため、**改行コードに依存する**。Windows の既定
+    /// `core.autocrlf=true` でチェックアウトすると空行は `\r\n\r\n` になり、
+    /// `"\n\n"` は部分文字列として現れない——正規化しないと `expect` が panic する。
+    /// リポジトリ側は `.gitattributes` の `eol=lf` で根治しているが、zip ダウンロードや
+    /// 既存の CRLF ワークツリーはそれを経由しないため、解析側でも正規化する
+    /// (二重の防御。どちらか一方では塞ぎ切れない)。
+    fn readme_operator_section(readme: &str) -> String {
+        let readme = readme.replace("\r\n", "\n");
         let heading = "利用可能な演算子";
         let heading_pos = readme
             .find(heading)
@@ -1868,7 +2202,65 @@ mod tests {
             .find("\n\n")
             .map(|i| list_start + i)
             .unwrap_or(readme.len());
-        let section = &readme[list_start..list_end];
+        readme[list_start..list_end].to_string()
+    }
+
+    #[test]
+    fn readme_parsing_survives_a_crlf_checkout() {
+        // 問317: CI は ubuntu/macos/windows で走る想定 (docs/ci.yml) だが、
+        // 一度も有効化されていないため Linux 以外は未検証だった。Windows ランナーは
+        // `core.autocrlf=true` が既定で、チェックアウト時に LF → CRLF へ変換する。
+        // 変換後の README では空行が `\r\n\r\n` になり `"\n\n"` に一致しないため、
+        // 従来の実装は **起動と同時に panic** した (所有者が CI を有効化した瞬間に
+        // 顕在化する種類の欠陥)。改行コードを変えても同じ節が得られることを固定する。
+        let lf = include_str!("../../README.md").replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+
+        let from_lf = readme_operator_section(&lf);
+        let from_crlf = readme_operator_section(&crlf);
+
+        assert!(!from_lf.is_empty(), "operator section must not be empty");
+        assert_eq!(
+            from_lf,
+            from_crlf.replace("\r\n", "\n"),
+            "README の演算子節は改行コードに依存してはならない (問317)"
+        );
+    }
+
+    #[test]
+    fn gitattributes_pins_line_endings_to_lf() {
+        // 問317: 上の readme_parsing_survives_a_crlf_checkout は解析側の防御だが、
+        // 根治は「そもそも CRLF でチェックアウトさせない」ことである。
+        // `.gitattributes` が無いと Windows の既定 core.autocrlf=true が働き、
+        // README のメタテストだけでなく scripts/check.sh と .githooks/pre-push も
+        // shebang ごと壊れる。設定ファイルは消えても誰も気づかないので固定する。
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitattributes");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{} が読めない: {e}。Windows の core.autocrlf=true から\n\
+                 作業ツリーを守るために必須 (問317)",
+                path.display()
+            )
+        });
+        assert!(
+            text.lines().any(|l| {
+                let l = l.trim();
+                !l.starts_with('#') && l.contains("text=auto") && l.contains("eol=lf")
+            }),
+            ".gitattributes は作業ツリーの改行を LF に固定しなければならない (問317)"
+        );
+    }
+
+    #[test]
+    fn readme_operator_list_is_fully_documented() {
+        // 問278: README.md の「利用可能な演算子」一覧も KADOSCENE_HELP・eval.rs
+        // 冒頭コメントと同じ ALL_DSL_OPS に対して検証する。実際に prism (問269)・
+        // rotate 任意軸 (問266)・scale_xyz (問276) が複数ラウンド分このリストから
+        // 漏れていた退行 (問278) を検知する。include_str! でリポジトリルートの
+        // README.md をコンパイル時に読み込む (問271 の自己参照パターンと同型、
+        // 対象がクレート外のファイルである点のみ異なる)。
+        let section = readme_operator_section(include_str!("../../README.md"));
+        let section = section.as_str();
         // README は mirror_x/y/z・rotate_x/y/z のような同系列 op を "op_x/y/z" と
         // 圧縮表記する (ドリフトではなく正当な慣例)。個別名か圧縮形のどちらかが
         // あれば「記載済み」とみなす。
@@ -1884,6 +2276,35 @@ mod tests {
                 documented,
                 "DSL op '{op}' must be listed in README.md's operator section \
                  (as itself or as a compact op_x/y/z group, 問278)"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_error_lists_available_tools_and_points_at_help() {
+        // 問323: 問319 で DSL の未知 op には有効名一覧と `help` 誘導を足したのに、
+        // **まったく同じ形のツール名だけ直っていなかった**。利用者は AI であり、
+        // エラーメッセージが唯一の自己修正材料である (問319)。
+        let mut session = Session::new();
+        let r = call_tool(&mut session, "nonexistent_tool", &json::obj([]));
+        assert!(r.is_error, "unknown tool must be an error");
+        let text = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains("help"),
+            "error must point at the `help` tool: {text}"
+        );
+        // 一覧は tool_list() から生成されるので、全ツール名が載っていること。
+        for t in tool_list().as_array().expect("tool_list is an array") {
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("each tool has a name");
+            assert!(
+                text.contains(name),
+                "error must list the available tool '{name}': {text}"
             );
         }
     }
@@ -2381,7 +2802,7 @@ mod tests {
 
         // デフォルト: samples=2
         assert_eq!(
-            arg_samples(&no_req, 512, 512),
+            arg_samples(&no_req, 512, 512).unwrap(),
             2,
             "default samples must be 2"
         );
@@ -2396,7 +2817,7 @@ mod tests {
             (1, MAX_IMAGE_DIM),
             (MAX_IMAGE_DIM, MAX_IMAGE_DIM),
         ] {
-            let s = arg_samples(&max_req, w, h);
+            let s = arg_samples(&max_req, w, h).unwrap();
             assert!(
                 w * s <= MAX_IMAGE_DIM,
                 "width * samples must not exceed MAX_IMAGE_DIM: {w}*{s}={}>{}",
@@ -2413,7 +2834,7 @@ mod tests {
 
         // MAX_IMAGE_DIM×MAX_IMAGE_DIM では samples=4 が要求されても 1 にキャップされる。
         assert_eq!(
-            arg_samples(&max_req, MAX_IMAGE_DIM, MAX_IMAGE_DIM),
+            arg_samples(&max_req, MAX_IMAGE_DIM, MAX_IMAGE_DIM).unwrap(),
             1,
             "max-size canvas must cap samples to 1"
         );
@@ -2431,20 +2852,20 @@ mod tests {
         // width=2048, height=2048, requested=4 →
         // cap_w = 4096/2048 = 2, cap_h = 4096/2048 = 2 → result = min(4,2,2) = 2。
         assert_eq!(
-            arg_samples(&req4, 2048, 2048),
+            arg_samples(&req4, 2048, 2048).unwrap(),
             2,
             "samples must reduce from 4 to 2 when 2048×2048 canvas"
         );
         // 非対称: width=512, height=4096 →
         // cap_w = 4096/512 = 8, cap_h = 4096/4096 = 1 → result = min(4,8,1) = 1。
         assert_eq!(
-            arg_samples(&req4, 512, MAX_IMAGE_DIM),
+            arg_samples(&req4, 512, MAX_IMAGE_DIM).unwrap(),
             1,
             "height=MAX_IMAGE_DIM must force samples to 1"
         );
         // 十分小さい寸法: 1024×1024 → cap=4 → クランプ不発で 4 のまま。
         assert_eq!(
-            arg_samples(&req4, 1024, 1024),
+            arg_samples(&req4, 1024, 1024).unwrap(),
             4,
             "samples must remain 4 when 1024×1024 allows it"
         );

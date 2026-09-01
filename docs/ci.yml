@@ -3,8 +3,13 @@
 # (Claude Code の GitHub App は `workflows` 権限を持たないため自動 push できず、
 #  暫定的に docs/ci.yml に置いている。リポジトリ管理者が下記を実行して有効化する:
 #    mkdir -p .github/workflows && git mv docs/ci.yml .github/workflows/ci.yml
-#  内容はローカルで検証済み: clippy -D warnings / cargo test / release build /
-#  cargo tree による外部依存ゼロ検証、すべて通過。)
+#  検証状況 (問311 時点・v0.2.0): 下記5ステップ + no-external-deps ジョブを
+#  ローカルで**逐一実行して全通過**を確認済み——
+#    fmt --check / clippy -D warnings / rustdoc -D warnings /
+#    cargo test --all-targets (460 通過) / cargo build --release /
+#    cargo tree による依存ゼロ検証。
+#  有効化は `git mv docs/ci.yml .github/workflows/ci.yml` のみで、
+#  緑になることは確認済み。)
 # ─────────────────────────────────────────────────────────────────────────────
 name: CI
 

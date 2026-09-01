@@ -5,4 +5,7 @@
 
 pub mod check;
 
-pub use check::{validate, validate_with_field, KadoError, Report, Severity, ALL_ISSUE_CODES};
+pub use check::{
+    validate, validate_full, validate_with_field, KadoError, Report, Severity, ALL_ISSUE_CODES,
+    DEFAULT_MAX_ASPECT_RATIO,
+};

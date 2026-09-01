@@ -64,6 +64,16 @@
 ## 5. 品質ゲート（push 前に全通過）
 
 ```sh
+./scripts/check.sh      # 全ゲートを1コマンドで実行する (問314)
+```
+
+初回に `git config core.hooksPath .githooks` を実行しておけば、**push 時に自動で
+全ゲートが走る**（失敗すれば push が止まる）。ゲートを手で叩き忘れる経路が塞がるので、
+セッション開始時にこの設定を確認すること。
+
+個別実行（`scripts/check.sh` の中身）:
+
+```sh
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check           # v151/問295 で rustfmt 標準に統一

@@ -33,18 +33,58 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    /// パス拡張子から形式を決定する。未知拡張子は STL にフォールバック (問54/55/57)。
-    /// 大文字小文字は無視する。
-    pub fn from_path(path: &str) -> ExportFormat {
-        let lower = path.to_lowercase();
-        if lower.ends_with(".glb") {
-            ExportFormat::Glb
-        } else if lower.ends_with(".3mf") {
-            ExportFormat::ThreeMf
-        } else if lower.ends_with(".html") || lower.ends_with(".htm") {
-            ExportFormat::Html
-        } else {
-            ExportFormat::Stl
+    /// 拡張子 → 形式の対応表 (単一の真実源)。
+    ///
+    /// エラーメッセージの候補一覧もここから生成するので、形式を足したときに
+    /// 「対応は増えたがメッセージは古いまま」が起こらない (問319 と同じ規律)。
+    const BY_EXTENSION: &'static [(&'static str, ExportFormat)] = &[
+        ("stl", ExportFormat::Stl),
+        ("glb", ExportFormat::Glb),
+        ("3mf", ExportFormat::ThreeMf),
+        ("html", ExportFormat::Html),
+        ("htm", ExportFormat::Html),
+    ];
+
+    /// 受理する拡張子の一覧 (エラーメッセージ用)。
+    pub fn supported_extensions() -> String {
+        Self::BY_EXTENSION
+            .iter()
+            .map(|(e, _)| format!(".{e}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// パス拡張子から形式を決定する。大文字小文字は無視する。
+    ///
+    /// 問322: 以前は**未知の拡張子を黙って STL にフォールバック**していた。
+    /// その結果 `export model.obj` は「中身は binary STL・名前は .obj」という
+    /// **拡張子が内容について嘘をつくファイル**を無言で作り、利用者は Kado が
+    /// OBJ を書けたものと信じてしまう (実測: `.xyz` 出力は `.stl` 出力と
+    /// バイト単位で同一だった)。問318 で MCP 引数に適用した規則
+    /// ——**省略は既定・指定されたが解釈できなければエラー**——をここにも適用する。
+    ///
+    /// 拡張子が**無い**場合は STL 既定のままにする。`kado export out` は
+    /// 何とも矛盾しないので、拒否する理由が無い (拒否は入力が誤っている場合だけ)。
+    pub fn from_path(path: &str) -> Result<ExportFormat, String> {
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+        match ext {
+            None => Ok(ExportFormat::Stl),
+            Some(e) if e.is_empty() => Ok(ExportFormat::Stl),
+            Some(e) => Self::BY_EXTENSION
+                .iter()
+                .find(|(known, _)| *known == e)
+                .map(|(_, f)| *f)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported output format '.{e}' in '{path}'; supported: {}. \
+                         Writing STL bytes under a '.{e}' name would make the file \
+                         misrepresent its own contents.",
+                        Self::supported_extensions()
+                    )
+                }),
         }
     }
 
@@ -76,23 +116,78 @@ mod tests {
     #[test]
     fn from_path_dispatches_by_extension() {
         // 問124: 拡張子→形式の判定を固定する。CLI と MCP が共有する単一の真実源。
-        assert_eq!(ExportFormat::from_path("model.glb"), ExportFormat::Glb);
-        assert_eq!(ExportFormat::from_path("model.3mf"), ExportFormat::ThreeMf);
-        assert_eq!(ExportFormat::from_path("model.html"), ExportFormat::Html);
-        assert_eq!(ExportFormat::from_path("model.htm"), ExportFormat::Html);
-        assert_eq!(ExportFormat::from_path("model.stl"), ExportFormat::Stl);
-        // 未知拡張子・拡張子なしは STL フォールバック。
-        assert_eq!(ExportFormat::from_path("model.xyz"), ExportFormat::Stl);
-        assert_eq!(ExportFormat::from_path("model"), ExportFormat::Stl);
+        assert_eq!(ExportFormat::from_path("model.glb"), Ok(ExportFormat::Glb));
+        assert_eq!(
+            ExportFormat::from_path("model.3mf"),
+            Ok(ExportFormat::ThreeMf)
+        );
+        assert_eq!(
+            ExportFormat::from_path("model.html"),
+            Ok(ExportFormat::Html)
+        );
+        assert_eq!(ExportFormat::from_path("model.htm"), Ok(ExportFormat::Html));
+        assert_eq!(ExportFormat::from_path("model.stl"), Ok(ExportFormat::Stl));
+        // 拡張子が無い場合は STL 既定。`kado export out` は何とも矛盾しないので
+        // 拒否する理由が無い (問322: 拒否するのは入力が誤っている場合だけ)。
+        assert_eq!(ExportFormat::from_path("model"), Ok(ExportFormat::Stl));
     }
 
     #[test]
     fn from_path_is_case_insensitive() {
         // 大文字拡張子でも同じ形式 (AI が ".GLB" を渡しても STL に落ちない)。
-        assert_eq!(ExportFormat::from_path("M.GLB"), ExportFormat::Glb);
-        assert_eq!(ExportFormat::from_path("M.3MF"), ExportFormat::ThreeMf);
-        assert_eq!(ExportFormat::from_path("M.HTML"), ExportFormat::Html);
-        assert_eq!(ExportFormat::from_path("M.Stl"), ExportFormat::Stl);
+        assert_eq!(ExportFormat::from_path("M.GLB"), Ok(ExportFormat::Glb));
+        assert_eq!(ExportFormat::from_path("M.3MF"), Ok(ExportFormat::ThreeMf));
+        assert_eq!(ExportFormat::from_path("M.HTML"), Ok(ExportFormat::Html));
+        assert_eq!(ExportFormat::from_path("M.Stl"), Ok(ExportFormat::Stl));
+    }
+
+    #[test]
+    fn unknown_extension_is_rejected_not_silently_written_as_stl() {
+        // 問322: 以前は未知の拡張子を黙って STL にフォールバックしていた。
+        // 実測で `.xyz` 出力は `.stl` 出力とバイト単位で同一だった——つまり
+        // **拡張子が内容について嘘をつくファイル**を無言で作っていた。
+        // `export model.obj` を投げた利用者は Kado が OBJ を書けたと信じ、
+        // 別のツールで開けない理由が分からない。問318 で MCP 引数に適用した
+        // 「省略は既定・指定されたが解釈できなければエラー」をここにも適用する。
+        for path in [
+            "model.obj",
+            "model.step",
+            "model.ply",
+            "out.xyz",
+            "a.stl.bak",
+        ] {
+            let err = ExportFormat::from_path(path)
+                .expect_err("an unknown extension must not silently become STL");
+            assert!(
+                err.contains(path),
+                "error must name the offending path: {err}"
+            );
+            // 候補一覧は BY_EXTENSION から生成されるので、抜き取りで足りる。
+            for ext in [".stl", ".glb", ".3mf", ".html"] {
+                assert!(
+                    err.contains(ext),
+                    "error must list the supported extension '{ext}': {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supported_extensions_covers_every_writable_format() {
+        // 候補一覧が BY_EXTENSION から生成されることを固定する。形式を足したときに
+        // 「対応は増えたがエラーメッセージは古いまま」を防ぐ (問319 と同じ規律)。
+        let listed = ExportFormat::supported_extensions();
+        for f in [
+            ExportFormat::Stl,
+            ExportFormat::Glb,
+            ExportFormat::ThreeMf,
+            ExportFormat::Html,
+        ] {
+            let has = ExportFormat::BY_EXTENSION
+                .iter()
+                .any(|(e, known)| *known == f && listed.contains(&format!(".{e}")));
+            assert!(has, "{} must appear in supported_extensions()", f.label());
+        }
     }
 
     #[test]

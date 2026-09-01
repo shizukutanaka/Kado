@@ -172,13 +172,26 @@ impl Parser<'_> {
 /// `name(args...)` を KadoScene [`Value`] オブジェクトへ対応づける。
 /// 位置引数→キー名の対応のみを行い、値の妥当性は `eval_value` 側で検査する。
 fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
-    // 引数個数の検査ヘルパ。
-    let want = |n: usize| -> Result<(), ScriptError> {
-        if args.len() == n {
+    // 引数個数の検査ヘルパ (問319)。
+    //
+    // 以前は個数だけを受け取り「"rotate" expects 5 argument(s), got 3」と返していた。
+    // 利用者は AI であり、エラーメッセージが唯一の自己修正材料である。個数だけでは
+    // **どの5つか**が分からず、`help` を引き直すか当てずっぽうで再試行するしかない。
+    // 同じ関数の中で `cut`/`flatten`/`repeat` は既に "(nx,ny,nz,shape)" と名前を
+    // 挙げており、規律は存在するのに一般経路にだけ適用されていなかった
+    // (CLAUDE.md §2 の「表面積の不整合」)。
+    //
+    // 引数名の並びを受け取れば**個数はそこから導ける**ので、個数の引数は消した
+    // (二重に持つと片方だけ直る)。
+    let want = |params: &[&str]| -> Result<(), ScriptError> {
+        if args.len() == params.len() {
             Ok(())
         } else {
+            let plural = if params.len() == 1 { "" } else { "s" };
             Err(ScriptError::new(format!(
-                "\"{name}\" expects {n} argument(s), got {}",
+                "\"{name}\" expects {} argument{plural} ({}), got {}",
+                params.len(),
+                params.join(", "),
                 args.len()
             )))
         }
@@ -192,7 +205,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
     match name {
         // ── プリミティブ ──
         "sphere" => {
-            want(1)?;
+            want(&["r"])?;
             Ok(obj(vec![("op", json::s("sphere")), ("r", a(0))]))
         }
         "cuboid" => match args.len() {
@@ -213,7 +226,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ))),
         },
         "cylinder" => {
-            want(2)?;
+            want(&["r", "h"])?;
             Ok(obj(vec![
                 ("op", json::s("cylinder")),
                 ("r", a(0)),
@@ -222,7 +235,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
         }
         // prism(n, r, h): 正多角形プリズム (問269)。
         "prism" => {
-            want(3)?;
+            want(&["n", "r", "h"])?;
             Ok(obj(vec![
                 ("op", json::s("prism")),
                 ("n", a(0)),
@@ -231,7 +244,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "torus" => {
-            want(2)?;
+            want(&["major", "minor"])?;
             Ok(obj(vec![
                 ("op", json::s("torus")),
                 ("major", a(0)),
@@ -239,11 +252,11 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "cone" => {
-            want(2)?;
+            want(&["r", "h"])?;
             Ok(obj(vec![("op", json::s("cone")), ("r", a(0)), ("h", a(1))]))
         }
         "capsule" => {
-            want(2)?;
+            want(&["h", "r"])?;
             Ok(obj(vec![
                 ("op", json::s("capsule")),
                 ("h", a(0)),
@@ -289,7 +302,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
 
         // ── ブーリアン ──
         "union" | "intersection" | "difference" => {
-            want(2)?;
+            want(&["a", "b"])?;
             Ok(obj(vec![("op", json::s(name)), ("a", a(0)), ("b", a(1))]))
         }
         "smooth_union"
@@ -312,7 +325,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
 
         // ── 変形 (shape は末尾引数) ──
         "translate" => {
-            want(4)?;
+            want(&["x", "y", "z", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("translate")),
                 ("x", a(0)),
@@ -322,7 +335,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "scale" => {
-            want(2)?;
+            want(&["s", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("scale")),
                 ("s", a(0)),
@@ -331,7 +344,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
         }
         // scale_xyz(sx, sy, sz, shape): 非一様スケール (問276)。
         "scale_xyz" => {
-            want(4)?;
+            want(&["sx", "sy", "sz", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("scale_xyz")),
                 ("sx", a(0)),
@@ -341,7 +354,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "offset" => {
-            want(2)?;
+            want(&["amount", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("offset")),
                 ("amount", a(0)),
@@ -349,7 +362,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "shell" => {
-            want(2)?;
+            want(&["thickness", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("shell")),
                 ("thickness", a(0)),
@@ -357,7 +370,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "rotate_x" | "rotate_y" | "rotate_z" => {
-            want(2)?;
+            want(&["angle", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s(name)),
                 ("angle", a(0)),
@@ -368,7 +381,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
         // rotate_x/y/z の canonical 3軸だけでは表現できない対角線等の軸を
         // オイラー角の逆算なしに1操作で指定できる。
         "rotate" => {
-            want(5)?;
+            want(&["ax", "ay", "az", "angle", "shape"])?;
             Ok(obj(vec![
                 ("op", json::s("rotate")),
                 ("ax", a(0)),
@@ -379,7 +392,7 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ]))
         }
         "mirror_x" | "mirror_y" | "mirror_z" => {
-            want(1)?;
+            want(&["shape"])?;
             Ok(obj(vec![("op", json::s(name)), ("shape", a(0))]))
         }
         // cut(nx,ny,nz, shape) [offset=0] または cut(nx,ny,nz, offset, shape)。
@@ -441,13 +454,77 @@ fn build_call(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
             ))),
         },
 
-        other => Err(ScriptError::new(format!("unknown function \"{other}\""))),
+        // 問319: 名前を返すだけでは AI は次の一手を決められない。有効名の一覧
+        // (単一の真実源 ALL_DSL_OPS) と、詳細を引ける `help` ツールを添える。
+        // 問71 が `view` で確立した「有効値を列挙する」形を DSL にも広げたもの。
+        other => Err(ScriptError::new(format!(
+            "unknown function \"{other}\"; valid operators: {}. \
+             Call the `help` tool for the full reference with argument lists.",
+            crate::script::eval::ALL_DSL_OPS.join(", ")
+        ))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 問319: **すべての** op が、引数個数エラーで引数名を挙げること。
+    ///
+    /// 個数だけの「expects 5 argument(s), got 3」では、利用者 (AI) は
+    /// **どの5つか**を知りようがなく、`help` を引き直すか当てずっぽうで再試行する
+    /// しかない。`cut`/`flatten`/`repeat` は以前から名前を挙げていたのに一般経路が
+    /// そうなっていなかったので、全 op について固定する。
+    ///
+    /// `ALL_DSL_OPS` を回すので、**新しい op を足したら自動で対象に入る**
+    /// (メタテストが不足箇所を教える・CLAUDE.md §2)。
+    #[test]
+    fn every_arity_error_names_its_parameters() {
+        // どの op も 9 引数は受け付けない (最大は repeat の 7)。
+        let args = "1,1,1,1,1,1,1,1,1";
+        for op in crate::script::eval::ALL_DSL_OPS {
+            let err = eval_dsl(&format!("{op}({args})"))
+                .expect_err("9 arguments must be an arity error for every op");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(op),
+                "arity error must name the operator: {msg}"
+            );
+            assert!(
+                msg.contains('(') && msg.contains(')'),
+                "arity error for '{op}' must list the expected parameter names, \
+                 not just a count (問319): {msg}"
+            );
+            assert!(
+                msg.contains("got 9"),
+                "arity error for '{op}' must state what it received: {msg}"
+            );
+        }
+    }
+
+    /// 問319: 未知の名前を返すだけのエラーは、AI にとって行き止まりである。
+    /// テキスト DSL と JSON の**両経路**が、有効名の一覧と `help` への誘導を
+    /// 持つことを固定する (片方だけ直すと経路によって助けの量が食い違う)。
+    #[test]
+    fn unknown_operator_errors_list_valid_names_and_point_at_help() {
+        let text = eval_dsl("cyliner(1.0, 2.0)").expect_err("typo must be rejected");
+        let json = crate::script::eval::eval_scene(r#"{"op":"spere","r":1.0}"#)
+            .expect_err("typo must be rejected");
+
+        for (label, msg) in [("text DSL", text.to_string()), ("JSON", json.to_string())] {
+            assert!(
+                msg.contains("help"),
+                "{label}: error must point at the `help` tool: {msg}"
+            );
+            // 有効名の一覧は ALL_DSL_OPS から生成されるので、抜き取りで十分。
+            for op in ["sphere", "cylinder", "smooth_union", "flatten"] {
+                assert!(
+                    msg.contains(op),
+                    "{label}: error must list valid operator '{op}': {msg}"
+                );
+            }
+        }
+    }
     use crate::core::Vec3;
     use crate::script::eval::{eval_scene, ALL_DSL_OPS};
 

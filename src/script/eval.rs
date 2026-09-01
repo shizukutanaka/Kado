@@ -94,7 +94,11 @@ pub(crate) const DSL_MAX_DEPTH: usize = MAX_DEPTH;
 /// `dsl_ops_are_fully_documented` テストが、この一覧がモジュール冒頭のコメントと
 /// KADOSCENE_HELP (mcp/tools.rs) の双方に記載されていることを固定する。
 /// 問103 (ALL_ISSUE_CODES) と同じ「文書ドリフト防止」パターンを演算子名にも適用する。
-#[cfg(test)]
+///
+/// 問319: かつて `#[cfg(test)]` で囲まれており、「単一の真実源」がテストの中にしか
+/// 存在しなかった。未知 op のエラーメッセージが有効名を列挙するようになったため、
+/// **製品コードからも同じ一覧を参照する**。こうしておけば、演算子を足したときに
+/// エラーメッセージだけ古いままになる経路が構造的に消える。
 pub(crate) const ALL_DSL_OPS: &[&str] = &[
     // プリミティブ
     "sphere",
@@ -527,7 +531,14 @@ fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptErro
             Ok(child.cut(Vec3::new(0.0, 0.0, -1.0), -at))
         }
 
-        other => Err(ScriptError::new(format!("unknown op: \"{other}\""))),
+        // 問319: dsl.rs の "unknown function" と対になるメッセージ。片方だけ
+        // 情報を足すと、JSON 経路とテキスト DSL 経路で助けの量が食い違う
+        // (CLAUDE.md §2 の5点セットと同じ「片方だけに足すとバグる」構図)。
+        other => Err(ScriptError::new(format!(
+            "unknown op: \"{other}\"; valid operators: {}. \
+             Call the `help` tool for the full reference with argument lists.",
+            ALL_DSL_OPS.join(", ")
+        ))),
     }
 }
 

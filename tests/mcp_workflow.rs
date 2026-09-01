@@ -11,73 +11,10 @@
 //! screenshot) が機能することを固定する。ユニットテストでは捕まえられない
 //! 「表面積の不整合」を一点で検知する恒久ガード。
 
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+mod common;
 
-use kado::mcp::json::{self, Value};
-
-/// JSON-RPC メッセージを Content-Length フレーミングでエンコードする。
-fn frame(body: &str) -> Vec<u8> {
-    let mut out = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
-    out.extend_from_slice(body.as_bytes());
-    out
-}
-
-/// `kado mcp` を起動し、与えたリクエスト群を送って stdout 全体を返す。
-fn run_mcp(requests: &[String]) -> Vec<u8> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kado"))
-        .arg("mcp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn kado mcp");
-
-    {
-        let mut stdin = child.stdin.take().unwrap();
-        for r in requests {
-            stdin.write_all(&frame(r)).unwrap();
-        }
-        // stdin を drop すると EOF となりサーバは正常終了する。
-    }
-
-    let mut out = Vec::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_end(&mut out)
-        .expect("read stdout");
-    child.wait().expect("wait");
-    out
-}
-
-/// Content-Length フレーム列を id→結果 Value へパースする。
-fn parse_responses(bytes: &[u8]) -> std::collections::BTreeMap<i64, Value> {
-    let mut map = std::collections::BTreeMap::new();
-    let mut i = 0;
-    let needle = b"Content-Length:";
-    while let Some(rel) = find(&bytes[i..], needle) {
-        let hdr_start = i + rel;
-        let sep = find(&bytes[hdr_start..], b"\r\n\r\n").expect("frame header terminator");
-        let len_str = std::str::from_utf8(&bytes[hdr_start + needle.len()..hdr_start + sep])
-            .unwrap()
-            .trim();
-        let len: usize = len_str.parse().expect("content-length value");
-        let body_start = hdr_start + sep + 4;
-        let body = &bytes[body_start..body_start + len];
-        let doc = json::parse(std::str::from_utf8(body).unwrap()).expect("valid JSON response");
-        if let Some(id) = doc.get("id").and_then(|v| v.as_f64()) {
-            map.insert(id as i64, doc);
-        }
-        i = body_start + len;
-    }
-    map
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
+use common::{parse_responses, run_mcp, tool_ok, tool_text};
+use kado::mcp::json;
 
 #[test]
 fn full_ai_workflow_over_real_mcp_stdio() {
@@ -186,5 +123,204 @@ fn invalid_tool_input_is_tool_execution_error_over_stdio() {
             .and_then(|v| v.as_bool()),
         Some(true),
         "invalid tool input must be a Tool Execution Error (isError:true)"
+    );
+}
+
+/// Plan.md の**旗艦 DoD** を実行可能なテストにする (問309)。
+///
+/// Plan.md §4 Phase 4 の DoD はこう書かれている:
+///   「**M3穴付きブラケット**を自然言語→検証済み STL まで無人完走」
+/// また §7 の KPI は「**平均ツール呼出 ≤15/タスク**」を課している。
+///
+/// ところがこの2つは**一度も計測されていなかった** — 製品が自らの合格条件を
+/// 検証していない状態だった (「計測しない要件は要件ではなく願望である」)。
+/// 本テストは AI が実際に辿る MCP 経路だけで DoD 全体を完走し、
+/// **消費したツール呼出数を数えて KPI と突き合わせる**。
+#[test]
+fn flagship_dod_m3_bracket_completes_within_the_tool_call_budget() {
+    // KPI (Plan.md §7): 平均ツール呼出 ≤15/タスク。
+    const TOOL_CALL_BUDGET: usize = 15;
+
+    // AI が「M3穴付きブラケット」を無人で作り切る最小の道具列。
+    // initialize はプロトコル握手でありツール呼出ではないので予算に数えない。
+    let out_stl = "kado-dod-bracket.stl";
+    let tool_calls: Vec<String> = vec![
+        // 1. 形状を作る: 40x40x4mm の板に M3 クリアランス穴 (Ø3.2 = r1.6) を貫通させる。
+        format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"run_script","arguments":{{"script":"difference(cuboid(20.0,20.0,2.0), cylinder(1.6,10.0))"}}}}}}"#
+        ),
+        // 2. 穴径を実測して意図どおりか確認する (問299 の measure が無ければ約30呼出を要した)。
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"measure","arguments":{"from":[-50.0,0.0,0.0],"dir":[1.0,0.0,0.0]}}}"#.to_string(),
+        // 3. 製造可能性を検証する。
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"validate","arguments":{"min_wall_mm":1.0}}}"#.to_string(),
+        // 4. 出荷する。
+        format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"export","arguments":{{"path":"{out_stl}"}}}}}}"#
+        ),
+    ];
+    assert!(
+        tool_calls.len() <= TOOL_CALL_BUDGET,
+        "the DoD workflow uses {} tool calls, over the KPI budget of {TOOL_CALL_BUDGET}",
+        tool_calls.len()
+    );
+
+    let mut reqs =
+        vec![r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string()];
+    reqs.extend(tool_calls.iter().cloned());
+    let resp = parse_responses(&run_mcp(&reqs));
+
+    // 全ツール呼出が成功すること (無人完走 = 途中で人手の介入を要さない)。
+    for id in 2..=5 {
+        let r = resp
+            .get(&id)
+            .unwrap_or_else(|| panic!("no response for tool call id={id}"));
+        assert_eq!(
+            r.get("result")
+                .and_then(|x| x.get("isError"))
+                .and_then(|v| v.as_bool()),
+            Some(false),
+            "tool call id={id} failed, so the run was not unattended: {:?}",
+            r.get("result")
+        );
+    }
+
+    // 2. measure: 穴が M3 クリアランス Ø3.2 であることを**数値で**確認する。
+    let m_text = resp[&3]
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("text"))
+        .and_then(|v| v.as_str())
+        .expect("measure text payload");
+    let m = json::parse(m_text).expect("measure returns JSON");
+    assert_eq!(
+        m.get("complete").and_then(|v| v.as_bool()),
+        Some(true),
+        "the measuring ray must complete, or the dimension is unverified (問301)"
+    );
+    let spans = m
+        .get("spans")
+        .and_then(|v| v.as_array())
+        .expect("measure returns spans");
+    // 材料 → 穴 → 材料 なので中央の span が穴径。
+    assert_eq!(spans.len(), 3, "solid→hole→solid must yield 3 spans");
+    let hole_dia = spans[1].as_f64().expect("hole span is numeric");
+    assert!(
+        (hole_dia - 3.2).abs() < 1e-3,
+        "the M3 clearance hole must measure Ø3.2mm, got {hole_dia}"
+    );
+
+    // 3. validate: 製造可能性の判定が下せること (水密であることは必須)。
+    let v_text = resp[&4]
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("text"))
+        .and_then(|v| v.as_str())
+        .expect("validate text payload");
+    let report = json::parse(v_text).expect("validate returns JSON");
+    assert_eq!(
+        report.get("manifold").and_then(|v| v.as_bool()),
+        Some(true),
+        "the bracket must be watertight to be manufacturable"
+    );
+
+    // 4. export: 検証済み STL が実在し、binary STL として妥当であること
+    //    (「検証済み STL まで」の "STL" を実ファイルで確認する)。
+    let path = std::path::Path::new(out_stl);
+    let bytes = std::fs::read(path).expect("the DoD requires an actual STL file on disk");
+    std::fs::remove_file(path).ok();
+    let decoded =
+        kado::io::stl::decode_binary(&bytes).expect("the exported file must be a valid binary STL");
+    assert!(
+        decoded.is_edge_manifold(),
+        "the shipped STL must itself be watertight"
+    );
+}
+
+/// 問318: 引数のサイレントフォールバックが**実バイナリ経由**で消えたことを確認する。
+///
+/// ユニットテストは `arg_*` を直接叩くが、AI が実際に辿るのは stdio 経由の
+/// `tools/call` である。CLAUDE.md §3「完了の定義」に従い、その経路で
+/// `isError:true` と**理由の分かるメッセージ**が返ることを固定する。
+///
+/// 最も重いのは `build_dir` の取り違えである。従来は未知の値を黙って +Z へ倒して
+/// いたため、AI が `"up"` や `[1,0]` を渡すと **+Z 前提のオーバーハング判定**が
+/// 「頼んだ向きの判定結果」として返り、誤った製造可否を信じることになった。
+#[test]
+fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
+    let mut reqs = vec![
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"script":"sphere(1.0)"}}}"#.to_string(),
+    ];
+
+    // (id, tools/call arguments, エラーメッセージに必ず現れる語)
+    let cases: [(i64, &str, &str); 5] = [
+        (
+            10,
+            r#""name":"validate","arguments":{"build_dir":"up"}"#,
+            "build_dir",
+        ),
+        (
+            11,
+            r#""name":"validate","arguments":{"build_dir":[1,0]}"#,
+            "3",
+        ),
+        (
+            12,
+            r#""name":"validate","arguments":{"build_dir":[0,0,0]}"#,
+            "overhang",
+        ),
+        (
+            13,
+            r#""name":"validate","arguments":{"resolution":100000}"#,
+            "resolution",
+        ),
+        (
+            14,
+            r#""name":"screenshot","arguments":{"width":0}"#,
+            "width",
+        ),
+    ];
+    for (id, args, _) in cases {
+        reqs.push(format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{{args}}}}}"#
+        ));
+    }
+    // 正常な値は従来どおり通る (回帰: 厳格化で正常経路を壊していないこと)。
+    reqs.push(
+        r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"validate","arguments":{"build_dir":"-z","resolution":24}}}"#
+            .to_string(),
+    );
+
+    let resp = parse_responses(&run_mcp(&reqs));
+
+    for (id, args, needle) in cases {
+        let r = resp
+            .get(&id)
+            .unwrap_or_else(|| panic!("no response for id {id} ({args})"));
+        assert!(
+            r.get("error").is_none(),
+            "id {id}: argument validation must be a Tool Execution Error, not a protocol error"
+        );
+        assert!(
+            !tool_ok(r),
+            "id {id}: malformed argument must set isError:true — silently falling back to a \
+             default makes the AI trust a result it did not ask for (問318). args: {args}"
+        );
+        let text = tool_text(r).unwrap_or("");
+        assert!(
+            text.contains(needle),
+            "id {id}: error must explain what was wrong (expected to mention '{needle}'): {text}"
+        );
+    }
+
+    let ok = resp.get(&20).expect("valid arguments response");
+    assert!(
+        tool_ok(ok),
+        "valid build_dir/resolution must still succeed: {:?}",
+        tool_text(ok)
     );
 }
