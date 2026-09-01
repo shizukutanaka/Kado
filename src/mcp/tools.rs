@@ -482,7 +482,27 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
         "get_scene" => tool_get_scene(session),
         "undo_script" => tool_undo_script(session),
         "help" => tool_help(),
-        other => ToolResult::error(format!("unknown tool: {other}")),
+        // 問323: 名前を返すだけでは AI は次の一手を決められない。問319 で DSL の
+        // 未知 op に有効名一覧と `help` 誘導を足したが、**ツール名は同じ形なのに
+        // 直っていなかった**——同じ規律が片方にだけ適用された、いつもの
+        // 「表面積の不整合」(CLAUDE.md §2)。有効名は `tool_list()` から生成するので、
+        // ツールを足せば自動で載る (一覧を二重に持たない)。
+        other => {
+            let tools = tool_list();
+            let valid: Vec<&str> = tools
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ToolResult::error(format!(
+                "unknown tool: {other}; available tools: {}. \
+                 Call the `help` tool for the DSL and tool reference.",
+                valid.join(", ")
+            ))
+        }
     }
 }
 
@@ -2256,6 +2276,35 @@ mod tests {
                 documented,
                 "DSL op '{op}' must be listed in README.md's operator section \
                  (as itself or as a compact op_x/y/z group, 問278)"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_error_lists_available_tools_and_points_at_help() {
+        // 問323: 問319 で DSL の未知 op には有効名一覧と `help` 誘導を足したのに、
+        // **まったく同じ形のツール名だけ直っていなかった**。利用者は AI であり、
+        // エラーメッセージが唯一の自己修正材料である (問319)。
+        let mut session = Session::new();
+        let r = call_tool(&mut session, "nonexistent_tool", &json::obj([]));
+        assert!(r.is_error, "unknown tool must be an error");
+        let text = r.content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains("help"),
+            "error must point at the `help` tool: {text}"
+        );
+        // 一覧は tool_list() から生成されるので、全ツール名が載っていること。
+        for t in tool_list().as_array().expect("tool_list is an array") {
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("each tool has a name");
+            assert!(
+                text.contains(name),
+                "error must list the available tool '{name}': {text}"
             );
         }
     }
