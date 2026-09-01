@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{parse_responses, run_mcp};
+use common::{parse_responses, run_mcp, tool_ok, tool_text};
 use kado::mcp::json;
 
 #[test]
@@ -237,5 +237,90 @@ fn flagship_dod_m3_bracket_completes_within_the_tool_call_budget() {
     assert!(
         decoded.is_edge_manifold(),
         "the shipped STL must itself be watertight"
+    );
+}
+
+/// 問318: 引数のサイレントフォールバックが**実バイナリ経由**で消えたことを確認する。
+///
+/// ユニットテストは `arg_*` を直接叩くが、AI が実際に辿るのは stdio 経由の
+/// `tools/call` である。CLAUDE.md §3「完了の定義」に従い、その経路で
+/// `isError:true` と**理由の分かるメッセージ**が返ることを固定する。
+///
+/// 最も重いのは `build_dir` の取り違えである。従来は未知の値を黙って +Z へ倒して
+/// いたため、AI が `"up"` や `[1,0]` を渡すと **+Z 前提のオーバーハング判定**が
+/// 「頼んだ向きの判定結果」として返り、誤った製造可否を信じることになった。
+#[test]
+fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
+    let mut reqs = vec![
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"script":"sphere(1.0)"}}}"#.to_string(),
+    ];
+
+    // (id, tools/call arguments, エラーメッセージに必ず現れる語)
+    let cases: [(i64, &str, &str); 5] = [
+        (
+            10,
+            r#""name":"validate","arguments":{"build_dir":"up"}"#,
+            "build_dir",
+        ),
+        (
+            11,
+            r#""name":"validate","arguments":{"build_dir":[1,0]}"#,
+            "3",
+        ),
+        (
+            12,
+            r#""name":"validate","arguments":{"build_dir":[0,0,0]}"#,
+            "overhang",
+        ),
+        (
+            13,
+            r#""name":"validate","arguments":{"resolution":100000}"#,
+            "resolution",
+        ),
+        (
+            14,
+            r#""name":"screenshot","arguments":{"width":0}"#,
+            "width",
+        ),
+    ];
+    for (id, args, _) in cases {
+        reqs.push(format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{{args}}}}}"#
+        ));
+    }
+    // 正常な値は従来どおり通る (回帰: 厳格化で正常経路を壊していないこと)。
+    reqs.push(
+        r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"validate","arguments":{"build_dir":"-z","resolution":24}}}"#
+            .to_string(),
+    );
+
+    let resp = parse_responses(&run_mcp(&reqs));
+
+    for (id, args, needle) in cases {
+        let r = resp
+            .get(&id)
+            .unwrap_or_else(|| panic!("no response for id {id} ({args})"));
+        assert!(
+            r.get("error").is_none(),
+            "id {id}: argument validation must be a Tool Execution Error, not a protocol error"
+        );
+        assert!(
+            !tool_ok(r),
+            "id {id}: malformed argument must set isError:true — silently falling back to a \
+             default makes the AI trust a result it did not ask for (問318). args: {args}"
+        );
+        let text = tool_text(r).unwrap_or("");
+        assert!(
+            text.contains(needle),
+            "id {id}: error must explain what was wrong (expected to mention '{needle}'): {text}"
+        );
+    }
+
+    let ok = resp.get(&20).expect("valid arguments response");
+    assert!(
+        tool_ok(ok),
+        "valid build_dir/resolution must still succeed: {:?}",
+        tool_text(ok)
     );
 }
