@@ -26,6 +26,45 @@ fn arg_absent(args: &Value, key: &str) -> bool {
     }
 }
 
+/// 数値引数を解釈する (問326)。省略時は `default`、**指定されたが数値でなければエラー**。
+///
+/// 問318 は整数引数と `build_dir` を厳格化したが、`validate` の
+/// `min_wall_mm` / `max_overhang_deg` / `max_aspect_ratio` は `as_f64().unwrap_or(default)`
+/// のままで、`"min_wall_mm": "0.8"` (文字列) が黙って 0.5 になっていた。CLI 側は
+/// 問47 以来 `parse_finite_arg` で厳格だったので、問325 の鏡像 (今度は MCP 側が漏れ)。
+///
+/// 範囲検査は**しない**。`verify/check.rs` は「0 以下でスキップ」を契約として文書化して
+/// おり、負値は誤りではなく指示である。非有限は JSON パーサ層が既に拒否する (§5)。
+fn arg_f64(args: &Value, key: &str, default: f64) -> Result<f64, String> {
+    if arg_absent(args, key) {
+        return Ok(default);
+    }
+    args.get(key).and_then(|v| v.as_f64()).ok_or_else(|| {
+        format!("'{key}' must be a number (default {default}); 0 or less skips the check")
+    })
+}
+
+/// 文字列引数を解釈する (問326)。省略時は `default`、指定されたが文字列でなければエラー。
+/// 値そのものの妥当性 (`view` の名前など) は呼び出し側が引き続き検査する。
+fn arg_str<'a>(args: &'a Value, key: &str, default: &'a str) -> Result<&'a str, String> {
+    if arg_absent(args, key) {
+        return Ok(default);
+    }
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("'{key}' must be a string (default \"{default}\")"))
+}
+
+/// 真偽値引数を解釈する (問326)。`"axes": "no"` が黙って true になっていた。
+fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
+    if arg_absent(args, key) {
+        return Ok(default);
+    }
+    args.get(key)
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| format!("'{key}' must be true or false (default {default})"))
+}
+
 /// 整数引数を `[1, max]` の範囲で解釈する (問18 / 問318)。
 ///
 /// 省略時は `default`。**指定された場合は黙って丸めない**——数値でない・非有限・
@@ -135,7 +174,9 @@ pub fn tool_list() -> Value {
                 (
                     "path",
                     "string",
-                    "Output file path; .glb=glTF, .3mf=3MF, .html=viewer, otherwise STL (default: kado-export.stl)",
+                    "Output file path; .stl=binary STL, .glb=glTF, .3mf=3MF, .html=viewer. \
+                     No extension defaults to STL; any other extension is rejected (問322). \
+                     Default: kado-export.stl",
                     false,
                 ),
                 (
@@ -507,7 +548,11 @@ pub fn call_tool(session: &mut Session, name: &str, args: &Value) -> ToolResult 
 }
 
 fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
-    let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("iso");
+    // 問326: `"view": 5` のような型違いを黙って "iso" にしない。
+    let view = match arg_str(args, "view", "iso") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
     let (width, height, res) = match (
         arg_dim(args, "width", 512),
         arg_dim(args, "height", 512),
@@ -546,10 +591,10 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     // 問267: front/back/right/left/top/bottom/iso はエンジニアリング図面の多面図・
     // 等角投影法に由来し、伝統的に正射影 (寸法比率が歪まない) で描かれる。
     // 既定は既存挙動を維持するため透視投影のまま、opt-in で切り替える。
-    let projection = args
-        .get("projection")
-        .and_then(|v| v.as_str())
-        .unwrap_or("perspective");
+    let projection = match arg_str(args, "projection", "perspective") {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
     cam.ortho = match projection {
         "perspective" => false,
         "orthographic" => true,
@@ -564,7 +609,10 @@ fn tool_screenshot(session: &Session, args: &Value) -> ToolResult {
     let big = render(&mesh, &cam, width * samples, height * samples);
     let mut img = big.downsample(samples);
     // 向きの基準として座標軸グノモンを重ねる (問66; axes=false で無効化)。
-    let show_axes = args.get("axes").and_then(|v| v.as_bool()).unwrap_or(true);
+    let show_axes = match arg_bool(args, "axes", true) {
+        Ok(b) => b,
+        Err(e) => return ToolResult::error(e),
+    };
     let tick_step = if show_axes {
         let center = (lo + hi) * 0.5;
         let length = (hi - lo).length() * 0.35;
@@ -601,10 +649,11 @@ fn arg_samples(args: &Value, width: usize, height: usize) -> Result<usize, Strin
 }
 
 fn tool_export(session: &Session, args: &Value) -> ToolResult {
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("kado-export.stl");
+    // 問326: `"path": 123` を黙って kado-export.stl にしない。
+    let path = match arg_str(args, "path", "kado-export.stl") {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
     let res = match arg_resolution(args, 64) {
         Ok(r) => r,
         Err(e) => return ToolResult::error(e),
@@ -1248,19 +1297,16 @@ fn tool_validate(session: &Session, args: &Value) -> ToolResult {
         Ok(r) => r,
         Err(e) => return ToolResult::error(e),
     };
-    let min_wall = args
-        .get("min_wall_mm")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.5);
-    let max_overhang = args
-        .get("max_overhang_deg")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(45.0);
+    // 問326: 指定されたが数値でない値を黙って既定へ倒さない (問318/325 と同じ規則)。
     // 問305: 細長さ閾値。安全値はプリンタ・材料・絶対寸法に依存するため調整可能にする。
-    let max_aspect = args
-        .get("max_aspect_ratio")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(DEFAULT_MAX_ASPECT_RATIO);
+    let (min_wall, max_overhang, max_aspect) = match (
+        arg_f64(args, "min_wall_mm", 0.5),
+        arg_f64(args, "max_overhang_deg", 45.0),
+        arg_f64(args, "max_aspect_ratio", DEFAULT_MAX_ASPECT_RATIO),
+    ) {
+        (Ok(w), Ok(o), Ok(a)) => (w, o, a),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return ToolResult::error(e),
+    };
     // 問68: ビルド方向を明示受け取り (デフォルト +Z)。
     let build_dir = match arg_build_dir(args) {
         Ok(d) => d,
@@ -1935,6 +1981,62 @@ mod tests {
                 "{label}: error must state the accepted upper bound so the AI can retry: {e}"
             );
         }
+    }
+
+    #[test]
+    fn typed_args_reject_wrong_types_but_keep_defaults_when_omitted() {
+        // 問326: 問318 で整数引数を厳格化した後も、validate の閾値 (f64) と
+        // screenshot/export の文字列・真偽値は as_x().unwrap_or(default) のままだった。
+        // CLI は問47 以来 parse_finite_arg で厳格なので、問325 の鏡像 (MCP 側の漏れ)。
+        let wrong: [(&str, Value); 4] = [
+            ("string", json::s("0.8")),
+            ("bool", json::b(true)),
+            ("array", json::arr([json::n(1.0)])),
+            ("object", json::obj([])),
+        ];
+        for (label, v) in &wrong {
+            let r = arg_f64(&json::obj([("min_wall_mm", v.clone())]), "min_wall_mm", 0.5);
+            assert!(
+                r.is_err(),
+                "{label}: a non-number threshold must be rejected, got {r:?}"
+            );
+            assert!(
+                r.unwrap_err().contains("min_wall_mm"),
+                "{label}: error must name the argument"
+            );
+        }
+        // 負値は誤りではない: verify/check.rs が「0 以下でスキップ」を契約にしている。
+        assert_eq!(
+            arg_f64(
+                &json::obj([("min_wall_mm", json::n(-1.0))]),
+                "min_wall_mm",
+                0.5
+            ),
+            Ok(-1.0)
+        );
+        assert_eq!(arg_f64(&json::obj([]), "min_wall_mm", 0.5), Ok(0.5));
+        assert_eq!(
+            arg_f64(
+                &json::obj([("min_wall_mm", json::NULL)]),
+                "min_wall_mm",
+                0.5
+            ),
+            Ok(0.5)
+        );
+
+        assert!(arg_str(&json::obj([("view", json::n(5.0))]), "view", "iso").is_err());
+        assert_eq!(
+            arg_str(&json::obj([("view", json::s("top"))]), "view", "iso"),
+            Ok("top")
+        );
+        assert_eq!(arg_str(&json::obj([]), "view", "iso"), Ok("iso"));
+
+        assert!(arg_bool(&json::obj([("axes", json::s("no"))]), "axes", true).is_err());
+        assert_eq!(
+            arg_bool(&json::obj([("axes", json::b(false))]), "axes", true),
+            Ok(false)
+        );
+        assert_eq!(arg_bool(&json::obj([]), "axes", true), Ok(true));
     }
 
     #[test]

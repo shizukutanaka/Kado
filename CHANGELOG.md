@@ -8,6 +8,15 @@
 
 ### 修正
 
+- **MCP `validate`/`screenshot`/`export` の型違い引数が黙って既定値になる欠陥を修正**
+  (問326)。問318 で整数引数と `build_dir` を厳格化したが、同じ `validate` の隣の行にある
+  `min_wall_mm`/`max_overhang_deg`/`max_aspect_ratio` は `as_f64().unwrap_or(default)` の
+  ままで、`"min_wall_mm": "0.8"`（文字列）が黙って 0.5 になっていた。`"view": 5`、
+  `"axes": "no"`、`"path": 123` も同様。CLI 側は問47 以来厳格だったので問325 の鏡像。
+  `arg_f64`/`arg_str`/`arg_bool` を追加し、**型が違うときだけ**エラーにする。負値は
+  `verify/check.rs` が「0 以下でスキップ」を契約にしているため従来どおり受理する。
+  実バイナリ E2E に 5 ケース追加
+
 - **CLI の `resolution` に残っていたサイレントフォールバックを廃止** (問325)。問318 で
   MCP から消した「指定されたが解釈できない値を黙って既定へ倒す」経路が、同じ引数を
   受け取る CLI に残っていた。`kado run s.txt abc` は黙って 48、`100000` は黙って 256 に

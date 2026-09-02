@@ -257,7 +257,8 @@ fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
     ];
 
     // (id, tools/call arguments, エラーメッセージに必ず現れる語)
-    let cases: [(i64, &str, &str); 5] = [
+    // 個数はスライスから導く (問319 と同じ: 二重に持てば片方だけずれる)。
+    let cases: &[(i64, &str, &str)] = &[
         (
             10,
             r#""name":"validate","arguments":{"build_dir":"up"}"#,
@@ -283,12 +284,37 @@ fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
             r#""name":"screenshot","arguments":{"width":0}"#,
             "width",
         ),
+        // 問326: 型違いの閾値・文字列・真偽値。以前はすべて黙って既定値になり、
+        // AI は「自分が指定した閾値で検証された」と信じた別の閾値の合否を受け取った。
+        (
+            15,
+            r#""name":"validate","arguments":{"min_wall_mm":"0.8"}"#,
+            "min_wall_mm",
+        ),
+        (
+            16,
+            r#""name":"validate","arguments":{"max_overhang_deg":true}"#,
+            "max_overhang_deg",
+        ),
+        (17, r#""name":"screenshot","arguments":{"view":5}"#, "view"),
+        (
+            18,
+            r#""name":"screenshot","arguments":{"axes":"no"}"#,
+            "axes",
+        ),
+        (19, r#""name":"export","arguments":{"path":123}"#, "path"),
     ];
-    for (id, args, _) in cases {
+    for &(id, args, _) in cases {
         reqs.push(format!(
             r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{{args}}}}}"#
         ));
     }
+    // 問326: 負値は verify/check.rs が「0 以下でスキップ」を契約として文書化しており、
+    // 誤りではなく指示である。厳格化の勢いで契約を上書きしていないことを固定する。
+    reqs.push(
+        r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"validate","arguments":{"min_wall_mm":-1,"max_overhang_deg":0}}}"#
+            .to_string(),
+    );
     // 正常な値は従来どおり通る (回帰: 厳格化で正常経路を壊していないこと)。
     reqs.push(
         r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"validate","arguments":{"build_dir":"-z","resolution":24}}}"#
@@ -297,7 +323,7 @@ fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
 
     let resp = parse_responses(&run_mcp(&reqs));
 
-    for (id, args, needle) in cases {
+    for &(id, args, needle) in cases {
         let r = resp
             .get(&id)
             .unwrap_or_else(|| panic!("no response for id {id} ({args})"));
@@ -317,6 +343,12 @@ fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
         );
     }
 
+    let neg = resp.get(&21).expect("negative threshold response");
+    assert!(
+        tool_ok(neg),
+        "negative thresholds mean 'skip' per verify/check.rs and must stay accepted (問326): {:?}",
+        tool_text(neg)
+    );
     let ok = resp.get(&20).expect("valid arguments response");
     assert!(
         tool_ok(ok),
