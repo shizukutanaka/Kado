@@ -214,3 +214,65 @@ fn run_and_check_reject_a_malformed_resolution_instead_of_silently_clamping() {
         );
     }
 }
+
+#[test]
+fn run_and_check_report_the_resolution_behind_their_numbers() {
+    // 問328: `digest` も `min_wall` も**解像度に依存する**。MCP 側は問90/91/92 で
+    // resolution を併記するようにしたが、CLI にはその修正が届いていなかった
+    // (問325 と同じ「片方の入口にだけ適用された規律」)。同じファイルを 2 つの解像度で
+    // 叩くと digest も min_wall も変わるのに、出力にはその理由が無かった。
+    let dir = workdir("resolution-transparency");
+    std::fs::write(dir.join("scene.txt"), SCENE).unwrap();
+
+    let mut digests = Vec::new();
+    for res in ["48", "96"] {
+        for cmd in [
+            vec!["run", "scene.txt", res],
+            vec!["check", "scene.txt", "0.0", "0.0", res],
+        ] {
+            let out = kado(&dir, &cmd);
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                text.contains(&format!("resolution={res}")),
+                "{cmd:?} must state the resolution behind its digest/min_wall (問328): {text}"
+            );
+            if cmd[0] == "run" {
+                let d = text
+                    .split_whitespace()
+                    .find(|t| t.starts_with("digest="))
+                    .expect("summary must carry a digest")
+                    .to_string();
+                digests.push(d);
+            }
+        }
+    }
+    // 前提そのものの確認: 解像度が変われば digest は実際に変わる。
+    // 変わらないなら「解像度を併記する」動機自体が成り立たない。
+    assert_ne!(
+        digests[0], digests[1],
+        "digest must actually differ across resolutions — otherwise there is nothing to explain"
+    );
+}
+
+#[test]
+fn validate_stl_does_not_claim_a_resolution_it_does_not_have() {
+    // 問328: `validate-stl` はファイルから読んだメッシュを検証する。抽出解像度という
+    // 概念が無いので、ここに resolution を出すのは**嘘になる**。厳格化や透明性の
+    // 勢いで、意味のない数値を足していないことを固定する。
+    let dir = workdir("stl-no-resolution");
+    std::fs::write(dir.join("scene.txt"), SCENE).unwrap();
+    assert!(kado(&dir, &["export", "scene.txt", "m.stl"])
+        .status
+        .success());
+
+    let out = kado(&dir, &["validate-stl", "m.stl", "0.0", "0.0"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("triangles="),
+        "validate-stl must still print a summary: {text}"
+    );
+    assert!(
+        !text.contains("resolution="),
+        "an imported mesh has no extraction resolution; reporting one would be a lie (問328): {text}"
+    );
+}

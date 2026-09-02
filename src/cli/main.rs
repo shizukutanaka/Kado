@@ -153,7 +153,11 @@ fn main() {
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, res);
             let report = validate(&mesh, 0.0, 0.0);
-            println!("{}", report.summary());
+            // 問328: digest も min_wall も**解像度に依存する**。MCP 側は問90/91/92 で
+            // resolution を併記するようにしたが、CLI はされていなかった——同じ規律が
+            // 片方の入口にだけ適用されていた (問325 と同型)。同じファイルを 2 つの
+            // 解像度で叩くと digest も min_wall も変わるのに、出力にその理由が無い。
+            println!("{} resolution={res}", report.summary());
         }
         "check" => {
             // check <scene> [min_wall_mm] [max_overhang_deg] [resolution]
@@ -181,7 +185,8 @@ fn main() {
                 Vec3::new(0.0, 0.0, 1.0),
             );
             let status = if report.is_ok() { "PASS" } else { "FAIL" };
-            println!("[{status}] {}", report.summary());
+            // 問328: 解像度依存の数値 (digest・min_wall) を出すなら解像度も出す。
+            println!("[{status}] {} resolution={res}", report.summary());
             for issue in &report.issues {
                 println!("  [{:?}] {} — {}", issue.severity, issue.code, issue.cause);
                 for hint in &issue.fix_hints {

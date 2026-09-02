@@ -580,6 +580,11 @@ pub fn validate_full(
                                 "Reduce min_wall_mm threshold if intentional",
                                 "Rule of thumb: min printable wall ≈ nozzle diameter (~0.4 mm FDM); \
                                  aim for ≥2× nozzle (~0.8 mm) for strength; resin walls thicker (~1 mm+)",
+                                "Sharp convex edges genuinely taper to zero thickness (a flatten() \
+                                 rim, a cone apex). There the probe reports how close the sampling \
+                                 grid got to the edge, so this number shrinks as resolution rises — \
+                                 it is not a fixed feature you can thicken. Fillet the edge, or judge \
+                                 it from the rendered shape rather than from this value (問328)",
                             ],
                         );
                         if let Some(loc) = thin_loc {
