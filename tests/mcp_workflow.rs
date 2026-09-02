@@ -356,3 +356,108 @@ fn malformed_arguments_are_rejected_with_a_reason_over_stdio() {
         tool_text(ok)
     );
 }
+
+/// フレーミング破損が**見える形で**失敗すること (問335)。
+///
+/// 問264 は「フレーミング失敗は再同期不能なので接続終了、本文の失敗は -32700 で継続」
+/// という正しい区別を作った。だが `run_loop` は `while let Ok(..)` で
+/// **エラーを捨てて**おり、`read_frame` が組み立てた診断
+/// （`missing Content-Length` など）は誰にも届かず、**終了コード 0** で終わっていた。
+///
+/// これは README (問315) の切り分け手順と衝突する。そこにはこう書いてある——
+/// 「素で `kado mcp` を起動し、EOF で正常終了すればサーバ側は健全」。
+/// フレーム破損でも同じ「正常終了」になるなら、その手順は何も切り分けられない。
+///
+/// stdout は JSON-RPC のチャネルなので診断は **stderr** へ出す（LSP 系の通例）。
+#[test]
+fn framing_corruption_is_diagnosed_on_stderr_and_exits_nonzero() {
+    fn run(input: &[u8]) -> std::process::Output {
+        use std::io::Write;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_kado"))
+            .arg("mcp")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn kado mcp");
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().expect("wait")
+    }
+
+    let init = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let framed = |b: &[u8]| {
+        let mut v = format!("Content-Length: {}\r\n\r\n", b.len()).into_bytes();
+        v.extend_from_slice(b);
+        v
+    };
+
+    // 1. 正常な切断は静かに成功したまま (README の切り分けが成り立つ条件)。
+    for (label, input) in [
+        ("empty stdin", Vec::new()),
+        ("one valid message then EOF", framed(init)),
+    ] {
+        let out = run(&input);
+        assert!(
+            out.status.success(),
+            "{label}: a clean close must stay exit 0"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{label}: a clean close must stay silent: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // 2. 本文だけが不正なら -32700 を返して**継続**する (問264 の契約を壊さない)。
+    let mut recoverable = framed(init);
+    recoverable.extend_from_slice(&framed(br#"{"not json"#));
+    let out = run(&recoverable);
+    assert!(
+        out.status.success(),
+        "a malformed body must not end the session (問264)"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("-32700"),
+        "a malformed body must produce a Parse error response"
+    );
+
+    // 3. フレーミング破損は診断つきで落ちる。
+    for (label, input, needle) in [
+        (
+            "no Content-Length",
+            b"garbage without any header\r\n\r\n".to_vec(),
+            "Content-Length",
+        ),
+        (
+            "non-numeric Content-Length",
+            b"Content-Length: abc\r\n\r\n{}".to_vec(),
+            "Content-Length",
+        ),
+        (
+            "absurd Content-Length (OOM guard)",
+            b"Content-Length: 999999999999\r\n\r\n{}".to_vec(),
+            "exceeds limit",
+        ),
+        (
+            "body shorter than declared",
+            b"Content-Length: 100\r\n\r\n{\"short\":1}".to_vec(),
+            "shorter than",
+        ),
+    ] {
+        let out = run(&input);
+        assert!(
+            !out.status.success(),
+            "{label}: framing corruption must not report success — it was \
+             indistinguishable from a clean close before 問335"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(needle),
+            "{label}: stderr must explain the problem (expected {needle:?}): {err}"
+        );
+        assert!(
+            out.stdout.is_empty() || !String::from_utf8_lossy(&out.stdout).contains("kado mcp:"),
+            "{label}: diagnostics must go to stderr, never stdout (that is the JSON-RPC channel)"
+        );
+    }
+}

@@ -41,8 +41,17 @@ pub fn run_stdio() -> ! {
     let stdout = io::stdout();
     // セッション状態 (正本シーン)。run_script で更新され他ツールが参照する。
     let mut session = tools::Session::new();
-    run_loop(stdin.lock(), stdout.lock(), &mut session);
-    std::process::exit(0)
+    // 問335: フレーミング破損は stderr へ診断を出し、終了コードを分ける。
+    // stdout は JSON-RPC のチャネルなので絶対に汚さない (LSP 系サーバの通例)。
+    match run_loop(stdin.lock(), stdout.lock(), &mut session) {
+        Ok(()) => std::process::exit(0),
+        Err(reason) => {
+            eprintln!("kado mcp: malformed frame on stdin: {reason}");
+            eprintln!("  the stream cannot be resynchronized, so the session ends here.");
+            eprintln!("  check that your client uses Content-Length framing (LSP style).");
+            std::process::exit(1)
+        }
+    }
 }
 
 /// メッセージ処理の中核ループ。テスト用に Read/Write を注入できるよう
@@ -56,23 +65,38 @@ pub fn run_stdio() -> ! {
 /// なく全セッションの消滅)。`read_frame` (フレーミング層) と `parse_frame_body`
 /// (本文パース層) を分離し、後者の失敗のみ JSON-RPC Parse error (-32700) を返して
 /// 継続する。
-fn run_loop(mut reader: impl BufRead, mut writer: impl Write, session: &mut tools::Session) {
-    // フレーミング自体の失敗 (EOF・Content-Length 不正/超過) はストリーム位置が
-    // 信頼できないため再同期できない。接続を終了する。
-    while let Ok(buf) = read_frame(&mut reader) {
+fn run_loop(
+    mut reader: impl BufRead,
+    mut writer: impl Write,
+    session: &mut tools::Session,
+) -> Result<(), String> {
+    // フレーミング自体の失敗 (Content-Length 不正/超過・フレーム途中の EOF) は
+    // ストリーム位置が信頼できないため再同期できない。接続を終了する。
+    //
+    // 問335: 以前は `while let Ok(..)` で**エラーを捨てて**いた。`read_frame` は
+    // "missing Content-Length" のような診断を組み立てているのに、それが誰にも
+    // 届かないまま終了コード 0 で終わる——正常な切断と区別が付かなかった。
+    // README (問315) は「素で起動して EOF で正常終了すればサーバ側は健全」と
+    // 案内しており、その切り分けが機能しない状態だった。
+    loop {
+        let buf = match read_frame(&mut reader) {
+            Ok(Some(buf)) => buf,
+            Ok(None) => return Ok(()), // クライアントが正常に閉じた
+            Err(e) => return Err(e.to_string()),
+        };
         let msg = match parse_frame_body(&buf) {
             Ok(v) => v,
             Err(reason) => {
                 let resp = error_response(json::NULL, -32700, &format!("Parse error: {reason}"));
                 if write_message(&mut writer, &resp).is_err() {
-                    break;
+                    return Ok(());
                 }
                 continue;
             }
         };
         if let Some(resp) = handle(session, &msg) {
             if write_message(&mut writer, &resp).is_err() {
-                break;
+                return Ok(()); // 相手が読むのをやめた = 正常な終了
             }
         }
     }
@@ -82,15 +106,27 @@ fn run_loop(mut reader: impl BufRead, mut writer: impl Write, session: &mut tool
 
 /// Content-Length フレームの本文バイト列を読む。ヘッダ不正・EOF・上限超過は
 /// フレーミング層の失敗 (再同期不能)。本文の中身 (UTF-8/JSON) は検査しない。
-fn read_frame(r: &mut impl BufRead) -> io::Result<Vec<u8>> {
+fn read_frame(r: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     // ヘッダを行単位で読む。Content-Length: N\r\n\r\n の形式。
     let mut content_length: Option<usize> = None;
+    let mut header_started = false;
     loop {
         let mut line = String::new();
         let n = r.read_line(&mut line)?;
         if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stdin closed"));
+            // 問335: フレームの**先頭**での EOF はクライアントの正常な切断であり、
+            // 途中での EOF (ヘッダ途中・本文不足) は壊れたフレームである。
+            // 両者を同一視していたため、フレーミング破損が「正常終了」と
+            // 区別できなかった。
+            if header_started {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "stream ended in the middle of a frame header",
+                ));
+            }
+            return Ok(None); // クライアントが正常に閉じた
         }
+        header_started = true;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             break;
@@ -109,8 +145,13 @@ fn read_frame(r: &mut impl BufRead) -> io::Result<Vec<u8>> {
         ));
     }
     let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(buf)
+    r.read_exact(&mut buf).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("frame body is shorter than the declared Content-Length {len}: {e}"),
+        )
+    })?;
+    Ok(Some(buf))
 }
 
 /// フレーム本文をメッセージとしてパースする (UTF-8 → JSON)。失敗してもストリーム
@@ -125,7 +166,8 @@ fn parse_frame_body(buf: &[u8]) -> Result<Value, String> {
 /// 挙動 (問118/171/172 等) を直接検証する既存テストのために残す。
 #[cfg(test)]
 fn read_message(r: &mut impl BufRead) -> io::Result<Value> {
-    let buf = read_frame(r)?;
+    let buf = read_frame(r)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "stdin closed"))?;
     parse_frame_body(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -651,7 +693,13 @@ mod tests {
         let reader = std::io::Cursor::new(input.into_bytes());
         let mut out: Vec<u8> = Vec::new();
         let mut session = tools::Session::new();
-        run_loop(reader, &mut out, &mut session);
+        // 問335: 本文の不正はフレーミング破損ではないので、ループは Ok で終わる
+        // (問264 の契約: 本文の失敗では接続を切らない)。
+        assert_eq!(
+            run_loop(reader, &mut out, &mut session),
+            Ok(()),
+            "a malformed body must not be reported as a framing failure (問264/問335)"
+        );
         let out_str = String::from_utf8(out).expect("output must be valid UTF-8");
         assert!(
             out_str.contains("-32700"),
@@ -676,7 +724,11 @@ mod tests {
         let reader = std::io::Cursor::new(input);
         let mut out: Vec<u8> = Vec::new();
         let mut session = tools::Session::new();
-        run_loop(reader, &mut out, &mut session);
+        assert_eq!(
+            run_loop(reader, &mut out, &mut session),
+            Ok(()),
+            "a non-UTF8 body must not be reported as a framing failure (問264/問335)"
+        );
         let out_str = String::from_utf8(out).expect("output must be valid UTF-8");
         assert!(
             out_str.contains("-32700"),
@@ -697,7 +749,14 @@ mod tests {
         let reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
         let mut session = tools::Session::new();
-        run_loop(reader, &mut out, &mut session);
+        // 問335: 終了するだけでなく、**なぜ終了したか**を返すこと。以前はこの Err が
+        // 捨てられ、正常な切断と区別できないまま終了コード 0 で終わっていた。
+        let reason = run_loop(reader, &mut out, &mut session)
+            .expect_err("a framing failure must be reported, not silently swallowed (問335)");
+        assert!(
+            reason.contains("Content-Length"),
+            "the reason must name the framing problem: {reason}"
+        );
         assert!(
             out.is_empty(),
             "fatal framing error must terminate without writing any response, got {:?}",
