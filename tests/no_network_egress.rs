@@ -158,3 +158,118 @@ fn the_guard_itself_contains_no_forbidden_token() {
         hits.join("\n")
     );
 }
+
+// ── 引数のサイレント強制変換の禁止 (問327) ──────────────────────────────────────
+
+/// 引数を黙って既定値へ倒すパターンが、**製品コードに二度と現れない**ことを守る。
+///
+/// 問318（MCP の整数）・問325（CLI の整数）・問326（MCP の浮動小数/文字列/真偽値）は、
+/// **三回に分けてしか行き渡らなかった同じ一つの規律**である。毎回「直した」と書いたが、
+/// 直していたのは常に「見つけた場所」だけで、次の場所は次のラウンドまで残った。
+///
+/// マスク第1段階（要件を疑う）を自分の直し方に当てると、真の要件は
+/// 「見つけた引数を直す」ではなく **「どの入口も引数を黙って読み替えられない」** である。
+/// 個別修正は要件の実装のひとつにすぎず、**列挙し切ったことを誰も保証していなかった**。
+/// これはガードで表せる——表せるものを人間の注意に委ねない（問320 の教訓）。
+///
+/// 検出するのは `x.get(..).and_then(|v| v.as_TYPE()).unwrap_or(default)` の連鎖、
+/// すなわち「取り出せなければ黙って既定」の署名そのもの。`match` / `if let` で
+/// 明示エラーにする正当な経路（`tool_eval` の必須 x/y/z など）は `unwrap_or` を
+/// 使わないので引っかからない。
+fn silent_coercion_signature(normalized: &str) -> Vec<String> {
+    // 検出語は実行時の文字列連結で組み立てる（問316/問320 の教訓: リテラルで書くと
+    // 走査対象に自分自身が入ったとき常に落ちる）。
+    let unwrap_or = ["unwrap", "_or("].concat();
+    let and_then = ["and", "_then(|"].concat();
+    let as_prefix = [".as", "_"].concat();
+
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(i) = normalized[from..].find(&and_then) {
+        let start = from + i;
+        // 連鎖は 1 式で完結するので、直後の限られた窓だけを見る。
+        // 日本語コメントを含むため**文字単位**で切り出す（バイト添字だと
+        // マルチバイト文字の途中で切れて panic する。実際に一度落とした）。
+        let window: String = normalized[start..].chars().take(160).collect();
+        // ".as_" と "unwrap_or(" が、この順にこの窓へ収まっていれば署名一致。
+        if let (Some(a), Some(u)) = (window.find(&as_prefix), window.find(&unwrap_or)) {
+            if a < u {
+                found.push(window[..u + unwrap_or.len()].to_string());
+            }
+        }
+        from = start + and_then.len();
+    }
+    found
+}
+
+/// ファイル本文のうち、テストモジュールより**前**（＝製品コード）だけを返す。
+///
+/// テストが JSON レポートを読むのに `unwrap_or("")` を使うのは正当なので、
+/// 走査対象から外す。守りたいのは利用者の入力を解釈する経路だけである。
+fn production_part(text: &str) -> &str {
+    match text.find(&["#[cfg(", "test)]"].concat()) {
+        Some(i) => &text[..i],
+        None => text,
+    }
+}
+
+#[test]
+fn no_production_code_silently_coerces_an_argument_to_a_default() {
+    let mut files = Vec::new();
+    rust_sources(&src_dir(), &mut files);
+    assert!(
+        files.len() >= 20,
+        "src/ の走査が壊れている ({} 件)",
+        files.len()
+    );
+
+    let mut violations = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("読めない: {}: {e}", path.display()));
+        // rustfmt が連鎖を複数行へ折るため、空白を潰してから探す。
+        let normalized = production_part(&text)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for hit in silent_coercion_signature(&normalized) {
+            violations.push(format!("{}: {hit}", path.display()));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "引数を黙って既定値へ倒すパターンが製品コードに現れた (問318/325/326 の再発)。\n\
+         省略は既定でよいが、**指定されたのに解釈できない値**を黙って読み替えてはならない。\n\
+         `arg_f64` / `arg_str` / `arg_bool` / `arg_bounded_usize` (src/mcp/tools.rs) か、\n\
+         `parse_finite_arg` / `parse_resolution_arg` (src/cli/main.rs) を使うこと。\n{}",
+        violations.join("\n")
+    );
+}
+
+/// 上のガードが**実際に違反を捕まえる**ことの確認（問314 以来の規律）。
+#[test]
+fn the_coercion_guard_detects_a_planted_silent_fallback() {
+    let planted = [
+        "let v = args",
+        ".get(\"min_wall_mm\").and_then(|v| v",
+        ".as_f64()).unwrap_or(0.5);",
+    ]
+    .concat();
+    assert!(
+        !silent_coercion_signature(&planted).is_empty(),
+        "仕込んだサイレントフォールバックを検出できなかった"
+    );
+
+    // 明示エラーにする正当な経路は誤検出しない。
+    for clean in [
+        "let x = args.get(\"x\").and_then(|v| v.as_f64()); match x { Some(v) => v, None => return err }",
+        "let n = self.count.unwrap_or(0);",
+        "let s = text.find(\"x\").unwrap_or(0);",
+    ] {
+        assert!(
+            silent_coercion_signature(clean).is_empty(),
+            "正当な経路を違反と誤検出した: {clean}"
+        );
+    }
+}
