@@ -1,4 +1,8 @@
-//! CLI エンドツーエンド統合テスト (問321)。
+//! 利用者に見える**約束**の検証 (問321/332/333)。
+//!
+//! CLI の振る舞いと、ドキュメントが新規利用者に約束していることを、
+//! どちらも**実行・検査して**確かめる。両者は同じ性質のものである——
+//! 「そう書いてある」ことと「そうなっている」ことは別であり、後者だけが約束である。
 //!
 //! 問321 で `kado export scene.txt out.stl` が**利用者のシーンファイルへ STL を
 //! 上書きする**欠陥が見つかった。ユニットテストは各層を検証していたが、
@@ -330,4 +334,70 @@ fn the_readme_quickstart_actually_runs_and_succeeds() {
         "the quickstart should exercise several commands; only {ran} ran — the block parse \
          is probably broken and this test would pass vacuously"
     );
+}
+
+/// `CHANGELOG.md` が Keep a Changelog の構造を保っていることを守る (問333)。
+///
+/// CHANGELOG 冒頭は「形式は Keep a Changelog に従う」と宣言している。だがこの宣言には
+/// **強制手段が無かった**——本セッション中、私は自分の編集で
+/// `## [Unreleased]` 見出しを**2 度**消し（問321 と問331）、`###` 見出しを**2 度**重複させた。
+/// 1 度目は問324 で偶然気づいたが、2 度目は問332 の作業中に見つかるまで残っていた。
+///
+/// 見出しの欠落は静かに壊れる。バレットは見出しが無くても表示され、
+/// リリースノート生成器だけが後で困る。**気づく仕組みが無ければ、
+/// 同じ人間が同じ間違いを繰り返す**（問320/327 と同じ結論を、自分に適用する）。
+#[test]
+fn changelog_keeps_the_structure_it_claims_to_follow() {
+    let text = include_str!("../CHANGELOG.md");
+    assert!(
+        text.contains("Keep a Changelog"),
+        "CHANGELOG must declare the format it follows"
+    );
+    assert!(
+        text.contains("## [Unreleased]"),
+        "CHANGELOG must have an [Unreleased] section — it was silently deleted twice by \
+         careless edits during this session (問321/問331)"
+    );
+
+    // Keep a Changelog が定める変更種別。これ以外の `###` は誤記とみなす。
+    const KINDS: &[&str] = &["追加", "変更", "修正", "削除", "非推奨", "セキュリティ"];
+
+    let mut release: Option<&str> = None;
+    let mut kind: Option<&str> = None;
+    let mut seen_in_release: Vec<&str> = Vec::new();
+
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
+        if let Some(title) = line.strip_prefix("## ") {
+            release = Some(title.trim());
+            kind = None;
+            seen_in_release.clear();
+        } else if let Some(k) = line.strip_prefix("### ") {
+            let k = k.trim();
+            let rel = release.unwrap_or_else(|| panic!("line {n}: `### {k}` before any release"));
+            // 種別の語彙は [Unreleased] にのみ課す。v0.1.0 は変更種別ではなく
+            // サブシステム（幾何カーネル・入出力…）で束ねており、**公開済みの履歴を
+            // 後から書き換えるのは誤り**である。ガードは今後書く場所にだけ効かせる
+            // ——過度に厳しいガードはノイズを生み、ノイズを出すガードは無視される（問320）。
+            if rel.contains("Unreleased") {
+                assert!(
+                    KINDS.contains(&k),
+                    "line {n}: `### {k}` in {rel} is not a Keep a Changelog kind {KINDS:?}"
+                );
+            }
+            assert!(
+                !seen_in_release.contains(&k),
+                "line {n}: `### {k}` appears twice in {rel} — merge the sections (問333)"
+            );
+            seen_in_release.push(k);
+            kind = Some(k);
+        } else if line.starts_with("- ") {
+            // バレットは必ず「リリース → 種別」の下に置かれること。
+            assert!(
+                release.is_some() && kind.is_some(),
+                "line {n}: entry sits outside a `## release` / `### kind` heading — a heading \
+                 was probably deleted by an edit (問333): {line}"
+            );
+        }
+    }
 }
