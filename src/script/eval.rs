@@ -28,16 +28,44 @@ use crate::mcp::json::{parse, Value};
 #[derive(Debug)]
 pub struct ScriptError {
     pub message: String,
+    /// 木の**特定ノード**ではなく、シーン全体に関わる失敗か (問330)。
+    ///
+    /// リソース上限（深さ・ノード数・ソースサイズ）は木のどこか一点の誤りではなく
+    /// **全体の大きさ**の問題である。にもかかわらず [`ScriptError::at`] が巻き戻しながら
+    /// パスを積むため、`scene tree too deep (> 64)` は
+    /// `translate.shape > ` を 65 回繰り返した **1210 文字**のメッセージになっていた
+    /// （情報を担うのは末尾だけ）。しかもそのパスは「カウンタが尽きた場所」であって
+    /// 直すべき場所ではなく、AI をその部分木の単純化へ誘導してしまう。
+    global: bool,
 }
 
 impl ScriptError {
     pub(crate) fn new(s: impl Into<String>) -> ScriptError {
-        ScriptError { message: s.into() }
+        ScriptError {
+            message: s.into(),
+            global: false,
+        }
+    }
+
+    /// シーン全体に関わる失敗（リソース上限）として印を付ける (問330)。
+    /// この印が付いた誤りは [`ScriptError::at`] でパスを積まれない。
+    pub(crate) fn global(s: impl Into<String>) -> ScriptError {
+        ScriptError {
+            message: s.into(),
+            global: true,
+        }
     }
 
     /// 親ノードの文脈 (`op.key`) を先頭に付け、失敗位置のパスを積む (問64)。
     /// 木を巻き戻しながら `difference.a > union.b > sphere: ...` のように経路を構築する。
+    ///
+    /// ただし全体に関わる誤り（`global`）は装飾しない (問330)。問64 がパスを積むのは
+    /// 「どのノードを直せばよいか」を示すためであり、直す対象がノードでないときに
+    /// パスを付けるのは、**情報ではなく誤誘導**になる。
     pub(crate) fn at(self, op: &str, key: &str) -> ScriptError {
+        if self.global {
+            return self;
+        }
         ScriptError::new(format!("{op}.{key} > {}", self.message))
     }
 }
@@ -67,7 +95,7 @@ struct Budget {
 /// セキュリティ (Plan リスク E): ソースサイズ・ノード数・深さに上限を課す。
 pub fn eval_scene(source: &str) -> Result<Sdf, ScriptError> {
     if source.len() > MAX_SOURCE_BYTES {
-        return Err(ScriptError::new(format!(
+        return Err(ScriptError::global(format!(
             "script too large ({} bytes > {MAX_SOURCE_BYTES})",
             source.len()
         )));
@@ -140,13 +168,13 @@ pub(crate) const ALL_DSL_OPS: &[&str] = &[
 
 fn build(v: &Value, depth: usize, budget: &mut Budget) -> Result<Sdf, ScriptError> {
     if depth > MAX_DEPTH {
-        return Err(ScriptError::new(format!(
+        return Err(ScriptError::global(format!(
             "scene tree too deep (> {MAX_DEPTH})"
         )));
     }
     budget.nodes += 1;
     if budget.nodes > MAX_NODES {
-        return Err(ScriptError::new(format!(
+        return Err(ScriptError::global(format!(
             "scene tree too large (> {MAX_NODES} nodes)"
         )));
     }
@@ -584,6 +612,50 @@ fn req_child<'a>(v: &'a Value, key: &str) -> Result<&'a Value, ScriptError> {
 mod tests {
     use super::*;
     use crate::core::Vec3;
+
+    #[test]
+    fn resource_limit_errors_carry_no_node_path_but_per_node_errors_still_do() {
+        // 問330: 問64 は「どのノードが原因か」を示すためにパスを積む。だが上限超過は
+        // 木の一点の誤りではなく**全体の大きさ**の問題であり、パスは「カウンタが尽きた
+        // 場所」でしかない。実測では `scene tree too deep` が
+        // `translate.shape > ` を 65 回並べた **1210 文字**になり、情報を担うのは末尾だけ
+        // だった。しかもそのパスは AI をその部分木の単純化へ誘導する——直すべきは
+        // 全体の大きさなので、誤誘導である。
+        let deep = {
+            let mut d = r#"{"op":"sphere","r":1.0}"#.to_string();
+            for _ in 0..80 {
+                d = format!(r#"{{"op":"translate","x":0.01,"y":0,"z":0,"shape":{d}}}"#);
+            }
+            d
+        };
+        let err = eval_scene(&deep).expect_err("depth limit must reject");
+        assert!(
+            err.message.contains("too deep"),
+            "must state the limit: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains(" > "),
+            "a whole-scene limit must not carry a node path (問330): {}",
+            err.message
+        );
+        assert!(
+            err.message.len() < 100,
+            "the message must stay readable; it was 1210 chars before 問330: {} chars",
+            err.message.len()
+        );
+
+        // 問64 の本来の用途 (どの sphere が悪いか) は温存されていること。
+        let bad = r#"{"op":"difference",
+            "a":{"op":"union","a":{"op":"sphere","r":1.0},"b":{"op":"sphere","r":-5.0}},
+            "b":{"op":"sphere","r":1.0}}"#;
+        let err = eval_scene(bad).expect_err("negative radius must reject");
+        assert!(
+            err.message.contains("difference.a") && err.message.contains("union.b"),
+            "a per-node error must still report its path (問64): {}",
+            err.message
+        );
+    }
 
     #[test]
     fn all_dsl_ops_are_documented_in_module_comment() {
