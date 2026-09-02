@@ -243,8 +243,17 @@ JSON-RPC エラーではなく、`result.isError=true` を伴うツール結果�
 | `MAX_DEPTH`（JSON） | 128 | mcp/json |
 | `MAX_REPEAT` | 256 | script/eval |
 | `MAX_MESSAGE_BYTES` | 16 MiB | mcp/server（確保前に検査） |
-| `MAX_RESOLUTION` | 256 | mcp/tools |
+| `MAX_RESOLUTION` | 256 | extract |
 | `MAX_IMAGE_DIM` | 4096 | mcp/tools |
+| `MAX_STL_TRIANGLES` | 5,000,000 | io/stl（確保前に検査・問296） |
+| `MAX_STEPS` | 10,000 | core/measure（grazing 光線の打ち切り・問299） |
+| `MAX_CROSSINGS` | 64 | core/measure（1 光線あたり・問299） |
+
+この表は `spec_resource_limit_table_matches_the_source` が機械検証している（問334）:
+**すべての `const MAX_*` が表に載っていること**と、**「場所」列が実際の定義位置と
+一致すること**。値の列は検証していない——`1 MiB` と `1 << 20` を突き合わせるには
+両側に式評価器が要り、めったに（そして意図的にしか）変わらない値のために
+払う複雑さとして見合わない。**測っていないものは測っていないと書く**（問331）。
 
 MCP 経由の画像寸法は `[1, MAX_IMAGE_DIM]` にクランプされ 0 に到達しないが、
 `render::render()` 自体も pub fn として `width==0`/`height==0` を防御する

@@ -1,4 +1,15 @@
-//! C1「外部送信ゼロ」の契約化 (問316)。
+//! ソース走査によるガード群 (問316/327/334)。
+//!
+//! いずれも「`src/` を実行時に再帰走査して、コードが満たすべき性質を確かめる」形を取る。
+//! `include_str!` ではなく `read_dir` を使うのは**まだ存在しないファイル**にも効かせるため。
+//! 検出語は実行時の文字列連結で組み立てる（リテラルで書くと走査対象に自分が入ったとき
+//! 常に落ちる・問316/320 で二度学んだ）。
+//!
+//! ファイル名は最初のガード（C1）に由来する。改名しないのは、`SECURITY.md` §1 と
+//! 問316 以降の議事録がこの名前で参照しているためで、**公開済みの記録の側を
+//! 後から書き換えない**（問333 と同じ理由）。
+//!
+//! # C1「外部送信ゼロ」の契約化 (問316)
 //!
 //! `SECURITY.md` §1 は「ネットワークソケットを一切開かない」と宣言しているが、
 //! この主張だけ**強制手段が無かった**。`no-external-deps` ジョブ (`cargo tree`) が
@@ -270,6 +281,92 @@ fn the_coercion_guard_detects_a_planted_silent_fallback() {
         assert!(
             silent_coercion_signature(clean).is_empty(),
             "正当な経路を違反と誤検出した: {clean}"
+        );
+    }
+}
+
+// ── SPEC のリソース上限表とソースの一致 (問334) ──────────────────────────────
+
+/// `docs/SPEC.md` §7.4 の上限表が、実際の `const MAX_*` と一致していることを守る。
+///
+/// 問325 で `MAX_RESOLUTION` を `mcp/tools` から `extract` へ移したとき、**SPEC の
+/// 「場所」列を更新し忘れた**。コードは正しく、文書だけが古い——本セッションで
+/// 何度も見た形（問324 の本数、問329 の KPI、問328 の解像度）であり、
+/// **私はその都度「手で同期する数値は腐る」と書きながら、また一つ腐らせていた**。
+///
+/// 検証するのは 2 つ:
+/// 1. **網羅性** — `src/` に定義された `const MAX_*` はすべて表に載っていること。
+///    新しい上限を足して文書化を忘れる経路を塞ぐ。
+/// 2. **場所の正しさ** — 表の「場所」列が、実際に定義されているファイルを指すこと。
+///
+/// **値の列は検証していない。** `1 MiB` と `1 << 20`、`16 MiB` と `16 * 1024 * 1024` を
+/// 突き合わせるには両側に式評価器が要る。値は（本数や KPI と違い）めったに、そして
+/// 意図的にしか変わらないので、その複雑さに見合わない。測っていないことを
+/// 測ったと書かないためにここへ明記する（問331）。
+#[test]
+fn spec_resource_limit_table_matches_the_source() {
+    let spec = include_str!("../docs/SPEC.md");
+
+    // src/ から `const MAX_*` を集める (名前 → モジュールパス)。
+    let mut files = Vec::new();
+    rust_sources(&src_dir(), &mut files);
+    assert!(
+        files.len() >= 20,
+        "src/ の走査が壊れている ({} 件)",
+        files.len()
+    );
+
+    let needle = ["const ", "MAX_"].concat();
+    let mut defined: Vec<(String, String)> = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("read source");
+        // src/a/b.rs → "a/b"、src/a/mod.rs → "a"
+        let rel = path.strip_prefix(src_dir()).expect("under src/");
+        let mut module = rel.with_extension("").to_string_lossy().replace('\\', "/");
+        if let Some(base) = module.strip_suffix("/mod") {
+            module = base.to_string();
+        }
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            if let Some(i) = line.find(&needle) {
+                let rest = &line[i + "const ".len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                    .collect();
+                if name.starts_with("MAX_")
+                    && !defined.iter().any(|(n, m)| *n == name && *m == module)
+                {
+                    defined.push((name, module.clone()));
+                }
+            }
+        }
+    }
+    assert!(
+        defined.len() >= 8,
+        "上限定数の抽出が壊れている (見つかったのは {:?})",
+        defined
+    );
+
+    for (name, module) in &defined {
+        // 表の行は `| \`NAME\` | 値 | 場所 |`。同名が別モジュールにある場合
+        // (MAX_DEPTH は script/eval と mcp/json) は、場所を含む行があればよい。
+        let rows: Vec<&str> = spec
+            .lines()
+            .filter(|l| l.trim_start().starts_with('|') && l.contains(&format!("`{name}`")))
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "`{name}` ({module}) が docs/SPEC.md §7.4 の上限表に無い。\n\
+             新しいリソース上限を足したら表にも書くこと (問334)"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains(module.as_str())),
+            "docs/SPEC.md の `{name}` の行が定義場所 '{module}' を指していない (問334)。\n\
+             定数を移動したら「場所」列も直すこと——問325 で実際に忘れた。\n{rows:#?}"
         );
     }
 }
