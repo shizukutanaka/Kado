@@ -276,3 +276,58 @@ fn validate_stl_does_not_claim_a_resolution_it_does_not_have() {
         "an imported mesh has no extraction resolution; reporting one would be a lie (問328): {text}"
     );
 }
+
+/// README のクイックスタートを**実際に実行する** (問332)。
+///
+/// 問321 は「クイックスタートを一文字変えた」だけでデータ破壊バグを暴いた。ならば
+/// **一文字も変えずに実行**したらどうか——最後の `check` が**終了コード 1** で終わっていた。
+/// README は `r: 1.0`（直径 2mm の球）に `min_wall 0.8mm` を課しており、平均肉厚
+/// 0.666mm < 0.8mm で正しく FAIL する。判定は正しいが、**手順どおりに進んだ利用者が
+/// 赤い `[Error]` で終わる**のは案内として誤りである（利用者は何も間違えていない）。
+///
+/// README は新規利用者への約束である。約束は実行して確かめる。
+#[test]
+fn the_readme_quickstart_actually_runs_and_succeeds() {
+    let readme = include_str!("../README.md");
+    // 最初の ```sh ブロック＝クイックスタート。
+    let block = readme
+        .split("```sh")
+        .nth(1)
+        .and_then(|b| b.split("```").next())
+        .expect("README must have a shell quickstart block");
+
+    let dir = workdir("readme-quickstart");
+    // ブロックは `./target/release/kado` を叩く。そのパスに実バイナリを置いて
+    // **コマンドを一字も書き換えずに**実行する（書き換えれば README を検証したことに
+    // ならない）。
+    let bin_dir = dir.join("target").join("release");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_kado"), bin_dir.join("kado")).unwrap();
+
+    let mut ran = 0;
+    for line in block.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("cargo ") {
+            continue; // コメントと、既にビルド済みの cargo build は飛ばす
+        }
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(line)
+            .current_dir(&dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run quickstart line `{line}`: {e}"));
+        assert!(
+            out.status.success(),
+            "README quickstart line failed with {:?} (問332):\n  $ {line}\n  stdout: {}\n  stderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        ran += 1;
+    }
+    assert!(
+        ran >= 4,
+        "the quickstart should exercise several commands; only {ran} ran — the block parse \
+         is probably broken and this test would pass vacuously"
+    );
+}

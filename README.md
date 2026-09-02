@@ -31,12 +31,19 @@ cargo build --release
 ./target/release/kado export demo.stl
 
 # スクリプトからメッシュ統計を表示 (拡張子は任意。JSON/テキスト DSL は内容で自動判別)
-echo '{"op":"sphere","r":1.0}' > scene.json
+# 座標は 1 単位 = 1mm。r=10 は直径 20mm の球になる。
+echo '{"op":"sphere","r":10.0}' > scene.json
 ./target/release/kado run scene.json
 
 # 製造性 (DFM) 検証: 最小肉厚 0.8mm・最大オーバーハング 45°
+# PASS なら終了コード 0、FAIL なら 1 (スクリプトから分岐できる)。
 ./target/release/kado check scene.json 0.8 45
 ```
+
+`check` は合否だけでなく**理由と直し方**を返します。上の球では
+「下半分が 45°を超えるオーバーハング」という警告が出ます（警告は FAIL にしません）。
+閾値を部品に対して厳しくすると `[Error] THIN_WALL` で終了コード 1 になります——
+たとえば `r` を 1.0（直径 2mm）にすると、平均肉厚 0.666mm が 0.8mm を下回ります。
 
 ### CLI コマンド
 
