@@ -170,3 +170,47 @@ fn export_rejects_an_unknown_extension_instead_of_writing_a_mislabelled_file() {
     );
     assert!(dir.join("noext").exists());
 }
+
+#[test]
+fn run_and_check_reject_a_malformed_resolution_instead_of_silently_clamping() {
+    // 問325: 問318 で MCP から消したサイレントフォールバックが CLI に残っていた。
+    // `run scene.txt 100000` は黙って 256 に、`run scene.txt abc` は黙って 48 になり、
+    // 利用者は頼んだ解像度の結果だと信じる。同じ `check` の中で `min_wall_mm` は
+    // 既に厳格だったのに、3 引数のうち resolution だけ漏れていた。
+    let dir = workdir("resolution");
+    std::fs::write(dir.join("scene.txt"), SCENE).unwrap();
+
+    for (args, needle) in [
+        (&["run", "scene.txt", "100000"][..], "256"),
+        (&["run", "scene.txt", "abc"][..], "integer"),
+        (&["run", "scene.txt", "0"][..], "256"),
+        (&["check", "scene.txt", "0.8", "45", "99999"][..], "256"),
+    ] {
+        let out = kado(&dir, args);
+        assert!(
+            !out.status.success(),
+            "{args:?}: a malformed resolution must fail, not silently clamp (問325)"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("resolution") && err.contains(needle),
+            "{args:?}: error must name the argument and the accepted range: {err}"
+        );
+    }
+
+    // 正常値と省略は従来どおり通る (厳格化で正常経路を壊していないこと)。
+    for args in [
+        &["run", "scene.txt", "24"][..],
+        &["run", "scene.txt"][..],
+        &["check", "scene.txt", "0.8", "45", "32"][..],
+    ] {
+        let out = kado(&dir, args);
+        // check は DFM 結果次第で exit 1 になりうるので、引数エラーの exit 2 でないことを見る。
+        assert_ne!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: valid resolution must not be an argument error: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

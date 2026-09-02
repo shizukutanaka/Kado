@@ -5,13 +5,13 @@
 //!   selftest   最小 SDF 評価の動作確認
 //!   export     [scene.json] <out.stl|.glb|.3mf|.html>  メッシュ出力 (拡張子で形式選択)
 //!   screenshot [scene.json] <out.png> [view]  PNG スクリーンショット出力
-//!   run        <scene.json> [resolution]  メッシュ統計表示
-//!   check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]  DFM 検証
+//!   run        <scene> [resolution]  メッシュ統計表示
+//!   check      <scene> [min_wall_mm] [max_overhang_deg] [resolution]  DFM 検証
 //!   validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]  外部 binary STL を DFM 検証
 //!   mcp        MCP サーバー (stdio) 起動
 
 use kado::core::{Sdf, Vec3};
-use kado::extract::polygonize;
+use kado::extract::{polygonize, MAX_RESOLUTION};
 use kado::io::ExportFormat;
 use kado::mcp::server::run_stdio;
 use kado::render::{draw_axes, render, Camera};
@@ -143,13 +143,12 @@ fn main() {
             }
         }
         "run" => {
-            // run <scene.json> [resolution]
+            // run <scene> [resolution]
             let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
-                eprintln!("usage: kado run <scene.json> [resolution]");
+                eprintln!("usage: kado run <scene> [resolution]");
                 std::process::exit(2);
             });
-            let res: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(48);
-            let res = res.clamp(1, 256);
+            let res = parse_resolution_arg(args.get(3), 48).unwrap_or_else(|e| fail(e));
             let sdf = parse_scene(&load_scene_file(path));
             let (lo, hi) = sdf.sampling_box();
             let mesh = polygonize(&sdf, lo, hi, res);
@@ -157,10 +156,10 @@ fn main() {
             println!("{}", report.summary());
         }
         "check" => {
-            // check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]
+            // check <scene> [min_wall_mm] [max_overhang_deg] [resolution]
             let path = args.get(2).map(String::as_str).unwrap_or_else(|| {
                 eprintln!(
-                    "usage: kado check <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]"
+                    "usage: kado check <scene> [min_wall_mm] [max_overhang_deg] [resolution]"
                 );
                 std::process::exit(2);
             });
@@ -168,8 +167,7 @@ fn main() {
                 parse_finite_arg(args.get(3), "min_wall_mm", 0.5).unwrap_or_else(|e| fail(e));
             let max_overhang =
                 parse_finite_arg(args.get(4), "max_overhang_deg", 45.0).unwrap_or_else(|e| fail(e));
-            let res: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(48);
-            let res = res.clamp(1, 256);
+            let res = parse_resolution_arg(args.get(5), 48).unwrap_or_else(|e| fail(e));
             // 問47: run と同じヘルパを使い、ファイル読み込み・評価のエラー処理を一本化する。
             let sdf = parse_scene(&load_scene_file(path));
             let (lo, hi) = sdf.sampling_box();
@@ -265,8 +263,8 @@ commands:
   export     [scene.json] <out.stl|.glb|.3mf|.html>
                                              export mesh (format by extension)
   screenshot [scene.json] <out.png> [view]   render PNG screenshot
-  run        <scene.json> [resolution]       show mesh statistics
-  check      <scene.json> [min_wall_mm] [max_overhang_deg] [resolution]
+  run        <scene> [resolution]       show mesh statistics (resolution 1..=256)
+  check      <scene> [min_wall_mm] [max_overhang_deg] [resolution]
                                              DFM validation
   validate-stl <file.stl> [min_wall_mm] [max_overhang_deg]
                                              DFM-validate an external binary STL
@@ -387,6 +385,33 @@ fn parse_scene(src: &str) -> Sdf {
 /// タイプミス (例: `kado check scene.json abc`) が既定値実行として静かに進行し、
 /// 気付かれない。省略 (引数なし) と誤入力 (パース失敗/非有限) を区別し、後者のみ
 /// エラーにする。
+/// `resolution` 引数を解釈する (問325)。`parse_finite_arg` と対をなす。
+///
+/// 問318 で MCP から「指定されたが解釈できない値を黙って既定へ倒す」経路を消したが、
+/// CLI は同じ引数を今も `parse().ok().unwrap_or(48)` → `clamp(1, 256)` で受けていた。
+/// `kado run scene.txt abc` は黙って 48、`100000` は黙って 256 になり、利用者は
+/// 頼んだ解像度の結果だと信じる。同じ `check` の中で `min_wall_mm` は
+/// `parse_finite_arg` が省略と誤入力を区別しているのに、3 引数のうちこれだけ漏れていた。
+///
+/// 省略は既定 (契約どおり)。指定されたが整数でない・0・上限超過はエラーにし、
+/// 引数名・受け取った値・受理範囲を必ず伝える (MCP 側 `arg_bounded_usize` と同じ語彙)。
+fn parse_resolution_arg(raw: Option<&String>, default: usize) -> Result<usize, String> {
+    let Some(text) = raw else {
+        return Ok(default);
+    };
+    let Ok(n) = text.trim().parse::<usize>() else {
+        return Err(format!(
+            "resolution must be an integer between 1 and {MAX_RESOLUTION}, got \"{text}\""
+        ));
+    };
+    if !(1..=MAX_RESOLUTION).contains(&n) {
+        return Err(format!(
+            "resolution is out of range: got {n}, valid range is 1..={MAX_RESOLUTION}"
+        ));
+    }
+    Ok(n)
+}
+
 fn parse_finite_arg(raw: Option<&String>, name: &str, default: f64) -> Result<f64, String> {
     match raw {
         None => Ok(default),
@@ -406,6 +431,40 @@ fn fail(msg: String) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_resolution_arg_defaults_when_omitted_and_accepts_the_documented_range() {
+        assert_eq!(parse_resolution_arg(None, 48), Ok(48));
+        for (raw, want) in [("24", 24), ("1", 1), ("256", 256), (" 64 ", 64)] {
+            assert_eq!(
+                parse_resolution_arg(Some(&raw.to_string()), 48),
+                Ok(want),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_resolution_arg_rejects_malformed_and_out_of_range_values() {
+        // 問325: 以前は parse().ok().unwrap_or(48) → clamp(1, 256) で、どれも黙って
+        // 別の値になっていた。省略と誤入力を区別するのが parse_finite_arg と同じ規律。
+        for raw in ["0", "257", "100000", "abc", "-5", "1.5", ""] {
+            let r = parse_resolution_arg(Some(&raw.to_string()), 48);
+            assert!(
+                r.is_err(),
+                "{raw:?} must be rejected, not silently coerced; got {r:?}"
+            );
+            let e = r.unwrap_err();
+            assert!(
+                e.contains("resolution"),
+                "{raw:?}: error must name the argument: {e}"
+            );
+            assert!(
+                e.contains(&MAX_RESOLUTION.to_string()),
+                "{raw:?}: error must state the accepted upper bound so the user can retry: {e}"
+            );
+        }
+    }
 
     #[test]
     fn parse_finite_arg_uses_default_when_omitted() {

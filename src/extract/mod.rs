@@ -17,3 +17,15 @@ pub mod mesh;
 
 pub use marching_tetrahedra::polygonize;
 pub use mesh::Mesh;
+
+/// `polygonize` に渡せる解像度の上限 (問18 / 問325)。
+///
+/// `polygonize` は `(res+1)^3` 個の `f64` を確保する。257³ × 8 byte ≈ 136 MiB で、
+/// 2 バッファ分を見込んでここで抑える (無境界パラメータによる OOM/panic DoS を防ぐ)。
+///
+/// 問325 以前は `mcp/tools.rs` の private 定数と CLI の直値 `256` が**二重に**存在し、
+/// 片方を変えるともう片方が黙ってずれる構造だった。この上限が守っているのは
+/// 本モジュールのサンプル格子メモリなので、所有者である `extract` に一本化する
+/// (`MAX_STL_TRIANGLES` が `io/stl.rs` に、`MAX_CROSSINGS` が `core/measure.rs` に
+/// あるのと同じ慣例)。
+pub const MAX_RESOLUTION: usize = 256;

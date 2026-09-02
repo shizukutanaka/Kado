@@ -10,8 +10,8 @@ use crate::script::eval_any;
 use crate::verify::{validate, validate_full, DEFAULT_MAX_ASPECT_RATIO};
 
 // ── リソース上限 (問18: 無境界パラメータによる OOM/panic DoS を防ぐ) ─────────────
-// polygonize は (res+1)^3 個の f64 を確保するため、res を上限で抑える。
-const MAX_RESOLUTION: usize = 256; // 257^3 f64 ≈ 136 MiB ×2バッファ
+// 抽出解像度の上限は所有者である extract に一本化した (問325)。CLI と共有する。
+use crate::extract::MAX_RESOLUTION;
 const MAX_IMAGE_DIM: usize = 4096; // 4096^2 px ×3byte ≈ 48 MiB
 
 /// 省略された引数か否かを判定する (問318)。
