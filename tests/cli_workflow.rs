@@ -401,3 +401,77 @@ fn changelog_keeps_the_structure_it_claims_to_follow() {
         }
     }
 }
+
+/// `docs/product-assessment.md` が挙げるガード名が**実在する**ことを守る (問336)。
+///
+/// 評価書は「この性質は、このテストが強制している」という形で書かれている。
+/// テスト名が消えたり改名されたりすれば、その行は**強制手段のない主張**に戻る——
+/// 本セッションが問316 以来ずっと相手にしてきたものそのものである。
+///
+/// 評価書自身が「テスト名が無い行は『そうなっている』であって『そうであり続ける』では
+/// ない」と書いている。**その基準を評価書自身に適用する。**
+#[test]
+fn product_assessment_cites_only_guards_that_exist() {
+    let doc = include_str!("../docs/product-assessment.md");
+
+    // src/ と tests/ に定義されている関数名を集める。
+    let mut defined = std::collections::HashSet::new();
+    for dir in ["src", "tests"] {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+        let mut stack = vec![root];
+        while let Some(p) = stack.pop() {
+            for entry in std::fs::read_dir(&p).expect("read_dir") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("read");
+                    for line in text.lines() {
+                        if let Some(rest) = line.trim().strip_prefix("fn ") {
+                            let name: String = rest
+                                .chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect();
+                            defined.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        defined.len() > 100,
+        "関数名の収集が壊れている ({} 件)",
+        defined.len()
+    );
+
+    // 評価書中のバッククォート識別子のうち、テスト名らしきもの
+    // (snake_case で十分長い) が実在すること。
+    let mut missing = Vec::new();
+    let mut checked = 0;
+    for chunk in doc.split('`').skip(1).step_by(2) {
+        let looks_like_a_test = chunk.len() > 12
+            && chunk.contains('_')
+            && chunk
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !looks_like_a_test {
+            continue;
+        }
+        checked += 1;
+        if !defined.contains(chunk) {
+            missing.push(chunk);
+        }
+    }
+    assert!(
+        checked >= 10,
+        "評価書からガード名を抽出できていない ({checked} 件) — 抽出が壊れていると \
+         このテストは無言で通ってしまう"
+    );
+    assert!(
+        missing.is_empty(),
+        "docs/product-assessment.md が実在しないガードを挙げている (問336)。\n\
+         テストを改名・削除したら評価書も直すこと——さもないとその行は\n\
+         強制手段のない主張に戻る。\n{missing:#?}"
+    );
+}

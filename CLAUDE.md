@@ -10,6 +10,8 @@
 2. [`docs/SPEC.md`](docs/SPEC.md) — 契約・不変条件・非目標・品質ゲート
 3. [`docs/feature-triage.md`](docs/feature-triage.md) — 何を作らないか（過剰機能の判定）
 4. [`docs/socratic-review.md`](docs/socratic-review.md) — 全設計判断の経緯（問1〜）
+5. [`docs/product-assessment.md`](docs/product-assessment.md) — 長所・短所・改善点の現況
+   （各性質を強制しているテスト名つき・未着手項目・意図的な非採用の理由）
 
 タスクの性質で読み分ける:
 - **設計判断を伴う**（新機能・研究調査・ADR 起票）→ [`docs/agents/opus-instructions.md`](docs/agents/opus-instructions.md)

@@ -205,6 +205,9 @@ cargo fmt --all -- --check                  # rustfmt 標準に一致
 （`docs/SPEC.md` §10）。設計判断は [`docs/adr/`](docs/adr/)、継続的なソクラテス問答は
 [`docs/socratic-review.md`](docs/socratic-review.md) に記録。
 
+**長所・短所・改善点の一覧**は [`docs/product-assessment.md`](docs/product-assessment.md)
+（各性質を強制しているテスト名つき。未着手・意図的に採らなかった項目も記載）。
+
 **AI エージェント向け作業ガイド**: 共通ガードレールは [`CLAUDE.md`](CLAUDE.md)、
 タスク別の指示書は [`docs/agents/`](docs/agents/)（設計判断を伴う作業＝
 [opus](docs/agents/opus-instructions.md)、仕様が明確な作業＝
