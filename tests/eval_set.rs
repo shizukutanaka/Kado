@@ -359,10 +359,28 @@ mod common;
 /// 流し、AI が辿るのと同じ道具列で完走できた割合を数える。
 ///
 /// 既存の `eval_set_*` テストは Rust API を直接叩いており「幾何が正しいか」を見るが、
-/// 本テストは「**エージェントが MCP 越しに課題を完了できるか**」という別の問いに答える。
-/// 両者は違う——幾何が正しくてもツール層が失敗すれば AI は完走できない。
+/// 本テストは「**ツール層が MCP 越しに課題を完了できるか**」という別の問いに答える。
+/// 両者は違う——幾何が正しくてもツール層が失敗すれば完走できない。
+///
+/// # 測っていないもの（問331 で明示化）
+///
+/// **スクリプトの著述は測っていない。** 各課題の KadoScene は `eval_set()` に
+/// **人間が書いて置いたもの**であり、テストはそれを逐語で `run_script` へ渡す。
+/// つまり本テストが答えるのは「**正しいスクリプトを与えられた状態から**、
+/// ツール層が固定の道具列で完走できるか」であって、
+/// 「AI が意図からスクリプトを書けるか」ではない。後者こそ無人運用の難所である。
+///
+/// 著述の測定にはライブのモデルが要り、本プロジェクトの制約
+/// （外部依存ゼロ・オフライン・決定的）と両立しない。よって**測れないことを
+/// 測れると言わない**のが正しい扱いである（問309「計測しない要件は要件ではなく
+/// 願望である」の対偶：測っていないものを測ったと書けば、それは願望ではなく誤りになる）。
+/// 著述の失敗から回復できるかは、代わりに
+/// [`recoverable_error_rate_over_realistic_authoring_mistakes`] が測る。
+///
+/// `TOOL_CALLS_PER_TASK` も**定数**であり実測平均ではない。予算 15 に対する
+/// 上限確認としては妥当だが、AI の実際の呼出回数ではない。
 #[test]
-fn unattended_completion_rate_over_the_eval_set_meets_the_kpi() {
+fn every_eval_task_completes_the_tool_chain_from_a_supplied_script() {
     // Plan.md §7 の閾値。
     const REQUIRED_RATE: f64 = 0.80;
     // Plan.md §7: 平均ツール呼出 ≤15/タスク。下記の道具列は 3 呼出。
@@ -433,5 +451,136 @@ fn unattended_completion_rate_over_the_eval_set_meets_the_kpi() {
         "unattended completion rate: {completed}/{} = {:.0}% at {TOOL_CALLS_PER_TASK} tool calls/task",
         tasks.len(),
         rate * 100.0
+    );
+}
+
+/// 著述ミスからの**回復可能率**を測る (問331)。
+///
+/// `every_eval_task_completes_the_tool_chain_from_a_supplied_script` は
+/// 正しいスクリプトを与えられた場合しか測れない。だが無人運用の実際の難所は
+/// **AI が間違えたあと自力で直せるか**である。利用者は AI であり、画面もソースも見ず、
+/// 返ってきた文字列だけで次の呼出を組み立てる（問319）。したがって
+/// 「そのエラーで直せるか」は UX ではなく**機能の測定**である。
+///
+/// ライブのモデルは使えない（外部依存ゼロ・オフライン・決定的）。代わりに
+/// **AI が現実に犯す誤りの corpus** を固定し、各エラーが
+/// (1) `isError` であり (2) 何が悪いかを名指しし (3) 有効な選択肢か `help` を示す、
+/// ことを測る。これは 問318/319/323/326/330 が実際に何を買ったかの計測でもある。
+#[test]
+fn recoverable_error_rate_over_realistic_authoring_mistakes() {
+    // (説明, ツール名, 引数 JSON, 回復に必要な手掛かり)
+    let mistakes: &[(&str, &str, &str, &[&str])] = &[
+        (
+            "op 名のタイポ",
+            "run_script",
+            r#"{"script":"cyliner(1,2)"}"#,
+            &["cylinder", "help"],
+        ),
+        (
+            "引数の数を誤る",
+            "run_script",
+            r#"{"script":"rotate(1,2,3)"}"#,
+            &["ax", "angle", "shape"],
+        ),
+        (
+            "存在しない op (JSON 経路)",
+            "run_script",
+            r#"{"script":"{\"op\":\"spere\",\"r\":1}"}"#,
+            &["sphere", "help"],
+        ),
+        (
+            "幾何的に無効な値",
+            "run_script",
+            r#"{"script":"sphere(-1.0)"}"#,
+            &["> 0", "-1"],
+        ),
+        (
+            "キー名の誤り",
+            "measure",
+            r#"{"from":[0,0,0],"direction":[1,0,0]}"#,
+            &["dir"],
+        ),
+        (
+            "必須フィールド欠落",
+            "eval",
+            r#"{"x":0,"y":0}"#,
+            &["z", "required"],
+        ),
+        (
+            "未知のビュー名",
+            "screenshot",
+            r#"{"view":"diagonal"}"#,
+            &["iso", "valid"],
+        ),
+        (
+            "閾値を文字列で渡す",
+            "validate",
+            r#"{"min_wall_mm":"0.8"}"#,
+            &["min_wall_mm", "number"],
+        ),
+        (
+            "解像度が範囲外",
+            "validate",
+            r#"{"resolution":100000}"#,
+            &["resolution", "256"],
+        ),
+        (
+            "未対応の出力形式",
+            "export",
+            r#"{"path":"m.obj"}"#,
+            &[".stl", "supported"],
+        ),
+        ("存在しないツール", "nope", r#"{}"#, &["help", "validate"]),
+        (
+            "ビルド方向の取り違え",
+            "validate",
+            r#"{"build_dir":"up"}"#,
+            &["build_dir", "valid"],
+        ),
+    ];
+
+    let mut reqs =
+        vec![r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string()];
+    for (i, (_, tool, args, _)) in mistakes.iter().enumerate() {
+        reqs.push(format!(
+            r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{tool}","arguments":{args}}}}}"#,
+            10 + i
+        ));
+    }
+    let resp = common::parse_responses(&common::run_mcp(&reqs));
+
+    let mut unrecoverable = Vec::new();
+    for (i, (desc, _, args, needles)) in mistakes.iter().enumerate() {
+        let id = 10 + i as i64;
+        let r = resp
+            .get(&id)
+            .unwrap_or_else(|| panic!("no response for '{desc}' ({args})"));
+        if !common::tool_ok(r) {
+            let text = common::tool_text(r).unwrap_or("").to_lowercase();
+            let missing: Vec<&str> = needles
+                .iter()
+                .copied()
+                .filter(|n| !text.contains(&n.to_lowercase()))
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            unrecoverable.push(format!(
+                "{desc}: error lacks {missing:?} — {}",
+                common::tool_text(r).unwrap_or("")
+            ));
+        } else {
+            unrecoverable.push(format!("{desc}: silently succeeded instead of erroring"));
+        }
+    }
+
+    // 全件が回復可能であることを要求する。ここを「率」で妥協すると、どの1件を
+    // 諦めたのかが記録されないまま劣化する (問309: 測らない要件は願望になる)。
+    assert!(
+        unrecoverable.is_empty(),
+        "{}/{} の著述ミスが自力回復不能なエラーを返した (問331):\n{}",
+        unrecoverable.len(),
+        mistakes.len(),
+        unrecoverable.join("\n")
     );
 }
